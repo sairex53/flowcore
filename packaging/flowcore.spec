@@ -41,6 +41,7 @@ DESTDIR=%{buildroot} cmake --install build
 %files
 %doc README.md ARCHITECTURE.md
 %config(noreplace) %{_sysconfdir}/flowcore/service.json
+%config(noreplace) %{_sysconfdir}/flowcore/helper.json
 %{_bindir}/flowcore
 %{_bindir}/flowcored
 %{_bindir}/flowcore-sdk-request
@@ -50,3 +51,6 @@ DESTDIR=%{buildroot} cmake --install build
 %{_libdir}/libflowcore_sdk.a
 %{_libdir}/cmake/flowcore/
 %{_prefix}/lib/systemd/system/flowcored.service
+%{_prefix}/lib/systemd/system/flowcore-network.service
+%{_prefix}/lib/systemd/system/flowcore-network.socket
+%{_prefix}/lib/sysusers.d/flowcore-operator.conf

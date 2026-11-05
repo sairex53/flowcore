@@ -32,8 +32,10 @@ install(DIRECTORY scripts config scenarios DESTINATION "${FLOWCORE_DATA}"
     FILES_MATCHING PATTERN "*.py" PATTERN "*.json" PATTERN "*.conf" PATTERN "__pycache__" EXCLUDE)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/installed-layout" "${CMAKE_CURRENT_BINARY_DIR}/VERSION"
               "${CMAKE_CURRENT_BINARY_DIR}/bpf-enabled" DESTINATION "${FLOWCORE_DATA}")
-install(FILES config/service.json DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/flowcore")
-install(FILES packaging/flowcored.service DESTINATION lib/systemd/system)
+install(FILES config/service.json config/helper.json DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/flowcore")
+install(FILES packaging/flowcored.service packaging/flowcore-network.service
+              packaging/flowcore-network.socket DESTINATION lib/systemd/system)
+install(FILES packaging/flowcore-operator.conf DESTINATION lib/sysusers.d)
 
 add_test(NAME service_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/service_unit.py")
 set_tests_properties(service_unit PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
@@ -101,4 +103,7 @@ install(FILES monitoring/flowcore-grafana.json DESTINATION "${FLOWCORE_DATA}/mon
 install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
-install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md
+              THREAT_MODEL.md PRIVILEGES.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME helper_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/helper_test.py")

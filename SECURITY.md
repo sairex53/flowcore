@@ -44,3 +44,24 @@ in the controlled integration. A shared namespace is not an isolation
 boundary against malicious traffic from another member. Trusted-runner
 workflows should be restricted to protected branches and configured with an
 approval environment. Public pull requests run unprivileged.
+
+## Separate network actuator
+
+The `flowcore-network.socket` service is opt-in. It starts a separate
+non-root actuator in a fresh systemd private network namespace. The helper
+checks the inherited host namespace witness and refuses to start in that
+namespace. The regular daemon, SDK and host telemetry process do not inherit
+its descriptors or capabilities.
+
+The version 1 operator API creates or removes one named veth pair and sets
+or clears its sender FIFO queue. The helper validates kernel readback and
+implements all mutations through rtnetlink. The protocol has no shell,
+command, interface name, path, namespace selector or arbitrary netlink
+message. TC filters, nftables and MPTCP operations stay in the trusted legacy
+test lab. The helper rejects them.
+
+See [THREAT_MODEL.md](THREAT_MODEL.md) for authorization, lifecycle and
+failure semantics. See [PRIVILEGES.md](PRIVILEGES.md) for deployment and
+reproduction. The version 1 API is an isolated actuator surface. The
+historical adaptive, research, container and MPTCP lab implementations are
+still explicitly privileged test runners.

@@ -20,6 +20,7 @@ jobs:
           ctest --test-dir build --output-on-failure
       - name: Privileged isolated networking tests
         run: |
+          sudo -n python3 -B tests/helper_integration.py
           sudo -n python3 -B tests/service_integration.py
           sudo -n python3 -B tests/adaptive_integration.py
           sudo -n python3 -B tests/research_integration.py

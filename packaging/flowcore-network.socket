@@ -1,0 +1,16 @@
+[Unit]
+Description=FLOWCORE isolated network operator endpoint
+
+[Socket]
+ListenSequentialPacket=/run/flowcore-helper/control.sock
+FileDescriptorName=control
+PassCredentials=yes
+SocketUser=root
+SocketGroup=flowcore-operator
+SocketMode=0660
+DirectoryMode=0755
+Backlog=8
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

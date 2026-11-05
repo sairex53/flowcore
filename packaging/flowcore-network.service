@@ -1,0 +1,39 @@
+[Unit]
+Description=FLOWCORE isolated network actuator
+Requires=flowcore-network.socket
+After=flowcore-network.socket
+PartOf=flowcore-network.socket
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -E -s -B /usr/share/flowcore/scripts/network_helper.py
+OpenFile=/proc/1/ns/net:host-netns:read-only
+DynamicUser=yes
+PrivateNetwork=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@mount @module @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+UMask=0077
+MemoryMax=64M
+TasksMax=4
+LimitNOFILE=32
+CPUQuota=20%
+TimeoutStopSec=3s
+Restart=no
+StandardOutput=journal
+StandardError=journal

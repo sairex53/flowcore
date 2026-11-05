@@ -114,3 +114,7 @@ Podman workloads. CLI.md lists command groups. SECURITY.md documents the
 read-only production unit and privileged laboratory boundary. RELEASE.md
 describes the staged install, SDK export and Fedora RPM. RESEARCH.md
 describes reproducible experiment reports.
+
+The optional isolated network helper accepts typed operator commands without
+root in the client process. See [PRIVILEGES.md](PRIVILEGES.md) and
+[THREAT_MODEL.md](THREAT_MODEL.md).

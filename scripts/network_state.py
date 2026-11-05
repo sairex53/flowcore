@@ -30,9 +30,9 @@ def attrs(data):
     return result
 
 
-def dump(sock, kind, payload):
+def dump(sock, kind, payload, *, max_datagrams=1024):
     sock.sendto(HEADER.pack(16 + len(payload), kind, 0x301, kind, 0) + payload, (0, 0))
-    for _ in range(1024):
+    for _ in range(max_datagrams):
         data, _, flags, sender = sock.recvmsg(262144)
         if sender[0] or flags & socket.MSG_TRUNC:
             raise RuntimeError('unexpected or truncated rtnetlink datagram')

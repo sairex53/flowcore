@@ -70,7 +70,12 @@ def main():
             assert not (runtime/'control.sock').exists()
         verify = work/'flowcored.service'
         verify.write_text((ROOT/'packaging/flowcored.service').read_text().replace('/usr/bin/flowcored',str(daemon)))
-        command(['systemd-analyze','verify',verify])
+        units = stage/'usr/lib/systemd/system'
+        service = units/'flowcore-network.service'
+        assert any((base/'etc/flowcore/helper.json').is_file() for base in (stage, prefix))
+        assert (stage/'usr/lib/sysusers.d/flowcore-operator.conf').is_file()
+        assert 'network' in command([cli,'--help'])
+        command(['systemd-analyze','verify',verify,service,units/'flowcore-network.socket'])
         sdk = work/'consumer'
         sdk.mkdir()
         (sdk/'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.20)\nproject(consumer LANGUAGES CXX)\n'
