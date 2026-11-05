@@ -5,6 +5,8 @@ struct flow_event {
     __u64 cookie;
     __u64 lifetime_ns;
     __u64 flow_id;
+    __u8 saddr[16];
+    __u8 daddr[16];
     __u32 netns;
     __u16 sport;
     __u16 dport;

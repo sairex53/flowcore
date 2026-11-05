@@ -30,16 +30,16 @@ def request(op, **fields):
 def main():
     parser = argparse.ArgumentParser(prog='flowcore', description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('status', 'interfaces', 'metrics', 'observe', 'connections', 'congestion', 'events', 'health'):
+    for name in ('status', 'interfaces', 'metrics', 'observe', 'connections', 'congestion', 'events', 'health', 'lifecycles'):
         command = commands.add_parser(name, help=f'query {name}')
         command.add_argument('--json', action='store_true', help='compact JSON output')
         if name == 'interfaces':
             command.add_argument('--local', action='store_true', help='query current namespace directly')
-        if name in ('observe', 'connections', 'congestion', 'events', 'health', 'metrics'):
+        if name in ('observe', 'connections', 'congestion', 'events', 'health', 'metrics', 'lifecycles'):
             command.add_argument('--watch', type=float, metavar='SECONDS', help='emit successive JSON lines')
         if name == 'observe':
             command.add_argument('--interface', help='controlled sender interface')
-        if name == 'connections':
+        if name in ('connections','lifecycles'):
             command.add_argument('--limit', type=int, default=128)
             command.add_argument('--offset', type=int, default=0)
             command.add_argument('--csv', action='store_true')
@@ -110,13 +110,13 @@ def main():
             result,code = dispatch(args)
             print(json.dumps(result,indent=2))
             return code
-        if args.command in ('observe', 'connections', 'congestion', 'events', 'health', 'metrics'):
+        if args.command in ('observe', 'connections', 'congestion', 'events', 'health', 'metrics', 'lifecycles'):
             sequence = 0
             while True:
                 fields = {}
                 if args.command == 'observe' and args.interface:
                     fields['interface'] = args.interface
-                if args.command == 'connections':
+                if args.command in ('connections','lifecycles'):
                     fields.update(limit=args.limit, offset=args.offset)
                 if args.command == 'events':
                     fields['after'] = sequence

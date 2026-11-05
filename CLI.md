@@ -45,3 +45,9 @@ invalid CLI syntax, 3 for unavailable IPC or a Linux query error, and 130
 for an interrupted research run. A confirmed regression also returns 1.
 `--config FILE --lab-netns PATH` and `--link IFACE` expose the legacy benchmark controller
 and read-only link-stat entry points.
+
+`flowcore lifecycles --limit 128 --offset 0 --json` queries the retained
+trace lifecycle table. It also supports `--csv` and `--watch SECONDS`.
+Each response carries the collector generation, retention and backend loss
+status. Host read-only observation and metric availability are documented in
+[OBSERVABILITY.md](OBSERVABILITY.md).

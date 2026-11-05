@@ -15,7 +15,36 @@ def prometheus(view, deployment=None):
     put('observer_bpf_active', int(view['bpf']['active']))
     put('observer_bpf_kernel_dropped_events', view['bpf']['kernel_reserve_drops'])
     put('observer_bpf_transport_dropped_events', view['bpf']['transport_drops'])
+    put('observer_bpf_decode_dropped_events',view['bpf'].get('kernel_decode_drops'))
     put('tcp_socket_snapshot_entries', view['socket_count'])
+    put('observer_snapshot_truncated',int(view['truncated']))
+    put('observer_lifecycle_retained',view.get('lifecycle',{}).get('retained'))
+    put('observer_lifecycle_evictions',view.get('lifecycle',{}).get('evicted'))
+    put('observer_lifecycle_out_of_order',view.get('lifecycle',{}).get('out_of_order'))
+    put('observer_parse_dropped_records',view['bpf']['parse_drops'])
+    put('observer_records_per_second',view['overhead']['records_per_second'])
+    put('observer_sample_age_seconds',view['sample_age_seconds'])
+    for seconds, window in view['windows'].items():
+        label = dict(window_seconds=seconds)
+        for key,value in window.get('tcp_counter_deltas',{}).items():
+            put('tcp_window_'+key,value,**label)
+        for name,distribution in window.get('tcp_distributions',{}).items():
+            for percentile in (50,95,99):
+                unit = ('us' if name.endswith('_us') else 'segments' if name.endswith('_segments')
+                        else 'bytes_per_second' if name.endswith('_bytes_per_second') else 'bytes')
+                value = distribution[f'p{percentile}_{unit}']
+                metric = name.removesuffix('_us')+'_seconds' if unit=='us' else name
+                put('tcp_'+metric,value/1e6 if unit=='us' and value is not None else value,
+                    quantile=percentile/100,**label)
+        for service,sources in window['application'].items():
+            app = sources['application']
+            total = app['ok']+app['failure']+app['timeout']
+            put('application_deadline_misses',app['deadline_miss'],service=service,**label)
+            put('application_completion_ratio',app['ok']/total if total else None,service=service,**label)
+        for name,stats in window['queue'].items():
+            put('queue_drop_rate_per_second',stats['drops_per_second'],queue=name,**label)
+            put('queue_backlogged_samples',stats.get('backlogged_samples'),queue=name,**label)
+            put('queue_ecn_marks_window',stats.get('ecn_marks'),queue=name,**label)
     for seconds, window in view['windows'].items():
         label = dict(window_seconds=seconds)
         for percentile in (50, 95, 99):
@@ -46,6 +75,8 @@ def prometheus(view, deployment=None):
         put('controller_reversals',control.get('reversals'))
         put('controller_actions_session',control.get('actions'))
         for row in deployment.get('platform',{}).get('interfaces',[]):
+            for name,value in row['counters'].items():
+                put('interface_'+name+'_total',value,interface=row['name'])
             label = dict(interface=row['name'])
             put('interface_available',int(row['available']),**label)
             put('interface_tx_mbps',row['path_quality']['tx_mbps'],**label)
@@ -56,6 +87,7 @@ def prometheus(view, deployment=None):
     for name, rows in samples.items():
         metric = 'flowcore_' + name
         kind = 'counter' if metric.endswith('_total') else 'gauge'
+        yield f'# HELP {metric} FLOWCORE observed '+name.replace('_',' ')+'.'
         yield f'# TYPE {metric} {kind}'
         for labels, value in rows:
             keys = ','.join(f'{key}={json.dumps(str(val))}' for key, val in sorted(labels.items()))
@@ -70,4 +102,4 @@ def connection_csv(rows, stream):
     writer = csv.DictWriter(stream, fields, extrasaction='ignore')
     writer.writeheader()
     for row in rows:
-        writer.writerow({**row, **row['tcp_info']})
+        writer.writerow({**row, **row.get('tcp_info',{})})

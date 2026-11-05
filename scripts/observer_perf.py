@@ -1,9 +1,11 @@
 """Compare observer modes against the same live namespace TCP workload."""
 from paths import BINDIR, RESULTS
 import argparse
+import hashlib
 import json
 import os
 import random
+import select
 import signal
 import subprocess
 import sys
@@ -48,7 +50,7 @@ def cpu_ticks():
     return sum(fields), fields[3] + fields[4]
 
 
-def trial(output, mode, duration, rate, report=False):
+def trial(output, mode, duration, rate, report=False, verify_loss=False):
     owned_directory(output)
     cfg = load(ROOT / 'config/service.json')
     cfg['telemetry_seconds'] = 1
@@ -129,6 +131,12 @@ def trial(output, mode, duration, rate, report=False):
                 if refused['windows']['10']['application']['demo']['application']['failure_reasons']['connect_refused'] != 1:
                     raise RuntimeError('connect refusal report not counted')
                 if after['bpf']['active']:
+                    lifecycle = request('lifecycles')
+                    (output/'lifecycles.json').write_text(json.dumps(lifecycle,indent=2)+'\n')
+                    if not lifecycle['connections'] or not any(
+                            row.get('local_address') in ('10.203.0.1','10.203.0.2')
+                            and row.get('observed_lifetime_ns') for row in lifecycle['connections']):
+                        raise RuntimeError('trace lifecycle, addresses or duration missing')
                     traced = refused['windows']['10']['traced']
                     hooks = after['bpf']['hooks']
                     if ('tcp_state' in hooks and not traced['state']) or ('tcp_reset' in hooks and not traced['receive_resets']):
@@ -138,6 +146,58 @@ def trial(output, mode, duration, rate, report=False):
                                (Path(f'/proc/{pid}/comm').read_text().strip() == 'flowcore-bpf')]
                     if len(helpers) != 1:
                         raise RuntimeError('could not identify owned collector process')
+                    listener_code = ('import socket; s=socket.socket(socket.AF_INET6); '
+                                     's.settimeout(4); s.bind(("fd42:203::2",19997)); s.listen(); '
+                                     'print("ready",flush=True); c,_=s.accept(); '
+                                     'assert c.recv(1)==b"x"; c.sendall(b"y"); c.close(); s.close()')
+                    listener = subprocess.Popen(['nsenter','-t',str(receiver),'-n',sys.executable,'-B','-c',listener_code],
+                                                stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                    try:
+                        if not select.select([listener.stdout],[],[],3)[0] or listener.stdout.readline().strip()!='ready':
+                            raise RuntimeError('IPv6 telemetry test listener failed')
+                        client_code = ('import socket; s=socket.socket(socket.AF_INET6); s.settimeout(3); '
+                                       's.connect(("fd42:203::2",19997)); s.sendall(b"x"); '
+                                       'assert s.recv(1)==b"y"; s.close()')
+                        subprocess.run(['nsenter','-t',str(sender),'-n',sys.executable,'-B','-c',client_code],
+                                       check=True,capture_output=True,text=True,timeout=4)
+                        if listener.wait(timeout=4):
+                            raise RuntimeError('IPv6 telemetry listener returned failure')
+                    finally:
+                        stop(listener)
+                        listener.stdout.close()
+                        listener.stderr.close()
+                    time.sleep(.2)
+                    lifecycle = request('lifecycles',offset=0)
+                    rows = []
+                    for offset in range(0,lifecycle['total'],128):
+                        rows.extend(request('lifecycles',offset=offset)['connections'])
+                    if not any(row['family']==10 and row['local_address']=='fd42:203::1'
+                               and row['remote_address']=='fd42:203::2' for row in rows):
+                        raise RuntimeError('IPv6 trace addresses were not observed')
+                    (output/'lifecycles-ipv6.json').write_text(json.dumps(rows,indent=2)+'\n')
+                    if verify_loss:
+                        os.kill(helpers[0],signal.SIGSTOP)
+                        try:
+                            script = ('import socket;\n'
+                                      'for _ in range(900):\n'
+                                      ' with socket.create_connection(("10.203.0.2",9000),timeout=2) as s:\n'
+                                      '  s.sendall(b"Q"*4096); data=b""\n'
+                                      '  while len(data)<64:\n'
+                                      '   chunk=s.recv(64-len(data)); assert chunk; data+=chunk\n'
+                                      '  assert data==b"R"*64\n')
+                            subprocess.run(['nsenter','-t',str(sender),'-n',sys.executable,'-B','-c',script],
+                                           check=True,capture_output=True,text=True,timeout=30)
+                        finally:
+                            os.kill(helpers[0],signal.SIGCONT)
+                        deadline = time.monotonic()+4
+                        while time.monotonic()<deadline:
+                            loss = request('health')
+                            if (loss['backend']['kernel_reserve_drops'] or 0)>0:
+                                (output/'forced-ring-loss.json').write_text(json.dumps(loss,indent=2)+'\n')
+                                break
+                            time.sleep(.1)
+                        else:
+                            raise RuntimeError('forced ring pressure did not report event loss')
                     os.kill(helpers[0], signal.SIGTERM)
                     deadline = time.monotonic() + 4
                     while time.monotonic() < deadline:
@@ -164,24 +224,34 @@ def main():
     parser.add_argument('--seed', type=int, default=20261105)
     parser.add_argument('--verify-live', action='store_true', help='also send real application reports')
     parser.add_argument('--live-only', action='store_true', help='run only real telemetry verification')
+    parser.add_argument('--verify-loss',action='store_true',help='pause collector and generate real ring overflow')
     args = parser.parse_args()
+    if args.verify_loss and not (args.live_only or args.verify_live):
+        parser.error('loss validation requires live verification')
     if os.geteuid() != 0 or SOCKET.exists():
         parser.error('run as root with the management daemon stopped')
     if not 4 <= args.duration <= 120 or not 1 <= args.rate <= 1000 or not 1 <= args.repetitions <= 10:
         parser.error('duration 4..120, rate 1..1000, repetitions 1..10')
     directory = RESULTS / f'observer-perf-{time.time_ns()}'
     owned_directory(directory)
-    (directory / 'environment.json').write_text(json.dumps(dict(kernel=os.uname().release,
-        architecture=os.uname().machine, cpu_count=os.cpu_count(), **vars(args)), indent=2))
     print(f'Evidence: {directory}', flush=True)
     order = [(repeat, mode) for repeat in range(args.repetitions) for mode in ('off', 'diag', 'bpf')]
     random.Random(args.seed).shuffle(order)
+    git = subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True)
+    dirty = subprocess.run(['git','status','--porcelain'],cwd=ROOT,capture_output=True,text=True)
+    sources = [*ROOT.glob('scripts/*.py'),*ROOT.glob('bpf/*'),ROOT/'src/observe_bpf.cpp',BINDIR/'flowcore']
+    environment = dict(kernel=os.uname().release,architecture=os.uname().machine,cpu_count=os.cpu_count(),
+                       git_commit=git.stdout.strip() if git.returncode==0 else None,
+                       git_dirty=bool(dirty.stdout),order=order,
+                       source_sha256={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                      for path in sources if path.is_file()},**vars(args))
+    (directory/'environment.json').write_text(json.dumps(environment,indent=2)+'\n')
     if args.live_only:
-        trial(directory / 'live', 'bpf', args.duration, args.rate, report=True)
+        trial(directory / 'live', 'bpf', args.duration, args.rate, report=True, verify_loss=args.verify_loss)
         return
     rows = [trial(directory / f'{repeat}-{mode}', mode, args.duration, args.rate) for repeat, mode in order]
     if args.verify_live:
-        trial(directory / 'live', 'bpf', args.duration, args.rate, report=True)
+        trial(directory / 'live', 'bpf', args.duration, args.rate, report=True, verify_loss=args.verify_loss)
     (directory / 'summary.json').write_text(json.dumps(rows, indent=2) + '\n')
 
 

@@ -11,7 +11,7 @@ import struct
 import time
 from pathlib import Path
 from app_metrics import Reporter
-from tcp_diag import tcp_info
+from tcp_diag import socket_snapshot
 
 
 def percentile(values, fraction):
@@ -141,10 +141,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
             ended = time.monotonic()
             if reporter and direct_socket and outcome == 'ok' and not own_tcp_info:
                 try:
-                    own_tcp_info.update(source='getsockopt(TCP_INFO)',
-                        tcp_info=tcp_info(direct_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 512)),
-                        send_buffer_bytes=direct_socket.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF),
-                        receive_buffer_bytes=direct_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF))
+                    own_tcp_info.update(socket_snapshot(direct_socket))
                 except OSError:
                     pass
             if writer:

@@ -19,17 +19,26 @@ def queues():
             if parent!=0xffffffff:
                 continue
             values = attrs(body[20:])
-            q = attrs(values.get(7,b'')).get(3,b'')
+            stats = attrs(values.get(7,b''))
+            q = stats.get(3,b'')
             if len(q)>=20:
                 qlen,backlog,drops,requeues,overlimits = struct.unpack_from('=5I',q)
-                result[index] = dict(qlen=qlen,backlog_bytes=backlog,drops=drops,
+                result[index] = dict(kind=values.get(1,b'').rstrip(b'\0').decode(errors='replace'), qlen=qlen,backlog_bytes=backlog,drops=drops,
                                      requeues=requeues,overlimits=overlimits)
+                basic = stats.get(1,b'')
+                if len(basic)>=12:
+                    sent, packets = struct.unpack_from('=QI',basic)
+                    result[index].update(bytes=sent,packets=packets)
     return result
 
 
 class Inventory:
-    def __init__(self, store):
+    def __init__(self, store, max_sockets=128):
         self.store = store
+        self.max_sockets = max_sockets
+        self.tcp_rows = []
+        self.tcp_truncated = False
+        self.tcp_error = None
         self.last = {}
         self.routes = set()
         self.view = {}
@@ -49,14 +58,17 @@ class Inventory:
                 queue_error = str(error)
             rtt = {}
             try:
-                tcp, _ = connections(128)
+                tcp, self.tcp_truncated = connections(self.max_sockets)
+                self.tcp_rows = tcp
+                self.tcp_error = None
                 for item in tcp:
                     index = item.get('bound_interface_index')
                     value = item['tcp_info'].get('rtt_us')
                     if index and value and item['state']=='established':
                         rtt.setdefault(index,[]).append(value)
-            except (OSError,ValueError,RuntimeError,struct.error):
-                pass
+            except (OSError,ValueError,RuntimeError,struct.error) as error:
+                self.tcp_rows = []
+                self.tcp_error = str(error)
             current = {}
             for row in state['interfaces']:
                 key = (row['index'],row['name'],row['kind'],row['mac'])

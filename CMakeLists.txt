@@ -104,6 +104,13 @@ install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.m
     DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md
-              THREAT_MODEL.md PRIVILEGES.md ADAPTIVE_ROOT_CAUSE.md DESTINATION "${FLOWCORE_DATA}/docs")
+              THREAT_MODEL.md PRIVILEGES.md ADAPTIVE_ROOT_CAUSE.md DEEP_OBSERVABILITY_REPORT.md DESTINATION "${FLOWCORE_DATA}/docs")
 
 add_test(NAME helper_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/helper_test.py")
+
+add_executable(tcp_info_layout tests/tcp_info_layout.cpp)
+target_compile_options(tcp_info_layout PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
+
+add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
+set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")

@@ -92,6 +92,13 @@ static __always_inline int record(struct sock *sk, __u8 kind, __u8 old, __u8 nex
     event->sport = BPF_CORE_READ(sk, __sk_common.skc_num);
     event->dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
     event->family = family;
+    if (family == 2) {
+        bpf_core_read(event->saddr, 4, &sk->__sk_common.skc_rcv_saddr);
+        bpf_core_read(event->daddr, 4, &sk->__sk_common.skc_daddr);
+    } else {
+        bpf_core_read(event->saddr, sizeof(event->saddr), &sk->__sk_common.skc_v6_rcv_saddr);
+        bpf_core_read(event->daddr, sizeof(event->daddr), &sk->__sk_common.skc_v6_daddr);
+    }
     event->kind = kind;
     event->old_state = old;
     event->new_state = next;

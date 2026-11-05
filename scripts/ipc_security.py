@@ -9,7 +9,7 @@ from service_config import unique
 READ = frozenset(('status','lab_status','interfaces','observe','health','metrics','events','connections',
                   'congestion','inspect','policies','intent_list','intent_inspect','controller_status',
                   'policy_history','policy_explain','platform_interfaces','platform_policies',
-                  'platform_resolve','platform_container_status'))
+                  'platform_resolve','platform_container_status','lifecycles'))
 
 
 def decode(raw):

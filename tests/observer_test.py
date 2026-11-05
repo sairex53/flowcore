@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import random
 import socket
 import struct
 import sys
@@ -13,7 +14,8 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from bpf_source import BpfSource
+from bpf_source import BpfSource, validate_record
+from connection_lifecycle import Lifecycles
 from observability import NANO, Observer, delta
 from observability_config import DEFAULT, validate
 from tcp_diag import connections, tcp_info
@@ -140,6 +142,52 @@ class ObserverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(cfg)
 
+    def test_seeded_trace_mutations(self):
+        rng = random.Random(4401)
+        base = json.dumps(dict(version=1,type='loss',kernel=1,transport=2)).encode()
+        for _ in range(2000):
+            raw = bytearray(base)
+            for _ in range(rng.randint(1,6)):
+                raw[rng.randrange(len(raw))] = rng.randrange(256)
+            try:
+                row = validate_record(json.loads(raw))
+            except (ValueError,KeyError,TypeError,RecursionError):
+                continue
+            self.assertEqual(row['version'],1)
+            self.assertGreaterEqual(row['kernel'],0)
+
+    def test_lifecycle_bounds_and_ordering(self):
+        tracker = Lifecycles(32)
+        event = dict(time_ns=10,flow_id=1,cookie='0000000000000001',netns=42,
+                     sport=10,dport=20,family=2,kind=1,new=1,old=2,origin_state=2,lifetime_ns=0)
+        for index in range(10000):
+            tracker.ingest(dict(event,flow_id=index+1,time_ns=index+10))
+        self.assertEqual(len(tracker.rows),32)
+        self.assertEqual(len(tracker.cookies),1)
+        self.assertEqual(tracker.evicted,9968)
+        latest = dict(event,flow_id=10000,time_ns=10010,new=7,lifetime_ns=100)
+        tracker.ingest(latest)
+        tracker.ingest(dict(latest,time_ns=10000,new=1))
+        self.assertEqual(tracker.out_of_order,1)
+        self.assertEqual(next(reversed(tracker.rows.values()))['state'],'closed')
+        joined = tracker.correlate(dict(cookie=event['cookie'],netns=42,cgroup_id=9))
+        self.assertEqual(joined['flow_id'],10000)
+        self.assertIsNone(tracker.correlate(dict(cookie=event['cookie'],netns=43)))
+        tracker.ingest(dict(latest,time_ns=10011,cookie='0000000000000002'))
+        self.assertEqual(tracker.identity_conflicts,1)
+        self.assertEqual(next(reversed(tracker.rows.values()))['cookie'],event['cookie'])
+
+    def test_trace_parser_bounds(self):
+        for row in (dict(version=2),dict(version=1,type='ready',hooks=['arbitrary'],unavailable_hooks=[]),
+                    dict(version=1,type='loss',kernel=-1,transport=0),
+                    dict(version=1,type='tcp',time_ns='bad')):
+            with self.assertRaises(ValueError):
+                validate_record(row)
+        observer = self.engine()
+        observer.track([],False,self.now)
+        observer.track([],False,self.now-1)
+        self.assertEqual(observer.snapshot_order_drops,1)
+
     def test_bpf_loss_and_chunking(self):
         src = BpfSource('auto')
         read, write = os.pipe()
@@ -147,9 +195,14 @@ class ObserverTests(unittest.TestCase):
             src.proc = Mock(stdout=stream)
             src.started = time.monotonic()
             try:
-                os.write(write, b'{"type":"ready","hooks":["tcp_state"]}\n{"type":"loss","kernel":')
+                ready = dict(version=1,type='ready',hooks=['tcp_state'],
+                             unavailable_hooks=[],mechanism='raw_tracepoint')
+                event = dict(version=1,type='tcp',time_ns=1,cookie='0000000000000001',
+                             lifetime_ns=0,flow_id=1,origin_state=2,netns=42,sport=10,dport=20,
+                             family=2,kind=1,old=2,new=1,local_address='127.0.0.1',remote_address='127.0.0.1')
+                os.write(write,json.dumps(ready).encode()+b'\n{"version":1,"type":"loss","kernel":')
                 self.assertEqual(src.drain(), [])
-                os.write(write, b'12,"transport":4}\ninvalid\n{"type":"tcp","time_ns":1}\n')
+                os.write(write,b'12,"transport":4}\ninvalid\n'+json.dumps(event).encode()+b'\n')
                 self.assertEqual(len(src.drain()), 1)
                 self.assertEqual(src.status()['kernel_reserve_drops'], 12)
                 self.assertEqual(src.status()['transport_drops'], 4)

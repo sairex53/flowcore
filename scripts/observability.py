@@ -7,6 +7,8 @@ from collections import deque
 from pathlib import Path
 
 from bpf_source import BpfSource
+from connection_lifecycle import Lifecycles
+from metric_catalog import catalog
 from service_config import number
 from tcp_diag import connections
 from telemetry_windows import Windows
@@ -47,6 +49,10 @@ class Observer:
 
     def reset(self):
         self.probe_start_ns = None
+        self.lifecycles = Lifecycles(min(2048,2*self.cfg['max_sockets']))
+        self.snapshot_order_drops = 0
+        self.host_interfaces = []
+        self.scope = 'current_network_namespace'
         self.windows = Windows(max(*self.cfg['windows'], self.cfg['thresholds']['window_seconds'])+1)
         self.requests = {}
         self.current = {}
@@ -66,6 +72,7 @@ class Observer:
     def start(self, lab):
         self.generation += 1
         self.reset()
+        self.scope = 'owned_lab_namespaces'
         if self.cfg['enabled']:
             self.bpf.start(lab.namespace_fds, lab.output)
         else:
@@ -81,7 +88,7 @@ class Observer:
     def event(self, kind, ts, **detail):
         self.event_sequence += 1
         self.events.append(dict(sequence=self.event_sequence, time_ns=ts, generation=self.generation,
-                                kind=kind, **detail))
+                                kind=kind, scope=self.scope, **detail))
 
     def ingest(self, request, uid):
         if not self.cfg['enabled']:
@@ -147,9 +154,13 @@ class Observer:
     def drain(self):
         for row in self.bpf.drain():
             ts = row['time_ns']
+            if not 0 < ts <= self.clock():
+                self.bpf.parse_drops += 1
+                continue
             bucket = self.windows.at(ts)
             if not bucket:
                 continue
+            self.lifecycles.ingest(row)
             kind = row['kind']
             self.processed += 1
             bucket.counters['bpf.events'] += 1
@@ -171,6 +182,9 @@ class Observer:
                 self.event('tcp_receive_reset', ts, source='bpf', cookie=row['cookie'], netns=row['netns'])
 
     def track(self, rows, truncated, ts):
+        if self.sampled_ns is not None and ts <= self.sampled_ns:
+            self.snapshot_order_drops += 1
+            return
         bucket = self.windows.at(ts)
         tracked = {}
         for row in rows:
@@ -184,6 +198,9 @@ class Observer:
             row['first_seen_ns'] = old['first_seen_ns'] if old else ts
             row['observed_age_ms'] = (ts - row['first_seen_ns']) / 1e6 if key else None
             row['closing'] = row['state'] in CLOSING
+            row['process'] = None
+            row['process_source'] = 'external owner PID unavailable; UID and cgroup are kernel fields'
+            row['traced_lifecycle'] = self.lifecycles.correlate(row)
             if old and old['state'] != row['state']:
                 self.event('sampled_state_change', ts, source='inet_diag', cookie=cookie,
                            old=old['state'], new=row['state'], namespace=row['namespace'])
@@ -191,10 +208,19 @@ class Observer:
                 tracked[key] = row
                 if not old and row['state'] != 'listen':
                     bucket.counters['diag.first_observed'] += 1
-            if row['namespace'] == 'sender':
+            if row['namespace'] in ('sender','host'):
                 if row['state'] == 'established' and info.get('rtt_us', 0) > 0:
                     bucket.observe('rtt', info['rtt_us'])
+                    for metric in ('rttvar_us','cwnd_segments','delivery_rate_bytes_per_second',
+                                   'peer_receive_window_bytes','local_receive_window_bytes'):
+                        if metric in info:
+                            bucket.observe('tcp.'+metric,info[metric])
                 if old and not truncated and not self.truncated:
+                    for counter in ('bytes_sent','bytes_acked','bytes_received','total_rto','total_rto_time_ms'):
+                        value = delta(info, old['tcp_info'], counter)
+                        if value is not None:
+                            bucket.counters['tcp.delta.'+counter] += value
+                            bucket.counters['tcp.delta_pairs.'+counter] += 1
                     retrans = delta(info, old['tcp_info'], 'total_retrans_segments')
                     segments = delta(info, old['tcp_info'], 'data_segments_out')
                     if retrans is not None and segments is not None:
@@ -257,6 +283,7 @@ class Observer:
                     found, limited = connections(self.cfg['max_sockets'] // 2)
                 for row in found:
                     row['namespace'] = name
+                    row['netns'] = os.fstat(lab.namespace_fds[index]).st_ino
                 rows.extend(found)
                 truncated |= limited
             self.track(rows, truncated, self.clock())
@@ -269,11 +296,28 @@ class Observer:
         self.detect(self.clock())
         self.sample_cpu_ns += time.process_time_ns() - cpu
 
+    def sample_host(self, inventory):
+        if not self.cfg['enabled'] or inventory.error:
+            return
+        begin = time.process_time_ns()
+        now = self.clock()
+        self.host_interfaces = inventory.status().get('interfaces', [])
+        if inventory.tcp_error:
+            self.errors['inet_diag'] = inventory.tcp_error
+        else:
+            ns = os.stat('/proc/self/ns/net').st_ino
+            rows = [dict(row,namespace='host',netns=ns) for row in inventory.tcp_rows]
+            self.track(rows,inventory.tcp_truncated,now)
+            self.errors.pop('inet_diag',None)
+        self.bpf.reason = 'host mode uses unprivileged INET_DIAG; tracing is restricted to admitted lab namespaces'
+        self.detect(now)
+        self.sample_cpu_ns += time.process_time_ns()-begin
+
     def window(self, now, seconds, *, complete=False):
         bucket = self.windows.summarize(now, seconds, complete=complete)
         counters = bucket.counters
         empty = dict(samples=0, overflow_samples=0, p50_us=None, p95_us=None, p99_us=None)
-        hist = {key: item.summary('bytes' if key.startswith('backlog') else 'us') for key, item in bucket.histograms.items()}
+        hist = {key: item.summary('bytes' if key.startswith('backlog') else 'us') for key, item in bucket.histograms.items() if not key.startswith('tcp.')}
         app = {}
         for name, settings in self.cfg['services'].items():
             app[name] = dict(traffic_class=settings['class'])
@@ -310,7 +354,15 @@ class Observer:
                               ('handshake_close_candidates', 'tcp_state'),
                               ('retransmit_events', 'tcp_retransmit'), ('receive_resets', 'tcp_reset'))
         }
+        distributions = {metric: bucket.histograms['tcp.'+metric].summary(unit) for metric,unit in
+                         (('rttvar_us','us'),('cwnd_segments','segments'),
+                          ('delivery_rate_bytes_per_second','bytes_per_second'),
+                          ('peer_receive_window_bytes','bytes'),('local_receive_window_bytes','bytes'))
+                         if 'tcp.'+metric in bucket.histograms}
+        tcp_deltas = {key: counters['tcp.delta.'+key] if counters['tcp.delta_pairs.'+key] else None
+                      for key in ('bytes_sent','bytes_acked','bytes_received','total_rto','total_rto_time_ms')}
         return dict(seconds=seconds, application=app, rtt=hist.get('rtt', empty),
+                    tcp_distributions=distributions, tcp_counter_deltas=tcp_deltas,
                     backlog=hist.get('backlog', {'samples': 0, 'p95_bytes': None}), queue=queue,
                     retransmit_ratio=counters['tcp.retrans'] / segments if segments else None,
                     retransmit_data_segments=segments, traced=traced, lifetime=hist.get('bpf.lifetime', empty),
@@ -335,7 +387,7 @@ class Observer:
             'queue_drops_high': (root.get('drops_per_second'), cfg['drops_per_second'], root.get('samples', 0)),
             'handshake_close_burst': ((view['traced']['handshake_close_candidates'] or 0) / seconds
                                       if view['traced']['handshake_close_candidates'] is not None else None,
-                                      cfg['failures_per_second'], seconds),
+                                      cfg['failures_per_second'], view['traced']['handshake_close_candidates'] or 0),
         }
         if cfg['min_tx_bytes_per_second']:
             value = root.get('bytes_per_second')
@@ -371,7 +423,9 @@ class Observer:
         active = [name for name, state in self.detectors.items() if state['since'] is not None and state['available']]
         if entered and len(active) > 1:
             self.event('correlated_observations', now, signals=active,
-                       evidence={name: conditions[name][0] for name in active}, causal_claim=False)
+                       evidence={name: dict(value=conditions[name][0], threshold=conditions[name][1],samples=conditions[name][2],
+                                           window_start_ns=now-seconds*NANO,window_end_ns=now)
+                                 for name in active}, causal_claim=False)
 
     def snapshot(self):
         now = self.clock()
@@ -382,18 +436,20 @@ class Observer:
         saturation = (utilization >= .9 and backlog > 0) if utilization is not None and backlog is not None else None
         children = resource.getrusage(resource.RUSAGE_CHILDREN)
         return dict(enabled=self.cfg['enabled'], time_ns=now, generation=self.generation,
-                    clock='CLOCK_MONOTONIC', socket_count=len(self.last_rows), truncated=self.truncated,
+                    clock='CLOCK_MONOTONIC', scope=self.scope, metric_schema=catalog(),
+                    lifecycle=self.lifecycles.status(), host_interfaces=self.host_interfaces,
+                    socket_count=len(self.last_rows), truncated=self.truncated,
                     sample_age_seconds=(now - self.sampled_ns) / NANO if self.sampled_ns is not None else None,
                     collector_errors=self.errors, bpf=self.bpf.status(), windows=windows, queue=self.queue, sender_shaper_saturation_indicator=saturation,
-                    findings={key: dict(active=val['since'] is not None,
+                    findings={key: dict(active=val['since'] is not None and val['available'],
                         data_available=val['available'], degraded_seconds=val['spent_ns']/NANO)
                         for key, val in self.detectors.items()},
                     overhead=dict(daemon_cpu_seconds=time.process_time(), daemon_rss_bytes=rss('self'),
                         child_cpu_seconds=children.ru_utime + children.ru_stime,
                         bpf_cpu_seconds=cpu_seconds(pid) if pid else None, bpf_rss_bytes=rss(pid) if pid else None,
                         polling_cpu_seconds=self.sample_cpu_ns / NANO,
-                        records_processed=self.processed, late_event_drops=self.windows.late_drops,
+                        records_processed=self.processed, snapshot_order_drops=self.snapshot_order_drops, late_event_drops=self.windows.late_drops,
                         records_per_second=self.processed / max(.001, (now-self.started) / NANO)),
-                    provenance={'rtt': 'sender INET_DIAG TCP_INFO, repeated per-socket samples',
+                    provenance={'rtt': ('host' if self.scope=='current_network_namespace' else 'sender') + ' INET_DIAG TCP_INFO, repeated per-socket samples',
                                 'application': 'explicit authenticated reports; separate IPC timings',
-                                'queue': 'tc and rtnetlink; deltas attributed to interval end'})
+                                'queue': ('native inventory root-qdisc and interface snapshots' if self.scope=='current_network_namespace' else 'tc and rtnetlink; deltas attributed to interval end')})

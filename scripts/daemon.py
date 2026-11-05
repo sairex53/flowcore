@@ -48,7 +48,7 @@ class Service:
         self.container_attachment = None
         self.monitor_only = False
         self.platform_policies = PolicyStore()
-        self.inventory = Inventory(self.platform_policies)
+        self.inventory = Inventory(self.platform_policies, config['observability']['max_sockets'])
         self.research = False
         self.research_link_up = True
         self.research_mode = None
@@ -244,6 +244,14 @@ class Service:
                         (token is not None and (not isinstance(token, str) or token not in row['instances']))):
                 raise ValueError('invalid intent owner or instance token')
             return self.observer.ingest(request, uid)
+        if op == 'lifecycles':
+            limit, offset = request.get('limit',128), request.get('offset',0)
+            if type(limit) is not int or not 1<=limit<=128 or type(offset) is not int or not 0<=offset<=2048:
+                raise ValueError('lifecycle pagination exceeds bounds')
+            rows = list(self.observer.lifecycles.rows.values())
+            return dict(connections=rows[offset:offset+limit],total=len(rows),
+                        generation=self.observer.generation,retention=self.observer.lifecycles.status(),
+                        backend=self.observer.bpf.status(), completeness='observed events only; inspect backend loss counters')
         if op == 'connections':
             limit, offset = request.get('limit', 128), request.get('offset', 0)
             if type(limit) is not int or not 1 <= limit <= 128 or type(offset) is not int or not 0 <= offset <= 1024:
@@ -265,9 +273,18 @@ class Service:
                         retention_evictions=first - 1, missed=max(0, first - 1 - after))
         if op in ('observe', 'congestion', 'health'):
             interface = request.get('interface')
-            if interface is not None and (not self.lab or interface != self.config['interface']):
-                raise ValueError('interface is not the controlled sender interface')
             view = self.observer.snapshot()
+            if interface is not None:
+                if self.lab:
+                    if interface != self.config['interface']:
+                        raise ValueError('interface is not the controlled sender interface')
+                else:
+                    found = [row for row in view['host_interfaces'] if row['name'] == interface]
+                    if not found:
+                        raise ValueError('unknown observed interface')
+                    view['host_interfaces'] = found
+                    view['interface_filter'] = interface
+                    view['window_scope'] = 'all observed local sockets; unbound sockets are not attributed to this interface'
             if op == 'congestion':
                 return {key: view[key] for key in ('time_ns', 'generation', 'windows', 'findings',
                                                    'sender_shaper_saturation_indicator')}
@@ -392,6 +409,7 @@ def main():
             service.controller.restore(STATE)
             service.platform_policies.restore(STATE)
             service.inventory.refresh()
+            service.observer.sample_host(service.inventory)
             if SOCKET.is_socket():
                 SOCKET.unlink()
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host:
@@ -424,6 +442,8 @@ def main():
                         service.controller.safe_tick()
                         if time.monotonic()-inventory_tick>=2:
                             service.inventory.refresh()
+                            if not service.lab:
+                                service.observer.sample_host(service.inventory)
                             inventory_tick = time.monotonic()
                             notify('WATCHDOG=1')
                 finally:
