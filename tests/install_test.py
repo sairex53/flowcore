@@ -30,6 +30,8 @@ def main():
         assert command([cli,'--version']).strip()=='FLOWCORE 0.2.0'
         assert ctypes.CDLL(str(prefix/'bin/libflowcore_intelligence.so')).flowcore_allocate
         assert command([daemon,'--version']).strip()=='0.2.0'
+        libraries=list(prefix.rglob('libflowcore_intent.so'))
+        assert len(libraries)==1 and ctypes.CDLL(str(libraries[0])).fc_v2_open
         runtime = work/'runtime'
         private_state = work/'private-state'
         private_state.mkdir(mode=0o700)
@@ -83,10 +85,25 @@ def main():
         (sdk/'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.20)\nproject(consumer LANGUAGES CXX)\n'
             'find_package(flowcore CONFIG REQUIRED)\nadd_executable(consumer main.cpp)\n'
             'target_link_libraries(consumer PRIVATE flowcore::sdk)\n')
-        (sdk/'main.cpp').write_text('#include <flowcore/client.hpp>\nint main(){flowcore::Client c("/nonexistent");}\n')
+        (sdk/'main.cpp').write_text(
+            '#include <flowcore/client.hpp>\n#include <flowcore/intent_v2.hpp>\n'
+            'int main(int argc,char** argv){flowcore::Client c("/nonexistent");'
+            'flowcore::v2::Intent i;i.service="installed";'
+            'flowcore::v2::Service s(argc==2?argv[1]:"/nonexistent",i);'
+            'if(argc==2){if(!s.wait_ready(std::chrono::seconds(3)))return 2;'
+            'for(int n=0;n<16;++n){auto r=s.begin_request();(void)r.complete();'
+            'if(!s.flush(std::chrono::seconds(3)))return 4;'
+            'if(s.statistics().accepted>=2)return 0;}return 3;} }\n')
         command(['cmake','-S',sdk,'-B',sdk/'build','-G','Ninja',f'-DCMAKE_PREFIX_PATH={prefix}'])
         command(['cmake','--build',sdk/'build'])
         command([sdk/'build/consumer'])
+        with (work/'installed-intent.log').open('w') as log:
+            proc=subprocess.Popen([daemon],env=env,stdout=log,stderr=log)
+            try:
+                command([sdk/'build/consumer',runtime/'control.sock'])
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
         for path in manifest:
             path.unlink()
         assert not any(path.is_file() for path in stage.rglob('*'))

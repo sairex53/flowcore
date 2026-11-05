@@ -124,3 +124,6 @@ paired experiments, see [BENCHMARK_V2.md](BENCHMARK_V2.md).
 
 The adaptive-control investigation, measured limitations and reproduction
 commands are in [ADAPTIVE_ROOT_CAUSE.md](ADAPTIVE_ROOT_CAUSE.md).
+
+Application integration: [Intent API V2](INTENT_API.md) and [C++ / C / Python examples](APPLICATION_INTEGRATION.md).
+V2 provides process-bound cooperative request telemetry and FD-attested socket correlation; it does not promise per-request packet scheduling.

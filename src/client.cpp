@@ -30,7 +30,7 @@ void wait_for(int fd, short events, Clock::time_point deadline) {
     }
 }
 
-std::string rpc(const std::string& path, std::string data) {
+std::string rpc(const std::string& path, std::string data, int passed_fd = -1) {
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
     if (path.empty() || path.size() >= sizeof(address.sun_path) || path.find('\0') != std::string::npos)
@@ -54,6 +54,24 @@ std::string rpc(const std::string& path, std::string data) {
         throw std::runtime_error("unexpected FLOWCORE socket peer");
     data += '\n';
     std::string_view unsent(data);
+    if (passed_fd >= 0) {
+        wait_for(fd.value, POLLOUT, deadline);
+        iovec payload{data.data(), data.size()};
+        alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))]{};
+        msghdr message{};
+        message.msg_iov = &payload;
+        message.msg_iovlen = 1;
+        message.msg_control = control;
+        message.msg_controllen = sizeof(control);
+        auto* header = CMSG_FIRSTHDR(&message);
+        header->cmsg_level = SOL_SOCKET;
+        header->cmsg_type = SCM_RIGHTS;
+        header->cmsg_len = CMSG_LEN(sizeof(int));
+        std::memcpy(CMSG_DATA(header), &passed_fd, sizeof(int));
+        auto sent = sendmsg(fd.value, &message, MSG_NOSIGNAL);
+        if (sent <= 0) throw std::runtime_error("descriptor association send failed");
+        unsent.remove_prefix(static_cast<size_t>(sent));
+    }
     while (!unsent.empty()) {
         wait_for(fd.value, POLLOUT, deadline);
         auto count = send(fd.value, unsent.data(), unsent.size(), MSG_NOSIGNAL);
@@ -72,6 +90,8 @@ std::string rpc(const std::string& path, std::string data) {
         reply.append(buffer, static_cast<size_t>(count));
         if (reply.ends_with('\n')) break;
     }
+    if (reply.starts_with("{\"ok\": false,") && reply.find("\"code\": \"forbidden\"") != std::string::npos)
+        throw std::runtime_error("FLOWCORE operation forbidden");
     if (!reply.ends_with('\n') || !reply.starts_with("{\"ok\": true,"))
         throw std::runtime_error("flowcored rejected the request or returned an invalid response");
     return reply;
@@ -84,6 +104,7 @@ bool valid_label(std::string_view name) {
 }
 
 namespace detail {
+std::string exchange(const std::string& path, std::string data, int fd) { return rpc(path, std::move(data), fd); }
 struct Registration {
     std::string path, name, token, deadline;
     ~Registration() {

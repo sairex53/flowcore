@@ -22,7 +22,7 @@ from ipc_security import authorize, decode, notify, private_directory, private_l
 from platform_network import Inventory
 from platform_policy import PolicyStore, merged
 from adaptive import Controller
-from service_config import load, profile
+from service_config import keys, load, profile
 from service_lab import ServiceLab
 
 LIMIT = 65536
@@ -49,6 +49,8 @@ class Service:
         self.monitor_only = False
         self.platform_policies = PolicyStore()
         self.inventory = Inventory(self.platform_policies, config['observability']['max_sockets'])
+        from intent_v2 import IntentAPI
+        self.intent_api = IntentAPI(self)
         self.research = False
         self.research_link_up = True
         self.research_mode = None
@@ -138,13 +140,18 @@ class Service:
                     controlled_interfaces=[self.config['interface']] if self.lab else [],
                     capabilities=self.capabilities, error=self.error)
 
-    def command(self, request, uid=None, pid=None):
+    def command(self, request, uid=None, pid=None, passed_fd=None):
         if not isinstance(request, dict):
             raise ValueError('expected JSON object')
         op = request.get('op')
         if not isinstance(op,str):
             raise ValueError('expected operation name')
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
+        if op == 'intent_v2_revoke':
+            keys(request,('op','name'))
+            return self.intent_api.revoke(request.get('name'))
+        if op == 'intent_v2':
+            return self.intent_api.call(request,uid,pid,passed_fd)
         if op == 'platform_interfaces':
             return self.inventory.status()
         if op == 'platform_policies':
@@ -215,6 +222,7 @@ class Service:
         if op == 'intent_register':
             return controller.register(request.get('intent'), uid, pid)
         if op in ('intent_list', 'intent_inspect', 'intent_remove'):
+            self.intent_api.expire()
             registry.expire()
             if op == 'intent_list':
                 return {name: registry.inspect(name) for name in registry.rows}
@@ -351,7 +359,7 @@ class Service:
             self.events.append(dict(source=origin, error=str(error), resync='next interface snapshot'))
 
 
-def receive(connection):
+def receive(connection, descriptors=None, expected_peer=None):
     data = bytearray()
     deadline = time.monotonic() + 1
     while b'\n' not in data:
@@ -359,7 +367,21 @@ def receive(connection):
         if remaining <= 0:
             raise TimeoutError('request deadline exceeded')
         connection.settimeout(remaining)
-        block = connection.recv(min(4096, LIMIT + 1 - len(data)))
+        if descriptors is None:
+            block = connection.recv(min(4096, LIMIT + 1 - len(data)))
+        else:
+            block, ancillary, flags, _ = connection.recvmsg(min(4096,LIMIT+1-len(data)),
+                                                          socket.CMSG_SPACE(12)+socket.CMSG_SPACE(32),socket.MSG_CMSG_CLOEXEC)
+            supplied_peer=None
+            for level,kind,payload in ancillary:
+                if level==socket.SOL_SOCKET and kind==socket.SCM_CREDENTIALS and len(payload)==12:
+                    supplied_peer=struct.unpack('3i',payload)
+                if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:
+                    descriptors.extend(x[0] for x in struct.iter_unpack('=i',payload[:len(payload)//4*4]))
+            if flags & socket.MSG_CTRUNC or len(descriptors)>1:
+                raise ValueError('descriptor limit exceeded')
+            if expected_peer is not None and supplied_peer != expected_peer:
+                raise PermissionError('connection sender differs from authenticated peer')
         if not block:
             raise ValueError('missing request terminator')
         data.extend(block)
@@ -371,17 +393,25 @@ def receive(connection):
 def handle(server, service):
     conn, _ = server.accept()
     with conn:
-        pid, uid, _ = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        peer = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        pid, uid, _ = peer
         if uid not in (0,os.geteuid()):
             return
+        descriptors=[]
         try:
-            result = dict(ok=True, result=service.command(receive(conn), uid, pid))
+            request=receive(conn,descriptors,peer)
+            if descriptors and not (request.get('op')=='intent_v2' and request.get('action')=='associate'):
+                raise ValueError('descriptors forbidden for this operation')
+            result = dict(ok=True, result=service.command(request, uid, pid, descriptors[0] if descriptors else None))
         except (OSError, ValueError, RuntimeError, RecursionError, TypeError, KeyError, OverflowError, struct.error, subprocess.SubprocessError) as error:
             detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) and error.stderr else str(error)
             service.log('error', detail=detail)
             category = ('forbidden' if isinstance(error,PermissionError) else
                         'invalid_request' if isinstance(error,(ValueError,RecursionError)) else 'operation_failed')
             result = dict(ok=False,error=detail,code=category)
+        finally:
+            for fd in descriptors:
+                os.close(fd)
         try:
             response = json.dumps(result).encode() + b'\n'
             if len(response) > 1024 * 1024:
@@ -422,6 +452,7 @@ def main():
             if SOCKET.is_socket():
                 SOCKET.unlink()
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host:
+                server.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
                 server.bind(str(SOCKET))
                 try:
                     server.listen(16)
@@ -448,6 +479,7 @@ def main():
                             handle(server, service)
                         if service.lab and time.monotonic()-service.sampled >= service.config['telemetry_seconds']:
                             service.poll_metrics()
+                        service.intent_api.expire()
                         service.controller.safe_tick()
                         if time.monotonic()-inventory_tick>=2:
                             service.inventory.refresh()

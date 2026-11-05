@@ -62,7 +62,7 @@ def main():
         else:
             sub.add_argument('--deadline-ms', type=float)
     groups = dict(policy=('list', 'apply', 'inspect', 'evaluate', 'explain', 'history'), daemon=('status',),
-                  intent=('register', 'list', 'inspect', 'remove'),
+                  intent=('register', 'list', 'inspect', 'remove', 'revoke'),
                   controller=('start', 'stop', 'status', 'shadow', 'observe', 'fallback'),
                   lab=('up', 'down', 'status', 'configure', 'inspect'))
     for name, operations in groups.items():
@@ -72,7 +72,7 @@ def main():
             command.add_argument('--json', action='store_true', help='compact JSON output')
             if (name, action) == ('intent', 'register'):
                 command.add_argument('file', help='JSON intent file')
-            if (name == 'intent' and action in ('inspect', 'remove')):
+            if (name == 'intent' and action in ('inspect', 'remove', 'revoke')):
                 command.add_argument('name')
             if (name == 'controller' and action in ('start', 'shadow', 'observe')):
                 command.add_argument('--strategy', choices=('static', 'threshold', 'slo', 'queue-aware', 'slo-aware', 'hybrid'), default='slo')
@@ -153,9 +153,9 @@ def main():
             if args.action == 'register':
                 with open(args.file) as stream:
                     fields['intent'] = json.loads(stream.read(65536))
-            if args.action in ('inspect', 'remove'):
+            if args.action in ('inspect', 'remove', 'revoke'):
                 fields['name'] = args.name
-            result = request('intent_' + args.action, **fields)
+            result = request('intent_v2_revoke' if args.action=='revoke' else 'intent_' + args.action, **fields)
         elif args.command == 'controller':
             fields = {'strategy': args.strategy} if hasattr(args, 'strategy') else {}
             result = request('controller_' + args.action, **fields)

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(flowcore VERSION 0.2.0 LANGUAGES CXX)
+project(flowcore VERSION 0.2.0 LANGUAGES C CXX)
 include(GNUInstallDirs)
 set(FLOWCORE_DATA "${CMAKE_INSTALL_DATADIR}/flowcore")
 file(RELATIVE_PATH FLOWCORE_DATA_FROM_BIN "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_DATADIR}/flowcore")
@@ -73,18 +73,20 @@ endif()
 
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
-add_library(flowcore_sdk src/client.cpp)
+add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp)
+find_package(Threads REQUIRED)
+target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(flowcore_sdk PUBLIC cxx_std_23)
-set_target_properties(flowcore_sdk PROPERTIES EXPORT_NAME sdk)
+set_target_properties(flowcore_sdk PROPERTIES EXPORT_NAME sdk POSITION_INDEPENDENT_CODE ON)
 add_library(flowcore::sdk ALIAS flowcore_sdk)
 target_compile_options(flowcore_sdk PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_executable(flowcore-sdk-request examples/sdk_request.cpp)
 target_link_libraries(flowcore-sdk-request PRIVATE flowcore_sdk)
 install(TARGETS flowcore_sdk EXPORT FlowcoreTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-install(EXPORT FlowcoreTargets FILE flowcore-config.cmake NAMESPACE flowcore:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
-install(FILES include/flowcore/client.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+install(EXPORT FlowcoreTargets FILE flowcore-targets.cmake NAMESPACE flowcore:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
+install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
@@ -100,7 +102,7 @@ endif()
 
 add_test(NAME platform_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_test.py")
 install(FILES monitoring/flowcore-grafana.json DESTINATION "${FLOWCORE_DATA}/monitoring")
-install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md
+install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md INTENT_API.md APPLICATION_INTEGRATION.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md
@@ -120,3 +122,25 @@ target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -W
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
 add_test(NAME intelligence_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intelligence_test.py")
 add_test(NAME performance_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/performance_test.py")
+
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/flowcore-config.cmake" [=[
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+include("${CMAKE_CURRENT_LIST_DIR}/flowcore-targets.cmake")
+]=])
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/flowcore-config.cmake" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
+add_library(flowcore_intent SHARED src/intent_c.cpp)
+target_link_libraries(flowcore_intent PRIVATE flowcore_sdk)
+target_compile_options(flowcore_intent PRIVATE -Wall -Wextra -Wpedantic -Werror)
+install(TARGETS flowcore_intent LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(FILES include/flowcore/intent_c.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+add_executable(flowcore-intent-v2-demo examples/intent_v2_demo.cpp)
+target_link_libraries(flowcore-intent-v2-demo PRIVATE flowcore_sdk)
+add_executable(intent_v2_native tests/intent_v2_native.cpp)
+target_link_libraries(intent_v2_native PRIVATE flowcore_sdk)
+add_executable(flowcore-intent-c-demo examples/intent_c_demo.c)
+target_include_directories(flowcore-intent-c-demo PRIVATE include)
+target_link_libraries(flowcore-intent-c-demo PRIVATE flowcore_intent)
+add_test(NAME intent_v2_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py")
+add_test(NAME intent_v2_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py" --live)
+set_tests_properties(intent_v2_live PROPERTIES TIMEOUT 30 ENVIRONMENT "FLOWCORE_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR}")

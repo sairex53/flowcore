@@ -55,3 +55,5 @@ DESTDIR=%{buildroot} cmake --install build
 %{_prefix}/lib/systemd/system/flowcore-network.socket
 %{_prefix}/lib/sysusers.d/flowcore-operator.conf
 %{_bindir}/libflowcore_intelligence.so
+
+%{_libdir}/libflowcore_intent.so

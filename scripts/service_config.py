@@ -48,6 +48,11 @@ def load(path):
         supplied = cfg.get('adaptive', {})
         if isinstance(supplied, dict):
             cfg['adaptive'] = dict(ADAPTIVE_DEFAULT, **supplied)
+    api = cfg.pop('intent_api', {'priorities':['standard']}) if isinstance(cfg,dict) else {}
+    keys(api, ('priorities',))
+    if (not isinstance(api['priorities'],list) or not api['priorities']
+            or any(item not in ('critical','interactive','standard') for item in api['priorities'])):
+        raise ValueError('invalid intent API priority permissions')
     keys(cfg, ('version', 'interface', 'lab', 'telemetry_seconds', 'log_level', 'policies', 'observability', 'adaptive'))
     validate(cfg['observability'])
     settings = cfg['adaptive']
@@ -92,4 +97,5 @@ def load(path):
             ports.add(cls['port'])
         if sum(cls['min_pct'] for cls in classes.values()) > 100:
             raise ValueError('class reservations exceed link capacity')
+    cfg['intent_api'] = api
     return cfg
