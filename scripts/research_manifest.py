@@ -5,7 +5,11 @@ from pathlib import Path
 
 from service_config import keys, number, profile, unique
 
-MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
+LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
+MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', 'static20', 'static30', 'static40')
+V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
+CLASSIFIED = frozenset(('static', 'threshold', 'slo', 'htb-fq_codel', 'static20', 'static30', 'static40'))
+GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 FAULTS = ('bandwidth_kbit', 'base_rtt_ms', 'jitter_ms', 'loss_pct', 'reorder_pct', 'link_up')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)
@@ -18,9 +22,11 @@ def net_profile(network):
 
 
 def validate(value):
-    keys(value, ('version', 'topology', 'network', 'workload', 'duration_seconds', 'repetitions',
-                 'seed', 'modes', 'static_critical_pct', 'controller', 'faults', 'regression'))
-    number(value['version'], 1, 1, True)
+    v2 = isinstance(value, dict) and value.get('version') == 2
+    fields = ('version', 'topology', 'network', 'workload', 'duration_seconds', 'repetitions',
+              'seed', 'modes', 'static_critical_pct', 'controller', 'faults', 'regression')
+    keys(value, fields + (('gates',) if v2 else ()))
+    number(value['version'], 1, 2, True)
     if value['topology'] != 'veth-pair':
         raise ValueError('only the owned veth-pair topology is supported')
     number(value['duration_seconds'], 4, 180, True)
@@ -28,13 +34,37 @@ def validate(value):
     number(value['seed'], 0, 2**32-1, True)
     number(value['static_critical_pct'], 20, 40, True)
     modes = value['modes']
-    if not isinstance(modes, list) or not modes or any(mode not in MODES for mode in modes) or len(set(modes)) != len(modes):
+    if not isinstance(modes, list) or not modes or any(not isinstance(mode, str) or mode not in (V2_MODES if v2 else LEGACY_MODES) for mode in modes) or len(set(modes)) != len(modes):
         raise ValueError('modes must be unique supported comparisons')
     network = value['network']
     keys(network, FAULTS[:-1])
     net_profile(network)
     workload = value['workload']
-    keys(workload, ('phases', 'payload_bytes', 'max_inflight', 'priority_weights', 'bulk_bytes_per_stream'))
+    fields = ('phases', 'payload_bytes', 'max_inflight', 'priority_weights', 'bulk_bytes_per_stream')
+    keys(workload, fields + (('warmup_seconds', 'deadline_ms', 'critical_services',
+                             'connection_reuse', 'background_kbit_per_stream') if v2 else ()))
+    if v2:
+        number(workload['warmup_seconds'], 0, 30, True)
+        number(workload['critical_services'], 1, 4, True)
+        number(workload['background_kbit_per_stream'], 0, 1000000, True)
+        if workload['connection_reuse'] != 'none':
+            raise ValueError('version 2 supports a new connection per request')
+        if workload['deadline_ms'] is not None:
+            number(workload['deadline_ms'], .001, 5000)
+        if workload['warmup_seconds'] and workload['bulk_bytes_per_stream']:
+            raise ValueError('finite background transfers require zero warmup')
+        gates = value['gates']
+        keys(gates, ('baseline', 'min_pairs', 'margins'))
+        if gates['baseline'] is not None and gates['baseline'] not in modes:
+            raise ValueError('gate baseline must be in the matrix')
+        number(gates['min_pairs'], 10, 30, True)
+        metrics = GATE_METRICS if workload['deadline_ms'] is not None else GATE_METRICS[:-1]
+        keys(gates['margins'], metrics)
+        for margin in gates['margins'].values():
+            number(margin, 0, 1)
+        if 'linux-default' in modes and (modes != ['linux-default'] or value['faults']
+                or any(network[key] for key in FAULTS[1:-1])):
+            raise ValueError('Linux default is a separate unshaped, unimpaired matrix')
     number(workload['payload_bytes'], 1, 65536, True)
     number(workload['max_inflight'], 1, 512, True)
     number(workload['bulk_bytes_per_stream'], 0, 2**34, True)
@@ -54,6 +84,8 @@ def validate(value):
         number(phase['requests_per_second'], 0, 500, True)
         number(phase['background_streams'], 0, 32, True)
         total += phase['seconds']
+    if v2 and not any(phase['requests_per_second'] for phase in phases):
+        raise ValueError('version 2 requires an offered request cohort')
     if total != value['duration_seconds']:
         raise ValueError('workload phase durations must sum to experiment duration')
     controller = value['controller']

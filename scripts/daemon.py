@@ -166,12 +166,26 @@ class Service:
         if op in ('lab_up','lab_configure','policy_apply','controller_start','controller_shadow',
                   'research_conditions','platform_apply_intent') and os.geteuid()!=0:
             raise PermissionError('privileged operation requires the laboratory daemon')
-        if op in ('research_conditions', 'research_sample'):
+        if op in ('research_conditions', 'research_sample', 'research_snapshot'):
             if not self.research:
                 raise ValueError('research commands require a research daemon')
             if op == 'research_conditions':
                 from research_faults import apply_conditions
                 return apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'))
+            if op == 'research_snapshot':
+                if not self.lab:
+                    raise ValueError('research snapshot requires a lab')
+                lab = self.lab
+                begin = time.monotonic_ns()
+                counters = lab.counters()
+                links = [lab.network(i)['interfaces'] for i in (0, 1)]
+                end = time.monotonic_ns()
+                result = dict(begin_ns=begin, end_ns=end, tc=counters, links=links,
+                              namespaces=[os.fstat(fd).st_ino for fd in lab.namespace_fds])
+                if request.get('setup') is True:
+                    result['setup'] = {name: (lab.output/name).read_text() for name in
+                                       ('offloads-fc0.txt', 'offloads-fc1.txt', 'tcp.txt')}
+                return result
             view = self.observer.snapshot()
             return dict(time_ns=view['time_ns'], tc=self.telemetry, overhead=view['overhead'],
                         backend=view['bpf'], state=self.controller.status(),

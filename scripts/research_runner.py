@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import random
+import shlex
 import signal
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 from adaptive_experiment import await_ready
 from benchmark import ROOT, owned_directory, receiver_metrics, run, TC
 from cli import request
+import benchmark_v2 as v2
 from ipc_security import private_directory, private_lock
 from daemon import SOCKET
 from observer_perf import await_service, command, stop, cpu_ticks
@@ -123,6 +125,9 @@ def metadata():
     return dict(kernel=os.uname().release, architecture=os.uname().machine, cpus=os.cpu_count(),
                 git_commit=git.stdout.strip() if git.returncode==0 else None,
                 git_dirty=bool(dirty.stdout) if dirty.returncode==0 else None,
+                flowcore=run([BINDIR/'flowcore','--version']).strip(),
+                binary_sha256=hashlib.sha256((BINDIR/'flowcore').read_bytes()).hexdigest(),
+                host=v2.host_metadata(),
                 tc=run([TC,'-V']).strip(),
                 source_sha256={str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
                                for p in sources if p.is_file()})
@@ -240,7 +245,7 @@ def summarize(directory, m, rep, mode, samples, history, start, end, host_ticks)
     return data
 
 
-def trial(directory, m, rep, mode):
+def trial(directory, m, rep, mode, seed=None):
     owned_directory(directory)
     cfg = load(ROOT/'config/service.json')
     network = dict(m['network'])
@@ -249,46 +254,81 @@ def trial(directory, m, rep, mode):
     cfg['observability']['bpf'] = m['controller']['bpf']
     cfg['adaptive'].update(window_seconds=m['controller']['window_seconds'],
                            minimum_samples=m['controller']['minimum_samples'])
-    if mode == 'static':
-        cfg['policies']['default']['classes']['critical']['min_pct'] = m['static_critical_pct']
-        cfg['policies']['default']['classes']['background']['min_pct'] = 60-m['static_critical_pct']
+    if mode.startswith('static'):
+        reserve = m['static_critical_pct'] if mode == 'static' else int(mode.removeprefix('static'))
+        cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
+        cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
     if mode == 'cake':
         cfg['policies']['default'] = cfg['policies']['fair']
     config = directory/'config.json'
     save(config,cfg)
     daemon = server = client = None
-    seed = (m['seed']+rep) % (2**32-1)+1
+    seed = seed if seed is not None else (m['seed']+rep) % (2**32-1)+1
+    version2 = m['version'] == 2
     with (directory/'daemon.log').open('w') as dl, (directory/'server.log').open('w') as sl, \
          (directory/'client.log').open('w') as cl, (directory/'timeline.jsonl').open('w') as timeline, \
-         (directory/'transitions.jsonl').open('w') as transitions:
+         (directory/'transitions.jsonl').open('w') as transitions, contextlib.ExitStack() as resources:
         try:
             daemon = child([BINDIR/'flowcored','--research','--config',config],stdout=dl,stderr=dl)
             await_service(daemon)
             request('lab_up')
             sender, receiver = request('inspect')['namespaces']
-            for cls in ('critical','interactive','standard'):
-                request('intent_register',intent=dict(name=cls,priority=cls,
-                    target_p99_ms=m['controller']['target_p99_ms'],ttl_seconds=m['duration_seconds']+60))
+            workload = m['workload']
+            services = {cls: [cls] for cls in ('critical', 'interactive', 'standard')}
+            if workload.get('critical_services', 1) > 1:
+                services['critical'] += [f'critical-{i}' for i in range(2, workload['critical_services']+1)]
+            for cls in services:
+                request('intent_register', intent=dict(name=cls, priority=cls,
+                    target_p99_ms=m['controller']['target_p99_ms'],
+                    ttl_seconds=m['duration_seconds']+workload.get('warmup_seconds', 0)+60))
             applied = request('research_conditions',network=network,mode=mode,seed=seed,link_up=True)
             transitions.write(json.dumps(dict(at_seconds=0,initial=True,requested=network,**applied))+'\n')
             transitions.flush()
+            expected_capacity = applied['capacity_kbit']
+            ports = {name: cls['port'] for name, cls in load(ROOT/'config/service.json')['policies']['default']['classes'].items()}
+            snapshots = []
+            def snapshot(label, setup=False):
+                value = request('research_snapshot', setup=setup)
+                value['label'] = label
+                value['configured_kbit'] = expected_capacity
+                value['readback'] = v2.verify(value, mode, expected_capacity, ports)
+                snapshots.append(value)
+                save(directory/'topology.json', snapshots)
+                return value
+
+            handles = []
+            if version2:
+                initial = snapshot('setup', setup=True)
+                for index, pid in enumerate((sender, receiver)):
+                    fd = resources.enter_context(open(f'/proc/{pid}/ns/net', 'rb'))
+                    if os.fstat(fd.fileno()).st_ino != initial['namespaces'][index]:
+                        raise RuntimeError('namespace holder identity changed before workload launch')
+                    handles.append(fd.fileno())
+
+            def worker(index, role, target, options, log):
+                argv = command((sender, receiver)[index], role, target, options)
+                if not version2:
+                    return child(argv, stdout=log, stderr=log)
+                fd = handles[index]
+                return child(['nsenter', f'--net=/proc/self/fd/{fd}', '--', *argv[4:]],
+                             pass_fds=(fd,), stdout=log, stderr=log)
+
             if mode in ('threshold','slo'):
                 request('controller_start',strategy=mode)
-            workload = m['workload']
             plan = directory/'workload.json'
             settings = dict(**workload, seed=seed, start_monotonic=0,
-                            ports={'critical':9000,'interactive':9002,'standard':9003})
+                            ports={cls: ports[cls] for cls in services}, services=services)
             save(plan,settings)
             options = ['--duration',str(m['duration_seconds']), '--payload',str(workload['payload_bytes']),
                        '--streams',str(max(p['background_streams'] for p in workload['phases'])),
                        '--research-plan',plan]
-            server = child(command(receiver,'server',directory/'receiver.jsonl',options),stdout=sl,stderr=sl)
+            server = worker(1, 'server', directory/'receiver.jsonl', options, sl)
             await_ready(server,directory/'server.log')
-            start = time.monotonic()+.5
+            start = time.monotonic()+.5+workload.get('warmup_seconds', 0)
             end = start+m['duration_seconds']
             settings['start_monotonic'] = start
             save(plan,settings)
-            client = child(command(sender,'client',directory,options),stdout=cl,stderr=cl)
+            client = worker(0, 'client', directory, options, cl)
             samples = []
             begin_ticks = cpu_ticks()
             def sample():
@@ -296,6 +336,10 @@ def trial(directory, m, rep, mode):
                 samples.append(value)
                 timeline.write(json.dumps(value)+'\n')
                 timeline.flush()
+            if version2:
+                time.sleep(max(0, start-time.monotonic()))
+                snapshot('measurement_start')
+                host_before = v2.host_sample()
             sample()
             next_sample = start+1
             link_up = True
@@ -307,6 +351,8 @@ def trial(directory, m, rep, mode):
                     next_sample += 1
                 time.sleep(max(0,deadline-time.monotonic()))
                 sample()
+                if version2:
+                    snapshot('measurement_end' if len(fault)==1 else 'pre_transition')
                 if len(fault)==1:
                     break
                 network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
@@ -317,6 +363,12 @@ def trial(directory, m, rep, mode):
                 transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),begun_ns=begun,
                                                   requested=fault, **applied))+'\n')
                 transitions.flush()
+                if version2:
+                    expected_capacity = applied['capacity_kbit']
+                    snapshot('post_transition')
+            if version2:
+                host_after = v2.host_sample()
+                save(directory/'host-noise.json', dict(start=host_before, end=host_after))
             finish_ticks = cpu_ticks()
             code = client.wait(timeout=12)
             if code not in (0,2) or server.poll() is not None:
@@ -329,6 +381,18 @@ def trial(directory, m, rep, mode):
                 raise RuntimeError('namespace identity changed mid-experiment')
             result = summarize(directory,m,rep,mode,samples,history,start,end,
                                tuple(b-a for a,b in zip(begin_ticks,finish_ticks)))
+            if version2:
+                metrics = v2.account(directory/'requests.csv', result['offered'], start, end,
+                                     workload['deadline_ms'], workload['payload_bytes'])
+                if metrics['failed_requests'] != result['failed']:
+                    raise RuntimeError('workload summary disagrees with raw ledger')
+                result.update(metrics)
+                result['total_mbps'] = result['background_mbps'] + metrics['request_payload_mbps']
+                result['workload_seed'] = seed
+                measurement = snapshots[1:]
+                result['observed_rate_windows'] = [v2.observed(a, b, a['configured_kbit'])
+                    for a, b in zip(measurement[::2], measurement[1::2])]
+                result['warnings'] = v2.noise(host_before, host_after, metrics, result['observed_rate_windows'])
             save(directory/'result.json',result)
             return result
         finally:
@@ -341,24 +405,34 @@ def execute(manifest, label='research', parent=RESULTS):
     m = validate(manifest)
     path = parent/f'{label}-{time.time_ns()}'
     owned_directory(path)
-    order = [(rep,mode) for rep in range(m['repetitions']) for mode in m['modes']]
-    random.Random(m['seed']).shuffle(order)
-    data = dict(version=1, status='running', manifest=m, environment=metadata(), order=order, runs=[])
+    rng = random.Random(m['seed'])
+    seeds = rng.sample(range(1,2**32), m['repetitions']) if m['version']==2 else []
+    order = [(rep, mode) for rep in range(m['repetitions'])
+             for mode in (rng.sample(m['modes'],len(m['modes'])) if seeds else m['modes'])]
+    if not seeds:
+        rng.shuffle(order)
+    data = dict(version=m['version'], status='running', manifest=m, environment=metadata(), order=order, runs=[],
+                block_seeds=seeds, experiment_id=path.name)
+    if seeds:
+        reproduction = shlex.join(['sudo', str(BINDIR/'flowcore'), 'bench', 'replay', str(path/'experiment.json')])
+        (path/'reproduce.sh').write_text('#!/bin/sh\nexec '+reproduction+'\n')
     save(path/'experiment.json',m)
     save(path/'summary.json',data)
     print(f'Evidence: {path}',flush=True,file=sys.stderr)
     for rep, mode in order:
         name = f'r{rep}-{mode}'
         try:
-            result = trial(path/name,m,rep,mode)
+            result = trial(path/name,m,rep,mode,seeds[rep] if seeds else None)
         except KeyboardInterrupt:
             data['status'] = 'interrupted'
             save(path/'summary.json',data)
             raise
-        except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
+        except (OSError,RuntimeError,ValueError,KeyError,StopIteration,subprocess.SubprocessError) as error:
             result = dict(mode=mode,repetition=rep,valid=False,error=str(error))
             save(path/name/'result.json',result)
         result['artifact'] = name
+        if seeds:
+            result['workload_seed'] = seeds[rep]
         data['runs'].append(result)
         save(path/'summary.json',data)
         print(f"{name}: {result.get('p99_ms')} ms, failures={result.get('failed')}, {result.get('error','measured')}",

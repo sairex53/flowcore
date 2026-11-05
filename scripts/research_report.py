@@ -133,13 +133,23 @@ def report(summary_path, baseline=None):
     path = summary_path.parent
     stats = aggregate(data)
     comparisons = []
-    if baseline:
+    if data['version'] == 2:
+        baseline_mode = data['manifest']['gates']['baseline']
+        if baseline_mode:
+            base = load_summary(baseline) if baseline else data
+            comparisons = [compare(base,data,baseline_mode,mode) for mode in data['manifest']['modes']
+                           if mode != baseline_mode]
+    elif baseline:
         comparisons.append(compare(load_summary(baseline),data))
     elif 'static' in data['manifest']['modes']:
         for mode in ('threshold','slo'):
             if mode in data['manifest']['modes']:
                 comparisons.append(compare(data,data,'static',mode))
-    artifact = dict(version=1,environment=data['environment'],manifest=data['manifest'],
+    outcomes = {comparison['outcome'] for comparison in comparisons if 'outcome' in comparison}
+    outcome = ('INVALID EXPERIMENT' if any(not row['valid'] for row in data['runs']) or
+               'INVALID EXPERIMENT' in outcomes else 'REGRESSION' if 'REGRESSION' in outcomes
+               else 'PASS' if outcomes == {'PASS'} else 'INCONCLUSIVE')
+    artifact = dict(version=data['version'], outcome=outcome, environment=data['environment'],manifest=data['manifest'],
                     aggregate=stats,regression=comparisons,runs=data['runs'],raw_summary=summary_path.name)
     write_artifact(path/'report.json',json.dumps(artifact,indent=2,allow_nan=False)+'\n')
     stream = io.StringIO()
@@ -149,11 +159,21 @@ def report(summary_path, baseline=None):
         writer.writerow([*(row.get(key) for key in ('mode','repetition','valid','offered','completed','failed')),
                          *(value(row,key) for key in METRICS),row['artifact']])
     write_artifact(path/'report.csv',stream.getvalue())
+    if data['version'] == 2:
+        stream = io.StringIO()
+        writer = csv.writer(stream)
+        writer.writerow(['mode','metric','runs','median','mean','variance','median_ci_low','median_ci_high'])
+        for mode,row in stats.items():
+            for key,metric in row['metrics'].items():
+                interval = metric['median_ci_95'] or {}
+                writer.writerow([mode,key,metric['n'],metric['median'],metric['mean'],metric['variance'],
+                                 interval.get('low'),interval.get('high')])
+        write_artifact(path/'aggregate.csv',stream.getvalue())
     def text(value):
         return '—' if value is None else f'{value:.3g}' if isinstance(value,float) else html.escape(str(value))
     table = ''.join(f'<tr><th>{html.escape(mode)}</th><td>{row["valid"]}/{row["valid"]+row["invalid"]}</td>'+
                     ''.join(f'<td>{text(row["metrics"][key]["median"])}</td>' for key in
-                            ('p99_ms','total_mbps','jain_index','cpu_seconds','adjustments_per_minute','failure_ratio'))+'</tr>'
+                            ('p99_ms','total_mbps','jain_index','cpu_seconds','adjustments_per_minute','failure_ratio','deadline_attainment'))+'</tr>'
                     for mode,row in stats.items())
     tails = [(mode,[(i+1,value(row,'p99_ms')) for i,row in enumerate(data['runs'])
                     if row['mode']==mode and row['valid'] and value(row,'p99_ms') is not None])
@@ -161,7 +181,7 @@ def report(summary_path, baseline=None):
     comparison_chart = chart('P99 comparison by execution order (ms)',tails,0,max(1,len(data['runs'])),unit='runs')
     reg = ''.join(f'<tr><td>{item["baseline"]} → {item["candidate"]}</td><td>{item["metric"]}</td>'
                   f'<td>{item["pairs"]}</td><td>{text(item["median_regression"])}</td>'
-                  f'<td>{text(item["adjusted_p"])}</td><td>{item["status"]}</td></tr>'
+                  f'<td>{text(item.get("simultaneous_median_ci", item.get("adjusted_p")))}</td><td>{item["status"]}</td></tr>'
                   for result in comparisons for item in result['findings'])
     details = ''.join(run_charts(path,row) if row['valid'] else
                       f'<p>{html.escape(row["artifact"])}: {html.escape(row["error"])}</p>' for row in data['runs'])
@@ -174,10 +194,10 @@ summary{{cursor:pointer;font-weight:650}}svg{{width:100%;max-width:100%;font-siz
 .charts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:12px}}.legend{{font-size:12px}}
 pre{{white-space:pre-wrap}}a{{color:#1d4ed8}}</style><h1>FLOWCORE Research Lab</h1>
 <p>{text(data['environment']['kernel'])} · {text(data['environment']['architecture'])} · Git {text(data['environment']['git_commit'])}</p>
-<p>Per-run medians below. Request P99 is conditional on success. Confidence intervals and variance are in JSON.</p>
+<p>Outcome {outcome}. Per-run medians below. Request P99 is conditional on success. Confidence intervals and variance are in JSON.</p>
 <p><a href="report.json">JSON</a> · <a href="report.csv">CSV</a> · <a href="experiment.json">Replay manifest</a></p>
-<table><thead><tr><th>Mode</th><th>Valid</th><th>P99 ms</th><th>Total Mbit/s</th><th>Jain</th><th>CPU s</th><th>Adjustments/min</th><th>Failure ratio</th></tr></thead><tbody>{table}</tbody></table>
-{comparison_chart}<h2>Run-level regression checks</h2><table><tr><th>Pair</th><th>Metric</th><th>Runs</th><th>Median change</th><th>Adjusted p</th><th>Result</th></tr>{reg}</table>
+<table><thead><tr><th>Mode</th><th>Valid</th><th>P99 ms</th><th>Total Mbit/s</th><th>Jain</th><th>CPU s</th><th>Adjustments/min</th><th>Failure ratio</th><th>Deadline attainment</th></tr></thead><tbody>{table}</tbody></table>
+{comparison_chart}<h2>Run-level regression checks</h2><table><tr><th>Pair</th><th>Metric</th><th>Runs</th><th>Median change</th><th>Interval or adjusted p</th><th>Result</th></tr>{reg}</table>
 <h2>Timelines and raw artifacts</h2>{details}
 <details><summary>Experiment manifest</summary><pre>{html.escape(json.dumps(data['manifest'],indent=2))}</pre></details></html>'''
     write_artifact(path/'report.html',page)

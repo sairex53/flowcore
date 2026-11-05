@@ -91,9 +91,10 @@ def apply_conditions(service, settings, mode, seed, link_up):
 
 def update_conditions(service, lab, profile, mode, seed, link_up):
     from benchmark import TC
+    from research_manifest import CLASSIFIED
     cap = profile['bandwidth_kbit']
     if service.research_mode is None:
-        if mode in ('linux', 'fifo', 'fq_codel'):
+        if mode in ('linux', 'linux-default', 'fifo', 'fq_codel'):
             installed = service.config['policies'][service.active]
             if adaptive_tc.read(lab, service.profile['bandwidth_kbit'], installed) != {
                     name: (service.profile['bandwidth_kbit']*cls['min_pct']//100,
@@ -101,13 +102,21 @@ def update_conditions(service, lab, profile, mode, seed, link_up):
                     for name,cls in installed['classes'].items()}:
                 raise RuntimeError('refusing to replace unexpected baseline qdisc')
             lab.tc('qdisc','del','dev','fc0','root')
-            lab.tc('qdisc','add','dev','fc0','root','handle','1:', 'htb','default','20')
-            lab.tc('class','add','dev','fc0','parent','1:', 'classid','1:20', *rate_args(cap, cap))
-            if mode!='linux':
-                lab.tc('qdisc','add','dev','fc0','parent','1:20',
-                       'pfifo' if mode=='fifo' else 'fq_codel','limit','1000')
+            if mode == 'linux-default':
+                lab.command(1, [TC, 'qdisc', 'del', 'dev', 'fc1', 'root'])
+            else:
+                lab.tc('qdisc','add','dev','fc0','root','handle','1:', 'htb','default','20')
+                lab.tc('class','add','dev','fc0','parent','1:', 'classid','1:20', *rate_args(cap, cap))
+                if mode != 'linux':
+                    lab.tc('qdisc','add','dev','fc0','parent','1:20',
+                           'pfifo' if mode=='fifo' else 'fq_codel','limit','1000')
         service.research_mode = mode
     qdiscs = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
+    if mode == 'linux-default':
+        receiver = json.loads(lab.command(1, [TC, '-j', 'qdisc', 'show', 'dev', 'fc1']))
+        for rows in (qdiscs, receiver):
+            root(rows, 'noqueue')
+        return dict(applied_ns=time.monotonic_ns(), capacity_kbit=None, netem=None, link_up=True)
     if mode == 'cake':
         root(qdiscs, 'cake')
         if cap != service.profile['bandwidth_kbit']:
@@ -126,7 +135,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up):
             lab.tc('class','change','dev','fc0','parent','1:', 'classid','1:20', *rate_args(cap, cap))
         if classes()[0]['rate'] != cap*125 or classes()[0]['ceil'] != cap*125:
             raise RuntimeError('baseline capacity readback failed')
-    elif mode in ('static', 'threshold', 'slo'):
+    elif mode in CLASSIFIED:
         root(qdiscs, 'htb')
         resize_htb(service, cap)
     else:

@@ -1,5 +1,6 @@
 """Nonprivileged contract tests. Generated numbers here are fixtures, never measurements."""
 import copy
+import csv
 import json
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 from benchmark import receiver_metrics
+from benchmark_v2 import account
 from research_faults import apply_conditions
 from research_manifest import load_manifest, validate
 from research_report import report
@@ -89,6 +91,54 @@ class Research(unittest.TestCase):
         self.assertIsNone(median_ci([1,2]))
         self.assertEqual(median_ci([1]*6)['low'],1)
         self.assertEqual(aggregate(baseline)['slo']['metrics']['p99_ms']['variance'],0)
+
+    def test_v2_paired_gates(self):
+        manifest = load_manifest(ROOT/'scenarios/v2-heavy-paired.json')
+        data = dict(version=2, experiment_id='fixture', block_seeds=list(range(1,11)),
+                    manifest=manifest, environment=self.dataset(1,10)['environment'], runs=[])
+        for rep in range(10):
+            for mode in manifest['modes']:
+                data['runs'].append(dict(mode=mode, repetition=rep, workload_seed=rep+1,
+                    valid=True, p99_ms=10 if mode=='static' else 8, total_mbps=10,
+                    deadline_attainment=.99, offered=100, failed=0))
+        def result(value):
+            return compare(value,value,'static','slo')
+        decision = result(data)
+        self.assertEqual(decision['outcome'],'PASS')
+        self.assertTrue(decision['lower_p99_supported'])
+        self.assertAlmostEqual(decision['findings'][0]['median_regression'],-.2)
+        self.assertGreaterEqual(decision['findings'][0]['simultaneous_median_ci']['coverage'],.9875)
+        short = copy.deepcopy(data)
+        short['runs'] = short['runs'][:-2]
+        self.assertEqual(result(short)['outcome'],'INCONCLUSIVE')
+        failed = copy.deepcopy(data)
+        for row in failed['runs']:
+            if row['mode']=='slo':
+                row['failed'] = 5
+        outcome = result(failed)
+        self.assertEqual(outcome['outcome'],'REGRESSION')
+        self.assertEqual(outcome['findings'][0]['pairs'],0)
+        failed['runs'][-1]['valid'] = False
+        self.assertEqual(result(failed)['outcome'],'INVALID EXPERIMENT')
+        other = dict(data,experiment_id='other-run')
+        self.assertEqual(compare(data,other,'static','slo')['outcome'],'INVALID EXPERIMENT')
+
+    def test_failure_aware_accounting(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
+            path = Path(work)/'requests.csv'
+            with path.open('w') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(('id','scheduled','completed','latency_ms','outcome','traffic_class','service','dispatch_lag_ms'))
+                writer.writerows(((0,0,.01,10,'ok','critical','critical',.1),
+                                  (1,.99,1.02,30,'ok','critical','critical-2',.2),
+                                  (2,.1,5.1,5000,'TimeoutError','critical','critical',.3),
+                                  (3,.2,.21,10,'inflight_limit','standard','standard',.4)))
+            metrics = account(path,4,0,1,25,1000)
+            self.assertEqual(metrics['deadline_attainment'],.25)
+            self.assertEqual(metrics['deadline_misses'],3)
+            self.assertEqual(metrics['completion_ratio'],.5)
+            self.assertEqual(metrics['timeout_requests'],1)
+            self.assertEqual(metrics['request_payload_mbps'],.008)
 
     def test_report_files_and_invalid_run(self):
         data = self.dataset(1,10)

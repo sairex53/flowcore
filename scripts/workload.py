@@ -65,6 +65,9 @@ async def server(output, payload, request_port, background_port, streams, resear
 async def client(output, duration, rate, payload, request_port, background_port, streams,
                  service=None, deadline_ms=None, rates=None, research=None):
     request_data = b'Q' * payload
+    services = research.get('services', {}) if research else {}
+    if research:
+        deadline_ms = research.get('deadline_ms')
     reporters = ({name: Reporter(name, deadline_ms) for name in research['ports']} if research else
                  {'critical': Reporter(service, deadline_ms)} if service else {})
     weights = research['priority_weights'] if research else {'critical': 100}
@@ -75,6 +78,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
     window = []
     background_errors = []
     stopping = False
+    paced_kbit = research.get('background_kbit_per_stream', 0) if research else 0
 
     async def background(flow):
         budget = research['bulk_bytes_per_stream'] if research else 0
@@ -87,7 +91,10 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
                 writer.write(struct.pack('!I', flow))
                 while not budget or sent < budget:
-                    count = min(16384, budget-sent) if budget else 16384
+                    chunk = 1200 if paced_kbit else 16384
+                    count = min(chunk, budget-sent) if budget else chunk
+                    if paced_kbit:
+                        await asyncio.sleep(count * 8 / (paced_kbit * 1000))
                     writer.write(b'B' * count)
                     await writer.drain()
                     sent += count
@@ -106,8 +113,9 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 if writer:
                     writer.transport.abort()
 
-    async def request(index, scheduled, traffic_class):
+    async def request(index, scheduled, traffic_class, name):
         reporter = reporters.get(traffic_class)
+        dispatch_lag_ms = (time.monotonic() - scheduled) * 1000
         port = research['ports'][traffic_class] if research else request_port
         writer = None
         outcome = 'ok'
@@ -139,7 +147,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
             if writer:
                 writer.transport.abort()
         latency = (ended - scheduled) * 1000
-        rows.append((index, scheduled, ended, latency, outcome, traffic_class))
+        rows.append((index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms))
         window.append((latency, outcome))
         if reporter:
             reporter.submit(latency * 1000, outcome)
@@ -175,6 +183,10 @@ async def client(output, duration, rate, payload, request_port, background_port,
     set_backgrounds(0 if research else phase_plan[0]['background_streams'])
     if research:
         started = research['start_monotonic']
+        warmup = research.get('warmup_seconds', 0)
+        if warmup:
+            await asyncio.sleep(max(0, started-warmup-time.monotonic()))
+            set_backgrounds(phase_plan[0]['background_streams'])
         await asyncio.sleep(max(0, started-time.monotonic()))
     else:
         await asyncio.sleep(3)
@@ -203,15 +215,17 @@ async def client(output, duration, rate, payload, request_port, background_port,
         scheduled = started + offset
         await asyncio.sleep(max(0, scheduled - time.monotonic()))
         traffic_class = schedule_rng.choices(list(weights), weights=list(weights.values()))[0]
+        names = services.get(traffic_class, [traffic_class])
+        name = names[index % len(names)]
         reporter = reporters.get(traffic_class)
         if len(pending) >= cap:
             ended = time.monotonic()
-            rows.append((index, scheduled, ended, (ended - scheduled) * 1000, 'inflight_limit', traffic_class))
+            rows.append((index, scheduled, ended, (ended - scheduled) * 1000, 'inflight_limit', traffic_class, name, (ended - scheduled) * 1000))
             window.append((5000, 'inflight_limit'))
             if reporter:
                 reporter.submit((ended - scheduled) * 1e6, 'inflight_limit')
             continue
-        task = asyncio.create_task(request(index, scheduled, traffic_class))
+        task = asyncio.create_task(request(index, scheduled, traffic_class, name))
         pending.add(task)
         task.add_done_callback(pending.discard)
     await asyncio.sleep(max(0, started + duration - time.monotonic()))
@@ -226,7 +240,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
     await asyncio.gather(report, changes, *backgrounds.values(), *retired, return_exceptions=True)
     with (output / 'requests.csv').open('w') as stream:
         writer = csv.writer(stream)
-        writer.writerow(['id', 'scheduled', 'completed', 'latency_ms', 'outcome', 'traffic_class'])
+        writer.writerow(['id', 'scheduled', 'completed', 'latency_ms', 'outcome', 'traffic_class', 'service', 'dispatch_lag_ms'])
         writer.writerows(sorted(rows))
     successes = [row[3] for row in rows if row[4] == 'ok']
     summary = {'start': started, 'end': measurement_end, 'offered': offered,

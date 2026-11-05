@@ -1,4 +1,5 @@
 """Argparse integration for the FLOWCORE Research Lab."""
+import json
 from pathlib import Path
 
 from benchmark import ROOT
@@ -20,6 +21,9 @@ def add_commands(commands):
     compare_cmd.add_argument('candidate',type=Path)
     compare_cmd.add_argument('--baseline-mode',choices=MODES)
     compare_cmd.add_argument('--candidate-mode',choices=MODES)
+    tuning = bench.add_parser('tune-static')
+    for name in ('pilot', 'evaluation', 'output'):
+        tuning.add_argument(name, type=Path)
     render = bench.add_parser('report')
     render.add_argument('summary',type=Path)
     render.add_argument('--baseline',type=Path)
@@ -41,7 +45,12 @@ def dispatch(args):
         baseline = load_summary(args.baseline)
         candidate = load_summary(args.candidate)
         result = compare(baseline,candidate,args.baseline_mode,args.candidate_mode)
-        return result, int(any(item['status']=='confirmed_regression' for item in result['findings']))
+        return result, (2 if result.get('outcome')=='INVALID EXPERIMENT' else
+                        int(result.get('outcome')=='REGRESSION' or
+                            any(item['status']=='confirmed_regression' for item in result['findings'])))
+    if action=='tune-static':
+        from static_pilot import tune
+        return tune(args.pilot,args.evaluation,args.output),0
     if action=='report':
         return dict(report=str(report(args.summary,args.baseline))),0
     if action=='minimize':
@@ -61,6 +70,8 @@ def dispatch(args):
                 manifest['repetitions'] = 1
             output,data = execute(manifest,label='chaos' if args.command=='chaos' else 'research')
             page = report(output/'summary.json')
-            outputs.append(dict(directory=str(output),report=str(page),
+            rendered = json.loads((output/'report.json').read_text())
+            outputs.append(dict(directory=str(output),report=str(page),outcome=rendered['outcome'],
                 valid=sum(r['valid'] for r in data['runs']),invalid=sum(not r['valid'] for r in data['runs'])))
-    return dict(experiments=outputs),int(any(item['invalid'] for item in outputs))
+    return dict(experiments=outputs), (2 if any(item['outcome']=='INVALID EXPERIMENT' for item in outputs)
+        else int(any(item['outcome']=='REGRESSION' for item in outputs)))
