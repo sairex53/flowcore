@@ -320,8 +320,8 @@ def trial(directory, m, rep, mode, seed=None):
 
             if mode == 'slo-shadow':
                 request('controller_shadow',strategy='slo')
-            elif mode == 'threshold' or mode.startswith('slo'):
-                request('controller_start',strategy='threshold' if mode == 'threshold' else 'slo')
+            elif mode in ('threshold','queue-aware','slo-aware','hybrid') or mode.startswith('slo'):
+                request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid') else 'slo')
             plan = directory/'workload.json'
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services)

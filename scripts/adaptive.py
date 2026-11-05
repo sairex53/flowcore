@@ -5,6 +5,7 @@ from collections import deque
 
 import adaptive_tc
 from intents import Registry
+from intelligence import Allocator, State, estimate, score
 
 NANO = 10**9
 LATENCY_MIN_SAMPLES = 100
@@ -22,7 +23,8 @@ def slo_aware(slo, pressure, _intent):
     return pressure and slo['outside_deadband']
 
 
-STRATEGIES = {'static': static, 'threshold': threshold, 'slo': slo_aware}
+STRATEGIES = {'static': static, 'threshold': threshold, 'slo': slo_aware,
+              'queue-aware': threshold, 'slo-aware': slo_aware, 'hybrid': slo_aware}
 DEFAULT = dict(window_seconds=4, minimum_samples=20, enter_windows=2, cooldown_seconds=4,
                background_floor_pct=20, step_pct=5, maximum_boost_pct=15, maximum_actions=8, recovery_windows=3, maximum_reversals=2)
 
@@ -51,6 +53,9 @@ class Controller:
     def __init__(self, service):
         self.service = service
         self.registry = Registry(service.observer)
+        self.allocator = Allocator()
+        self.state = State()
+        self.last_plan = None
         self.cfg = service.config.get('adaptive', DEFAULT)
         self.history = deque(maxlen=128)
         self.path = None
@@ -101,7 +106,13 @@ class Controller:
             raise ValueError('controller requires observability')
         if mode == 'shadow' and self.mode == 'active':
             raise ValueError('stop the active controller before entering shadow mode')
+        shared = strategy in ('queue-aware','slo-aware','hybrid')
+        classes = [row['intent']['priority'] for row in self.registry.rows.values()]
+        if not shared and len(classes) != len(set(classes)):
+            raise ValueError('legacy strategy requires exclusive traffic classes')
+        self.registry.shared_classes = shared
         self.stop('mode change')
+        self.state.move('OBSERVING','explicit activation')
         capacity = self.capacity()
         installed = adaptive_tc.read(self.service.lab, capacity, self.policy())
         configured = {name: (capacity*cls['min_pct']//100, capacity*cls['max_pct']//100)
@@ -136,6 +147,7 @@ class Controller:
             self.record(result='restored_baseline', reason=reason, allocation=self.base)
         self.mode = 'off'
         self.pending = None
+        self.state.move('DISABLED',reason)
         self.service.observer.probe_start_ns = None
 
     def detach(self):
@@ -158,6 +170,16 @@ class Controller:
                 raise ValueError('intent background floor outside operator baseline')
         elif intent['min_kbit'] or intent['max_kbit']:
             raise ValueError('an active HTB lab is required to admit hard bounds')
+        peers = [row['intent'] for name,row in self.registry.rows.items()
+                 if name != intent['name'] and row['intent']['priority'] == intent['priority']]
+        if self.service.lab and self.policy()['scheduler'] == 'htb':
+            capacity = self.capacity()
+            cls = self.policy()['classes'][intent['priority']]
+            ceiling = min([capacity*cls['max_pct']//100,
+                           *(item['max_kbit'] for item in [*peers,intent] if item['max_kbit'])])
+            floor = sum(item['min_kbit'] for item in [*peers,intent])
+            if floor > min(ceiling,capacity*cls['min_pct']//100):
+                raise ValueError('aggregate service minimums exceed the class reservation')
         return self.registry.register(intent, uid, pid)
 
     def plan(self, window, current):
@@ -179,7 +201,7 @@ class Controller:
             cap = intent['max_kbit'] or self.base[cls][1]
             if cap < rate or cap > self.base[cls][1] or intent['min_kbit'] > self.base[cls][0] or bg_floor > self.base['background'][0]:
                 raise ValueError('registered hard bounds conflict with current lab capacity')
-            bounds[cls] = (rate, cap)
+            bounds[cls] = (rate, min(bounds[cls][1],cap))
             measured = outcomes[name] = objective(window, name, intent, cfg['minimum_samples'])
             queue = window['queue'].get(cls, {})
             attribution[name] = dict(backlogged_samples=queue.get('backlogged_samples', 0),
@@ -195,6 +217,38 @@ class Controller:
             return dict(detail, action='enforce_class_ceiling')
         if current['background'][0] < bg_floor:
             return dict(detail, proposed=self.base, action='restore_background_floor')
+        if self.strategy in ('queue-aware','slo-aware','hybrid'):
+            observations, scores, owners = {}, {}, {}
+            maxima = {cls:min(ceil,self.base[cls][0]+capacity*cfg['maximum_boost_pct']//100)
+                      for cls,(_,ceil) in current.items()}
+            for name,row in sorted(self.registry.rows.items()):
+                intent = row['intent']
+                cls = intent['priority']
+                measured = outcomes[name]
+                observation = estimate(window,name,intent,measured,current[cls][0],cfg['minimum_samples'])
+                observations[name] = observation
+                weight = 4 if cls == 'critical' else 2 if cls == 'interactive' else 1
+                utility = score(self.strategy,observation,measured,weight,
+                                (current[cls][0]-self.base[cls][0])/max(1,capacity*cfg['step_pct']//100))
+                if utility > scores.get(cls,0):
+                    scores[cls], owners[cls] = utility, name
+            desired = sum(row['intent']['desired_kbit'] for row in self.registry.rows.values())
+            if desired > capacity:
+                return dict(detail,action='hold',feasible=False,
+                            conflict='aggregate desired throughput exceeds link capacity',estimator=observations)
+            detail.update(estimator=observations, constraints=dict(capacity_kbit=capacity,
+                          background_floor_kbit=bg_floor,maxima=maxima),
+                          optimization='weighted deficit with diminishing boost utility')
+            try:
+                allocation = self.allocator.allocate(capacity,current,maxima,bg_floor,
+                                                     capacity*cfg['step_pct']//100,scores)
+            except ValueError as error:
+                return dict(detail,action='hold',feasible=False,conflict=str(error))
+            if allocation:
+                cls,target = allocation
+                return dict(detail,proposed=target,action='transfer_reservation',service=owners[cls],
+                            feasible=True,prediction='reduce target class queueing while preserving background reservation')
+            return dict(detail,action='hold',feasible=True)
         order = sorted(self.registry.rows, key=lambda name: (
             self.policy()['classes'][self.registry.rows[name]['intent']['priority']]['priority'], name))
         for name in order:
@@ -276,10 +330,13 @@ class Controller:
         window = observer.window(began, seconds, complete=True)
         window_end = time.monotonic_ns()
         plan = self.plan(window, self.current)
+        self.last_plan = plan
+        if self.strategy in ('queue-aware','slo-aware','hybrid') and plan['action'] == 'hold':
+            self.record(result='hold', **plan)
         self.timing = dict(time_ns=began, aggregation_ns=window_end-began,
                            policy_ns=time.monotonic_ns()-window_end,
                            telemetry_age_ns=max(0, began-observer.sampled_ns),
-                           attribution=plan['attribution'])
+                           attribution=plan['attribution'],feasible=plan.get('feasible',True))
         bg = plan['background_throughput_kbit']
         leaf = next((q for q in self.service.telemetry.get('qdisc', [])
                      if q.get('parent') == '1:20'), {})
@@ -317,14 +374,24 @@ class Controller:
                                   and measured['throughput_kbit'] > before['throughput_kbit'] * 1.1
                                   and measured.get('p99_us') is not None and before['p99_us'] is not None
                                   and measured['p99_us'] <= before['p99_us'] * 1.1)
-            keep = (comparable and not degraded and (latency_improved or throughput_improved)
+            other_harm = False
+            for peer,row in self.registry.rows.items():
+                if peer == old['service']:
+                    continue
+                after = objective(post,peer,row['intent'],self.cfg['minimum_samples'])
+                prior = old.get('peer_before',{}).get(peer,{})
+                if after['failures'] or (after['samples'] >= LATENCY_MIN_SAMPLES
+                        and prior.get('samples',0) >= LATENCY_MIN_SAMPLES
+                        and after['p99_us'] > prior['p99_us']*1.1):
+                    other_harm = True
+            keep = (comparable and not degraded and not other_harm and (latency_improved or throughput_improved)
                     and (not demanded or (bg is not None and bg >= plan['background_floor_kbit']*.8)))
             verdict = 'kept' if keep else 'rolled_back' if comparable else 'inconclusive'
             assessed = time.monotonic_ns()
             rollback = None
             if not keep:
                 rollback = self.write(old['allocation'])
-                self.next_action = time.monotonic() + max(3*seconds, self.cfg['cooldown_seconds'])
+                self.next_action = time.monotonic() + max((3+self.reversals)*seconds, self.cfg['cooldown_seconds'])
             self.record(result=verdict, service=old['service'], comparable=comparable, degraded=degraded,
                         before=before, measured=measured, background_kbit=bg, allocation=self.current,
                         post_start_ns=old['start_ns'], post_end_ns=old['end_ns'],
@@ -360,6 +427,9 @@ class Controller:
                 return
         else:
             self.recovery = 0
+        if self.mode == 'observe':
+            self.record(result='observed', **plan)
+            return
         if plan['action'] == 'hold' or now < self.next_action:
             self.streak.clear()
             return
@@ -385,13 +455,39 @@ class Controller:
             start = ((verified + NANO - 1)//NANO + 1)*NANO
             observer.probe_start_ns = verified
             self.pending = dict(service=name, allocation=previous, before=plan['objectives'][name],
-                                start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified)
+                                start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified,
+                                peer_before=plan['objectives'])
 
     def safe_tick(self):
         try:
+            prior = self.pending
             self.tick()
+            if self.mode == 'off':
+                if self.error:
+                    self.state.move('SAFE_FALLBACK',self.error)
+                elif self.state.name != 'DISABLED':
+                    self.state.move('DISABLED','controller off')
+            elif self.pending:
+                if self.state.name not in ('ADJUSTING','EVALUATING'):
+                    if self.state.name != 'CONGESTED':
+                        self.state.move('CONGESTED','eligible class pressure')
+                    self.state.move('ADJUSTING','verified incremental update')
+                self.state.move('EVALUATING','fixed post-change interval')
+            elif prior:
+                self.state.move('RECOVERING','probe verdict recorded')
+            elif self.timing.get('feasible') is False:
+                self.state.move('DEGRADED','infeasible operator objectives')
+            elif self.state.name in ('OBSERVING','HEALTHY','CONGESTED','RECOVERING','DEGRADED'):
+                if self.state.name == 'DEGRADED':
+                    self.state.move('OBSERVING','reassessing feasibility')
+                observations = self.timing.get('attribution', {})
+                target = 'CONGESTED' if any(row.get('eligible') for row in observations.values()) else 'HEALTHY'
+                self.state.move(target,'sampled queue and application evidence')
         except Exception as error:
             self.error = str(error)
+            if self.state.name == 'DISABLED':
+                self.state.move('OBSERVING','fault assessment')
+            self.state.move('SAFE_FALLBACK',self.error)
             self.record(result='controller_fault', reason=self.error)
             try:
                 self.stop('controller fault')
@@ -404,5 +500,7 @@ class Controller:
         window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'])
         return dict(mode=self.mode, strategy=self.strategy, allocation=self.current,
                     actions=self.actions, pending=self.pending, error=self.error,
-                    allocation_verified=self.error is None and self.mode != 'off', reversals=self.reversals,
+                    allocation_verified=self.error is None and self.mode != 'off',
+                    engine_state=self.state.name, state_reason=self.state.reason,
+                    last_decision=self.last_plan, reversals=self.reversals,
                     fairness=self.fairness(window), timing=self.timing)

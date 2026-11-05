@@ -78,7 +78,7 @@ class Registry:
             raise ValueError('service registry full')
         if name in self.base and self.base[name]['class'] != priority:
             raise ValueError('intent conflicts with configured service class')
-        if any(other != name and row['intent']['priority'] == priority for other, row in self.rows.items()):
+        if not getattr(self, 'shared_classes', False) and any(other != name and row['intent']['priority'] == priority for other, row in self.rows.items()):
             raise ValueError('class already assigned to another intent')
 
     def register(self, value, uid, pid=None):

@@ -114,3 +114,8 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
+
+add_library(flowcore_intelligence SHARED src/intelligence.cpp)
+target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
+install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
+add_test(NAME intelligence_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intelligence_test.py")

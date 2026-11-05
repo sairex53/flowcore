@@ -228,6 +228,15 @@ class Service:
         if op in ('controller_start', 'controller_shadow'):
             controller.start('shadow' if op == 'controller_shadow' else 'active', request.get('strategy', 'slo'))
             return controller.status()
+        if op == 'controller_observe':
+            controller.start('observe', request.get('strategy','hybrid'))
+            return controller.status()
+        if op == 'controller_fallback':
+            controller.stop('operator emergency fallback')
+            controller.state.move('SAFE_FALLBACK','operator emergency fallback')
+            controller.error = 'operator emergency fallback'
+            controller.record(result='safe_fallback', reason=controller.error)
+            return controller.status()
         if op == 'controller_stop':
             controller.stop('operator stop')
             return controller.status()

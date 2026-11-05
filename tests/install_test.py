@@ -1,5 +1,6 @@
 """Staged relocation, unprivileged operation, SDK consumer and clean removal."""
 import json
+import ctypes
 import os
 import socket
 import subprocess
@@ -27,6 +28,7 @@ def main():
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)
         cli,daemon = (prefix/'bin'/name for name in ('flowcore','flowcored'))
         assert command([cli,'--version']).strip()=='FLOWCORE 0.2.0'
+        assert ctypes.CDLL(str(prefix/'bin/libflowcore_intelligence.so')).flowcore_allocate
         assert command([daemon,'--version']).strip()=='0.2.0'
         runtime = work/'runtime'
         private_state = work/'private-state'

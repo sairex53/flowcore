@@ -63,7 +63,7 @@ def main():
             sub.add_argument('--deadline-ms', type=float)
     groups = dict(policy=('list', 'apply', 'inspect', 'evaluate', 'explain', 'history'), daemon=('status',),
                   intent=('register', 'list', 'inspect', 'remove'),
-                  controller=('start', 'stop', 'status', 'shadow'),
+                  controller=('start', 'stop', 'status', 'shadow', 'observe', 'fallback'),
                   lab=('up', 'down', 'status', 'configure', 'inspect'))
     for name, operations in groups.items():
         sub = commands.add_parser(name, help=f'{name} commands').add_subparsers(dest='action', required=True)
@@ -74,8 +74,8 @@ def main():
                 command.add_argument('file', help='JSON intent file')
             if (name == 'intent' and action in ('inspect', 'remove')):
                 command.add_argument('name')
-            if (name == 'controller' and action in ('start', 'shadow')):
-                command.add_argument('--strategy', choices=('static', 'threshold', 'slo'), default='slo')
+            if (name == 'controller' and action in ('start', 'shadow', 'observe')):
+                command.add_argument('--strategy', choices=('static', 'threshold', 'slo', 'queue-aware', 'slo-aware', 'hybrid'), default='slo')
             if (name, action) == ('policy', 'evaluate'):
                 command.add_argument('--dry-run', action='store_true', help='evaluation never writes tc')
             if (name, action) == ('policy', 'apply'):

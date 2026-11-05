@@ -74,6 +74,7 @@ def prometheus(view, deployment=None):
         put('controller_probe_pending',int(bool(control.get('pending'))))
         put('controller_reversals',control.get('reversals'))
         put('controller_actions_session',control.get('actions'))
+        put('controller_engine_state',1,state=control.get('engine_state','DISABLED'))
         for row in deployment.get('platform',{}).get('interfaces',[]):
             for name,value in row['counters'].items():
                 put('interface_'+name+'_total',value,interface=row['name'])
