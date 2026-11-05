@@ -1,0 +1,13 @@
+{
+  "name": "demo",
+  "priority": "critical",
+  "target_p99_ms": 15,
+  "desired_kbit": 0,
+  "min_kbit": 0,
+  "max_kbit": 0,
+  "background_min_pct": 20,
+  "reliability": "balanced",
+  "deadline_ms": 25,
+  "ttl_seconds": 300,
+  "persistent": false
+}

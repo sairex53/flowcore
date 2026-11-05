@@ -1,0 +1,31 @@
+name: Trusted Fedora networking lab
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  namespace-lab:
+    if: github.ref == 'refs/heads/main'
+    environment: flowcore-lab
+    runs-on: [self-hosted, Linux, ARM64, flowcore-lab]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the lab
+        run: |
+          mkdir -p results
+          ./scripts/setup-tools.sh
+          cmake -S . -B build -G Ninja
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - name: Privileged isolated networking tests
+        run: |
+          sudo -n python3 -B tests/service_integration.py
+          sudo -n python3 -B tests/adaptive_integration.py
+          sudo -n python3 -B tests/research_integration.py
+          sudo -n ./build/flowcore bench suite --quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flowcore-lab-results
+          path: results/

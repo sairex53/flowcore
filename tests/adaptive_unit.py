@@ -1,0 +1,147 @@
+"""Intent, stability and actuator invariants without root."""
+import copy
+import json
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT/'scripts'))
+import adaptive_tc
+from adaptive import Controller, objective
+from intents import Registry
+from observability import Observer
+from observability_config import DEFAULT
+from service_config import CLASSES
+
+
+class Unit(unittest.TestCase):
+    def test_objective_uses_application_samples_and_deadband(self):
+        intent = dict(priority='critical', target_p99_ms=10, desired_kbit=0)
+        view = {'application': {}, 'queue': {}, 'rtt': {'p99_us': 99999}}
+        self.assertEqual(objective(view, 'demo', intent, 20)['state'], 'insufficient_data')
+        view['application']['demo'] = {'application': {'samples': 20, 'p99_us': 10500}}
+        result = objective(view, 'demo', intent, 20)
+        self.assertEqual(result['state'], 'violated')
+        self.assertFalse(result['outside_deadband'])
+
+    def test_registry_conflicts_expiry_and_persistence(self):
+        obs = Observer(copy.deepcopy(DEFAULT))
+        registry = Registry(obs)
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as directory:
+            path = Path(directory)
+            registry.restore(path)
+            a = registry.register({'name':'demo','persistent':True}, 0)
+            b = registry.register({'name':'demo','persistent':True}, 0)
+            self.assertNotEqual(a['instance_token'], b['instance_token'])
+            with self.assertRaises(ValueError):
+                registry.register({'name':'demo','persistent':True}, 123)
+            with self.assertRaises(ValueError):
+                registry.register({'name':'other'}, 0)
+            with self.assertRaises(ValueError):
+                registry.register({'name':'other','min_kbit':900,'max_kbit':800}, 0)
+            restored = Registry(Observer(copy.deepcopy(DEFAULT)))
+            restored.restore(path)
+            self.assertEqual(restored.inspect('demo')['owner_uid'], 0)
+            self.assertEqual(restored.inspect('demo')['instances'], [])
+            restored.rows['demo']['monotonic_expiry'] = 0
+            restored.expire()
+            self.assertNotIn('demo', restored.rows)
+            self.assertEqual(json.loads((path/'intents.json').read_text()), {})
+
+    def test_plan_does_not_exceed_floor(self):
+        observer = Observer(copy.deepcopy(DEFAULT))
+        service = Mock(observer=observer, profile={'bandwidth_kbit': 10000}, active='default',
+                       config={'policies':{'default':{'classes':{'critical':{'priority':0}}}}})
+        engine = Controller(service)
+        engine.registry.register({'name':'demo','background_min_pct':25}, 0)
+        engine.base = {'critical':(3000,10000),'interactive':(2000,10000),
+                       'standard':(2000,10000),'background':(3000,10000)}
+        engine.current = engine.base
+        window = {'queue':{'root':{'utilization':.9}},'backlog':{'p95_bytes':10000},
+                  'application':{'demo':{'application':{'samples':30,'p99_us':100000}}}}
+        proposed = engine.plan(window, engine.current)['proposed']
+        self.assertEqual(proposed['background'][0], 2500)
+        self.assertEqual(proposed['critical'][0], 3500)
+        self.assertEqual(engine.plan(window, proposed)['action'], 'hold')
+
+    def test_reversals_and_telemetry_failure_stop_controller(self):
+        observer = Observer(copy.deepcopy(DEFAULT))
+        service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
+                       config={'telemetry_seconds':1,
+                               'policies':{'default':{'classes':{'critical':{'priority':0}}}}})
+        engine = Controller(service)
+        engine.registry.register({'name':'demo'}, 0)
+        baseline = {'critical':(3000,10000),'interactive':(2000,10000),
+                    'standard':(2000,10000),'background':(3000,10000)}
+        boosted = dict(baseline, critical=(3500,10000), background=(2500,10000))
+        engine.base = baseline
+        engine.revision = engine.registry.revision
+        engine.mode = 'active'
+        engine.write = lambda target: setattr(engine, 'current', target)
+        window = {'queue':{'root':{'utilization':.9}},'backlog':{'p95_bytes':10000},
+                  'application':{'demo':{'application':{'samples':30,'p99_us':100000}}}}
+        rows = [{'class':'htb','handle':f'1:{minor}','rate':boosted[name][0]*125,
+                 'ceil':boosted[name][1]*125} for name,minor in CLASSES.items()]
+        rows.append({'class':'htb','handle':'1:1','rate':1250000,'ceil':1250000})
+        service.telemetry = {'class':rows,'qdisc':[]}
+        with patch.object(observer, 'window', return_value=window):
+            for _ in range(2):
+                engine.current = boosted
+                engine.last_tick = 0
+                observer.sampled_ns = time.monotonic_ns()
+                before = engine.plan(window, boosted)['objectives']['demo']
+                engine.pending = dict(service='demo', allocation=baseline, before=before, check_at=0)
+                engine.tick()
+            self.assertEqual(engine.mode, 'off')
+            self.assertIn('oscillation', engine.error)
+            self.assertEqual(engine.current, baseline)
+            engine.mode = 'active'
+            engine.current = boosted
+            engine.last_tick = 0
+            observer.errors['inet_diag'] = 'injected outage'
+            engine.tick()
+            self.assertEqual(engine.mode, 'off')
+            self.assertEqual(engine.error, 'telemetry unavailable')
+            self.assertEqual(engine.current, baseline)
+            observer.errors.clear()
+            engine.mode = 'active'
+            engine.current = boosted
+            engine.next_action = 0
+            window['queue']['root']['utilization'] = .5
+            for _ in range(engine.cfg['recovery_windows']):
+                engine.last_tick = 0
+                observer.sampled_ns = time.monotonic_ns()
+                engine.tick()
+            self.assertEqual(engine.current, baseline)
+            self.assertEqual(engine.history[-1]['result'], 'released')
+
+    def test_transaction_rolls_back_partial_write_and_refuses_drift(self):
+        before = {'critical':(3000,10000),'interactive':(2000,10000),
+                  'standard':(2000,10000),'background':(3000,10000)}
+        after = dict(before, critical=(3500,10000), background=(2500,10000))
+        actual = dict(before)
+        policy = {'classes':{name:{'priority':i} for i,name in enumerate(CLASSES)}}
+        class Lab:
+            def tc(self, *args):
+                minor = int(args[args.index('classid')+1].split(':')[1])
+                name = next(name for name, value in CLASSES.items() if value==minor)
+                rate = int(args[args.index('rate')+1].removesuffix('kbit'))
+                if name == 'critical':
+                    raise RuntimeError('injected tc failure')
+                actual[name] = (rate,10000)
+        with patch('adaptive_tc.read', side_effect=lambda *_: dict(actual)):
+            with self.assertRaisesRegex(RuntimeError, 'rolled back'):
+                adaptive_tc.change(Lab(), 10000, policy, before, after)
+            self.assertEqual(actual,before)
+            actual['background'] = (2800,10000)
+            with self.assertRaisesRegex(RuntimeError, 'drift'):
+                adaptive_tc.change(Lab(), 10000, policy, before, after)
+            self.assertEqual(actual['background'][0],2800)
+
+
+if __name__ == '__main__':
+    unittest.main()

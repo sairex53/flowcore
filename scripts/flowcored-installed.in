@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec /usr/bin/python3 -E -s -B "$bin_dir/@FLOWCORE_DATA_FROM_BIN@/scripts/daemon.py" "$@"

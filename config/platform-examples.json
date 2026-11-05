@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "global": {"target_p99_ms": 40, "background_min_pct": 20},
+  "device": {
+    "ethernet": {"target_p99_ms": 25},
+    "wifi": {"target_p99_ms": 80, "reliability": "prefer_reliable"},
+    "veth": {"target_p99_ms": 30},
+    "bridge": {"target_p99_ms": 45},
+    "other": {"target_p99_ms": 60}
+  },
+  "interface": {"fc0": {"background_min_pct": 25}},
+  "service": {
+    "api": {"priority": "critical", "target_p99_ms": 25, "max_kbit": 10000, "deadline_ms": 50},
+    "database": {"priority": "interactive", "target_p99_ms": 35, "max_kbit": 10000},
+    "backup": {"priority": "standard", "target_p99_ms": 250, "desired_kbit": 2000, "max_kbit": 6000}
+  },
+  "container": {"fc-workload": {"priority": "critical", "target_p99_ms": 35, "max_kbit": 7000}}
+}

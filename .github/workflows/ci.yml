@@ -1,0 +1,27 @@
+name: FLOWCORE CI
+on:
+  pull_request:
+  push:
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure without optional BPF
+        run: cmake -S . -B build -G Ninja -DFLOWCORE_BPF=OFF -DCMAKE_BUILD_TYPE=Debug
+      - name: Build C++23 with warnings as errors
+        run: cmake --build build
+      - name: Formatting and syntax
+        run: |
+          python3 -B scripts/check_style.py
+          python3 -m compileall -q scripts tests
+      - name: Python static analysis
+        run: |
+          python3 -m venv build/analysis
+          build/analysis/bin/pip install ruff
+          build/analysis/bin/ruff check --select E9,F63,F7,F82 scripts tests
+      - name: Unit and unprivileged loopback integration
+        run: ctest --test-dir build --output-on-failure

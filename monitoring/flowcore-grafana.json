@@ -1,0 +1,15 @@
+{
+  "title": "FLOWCORE network and control health",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "panels": [
+    {"id":1,"title":"Interface availability","type":"timeseries","gridPos":{"x":0,"y":0,"w":12,"h":7},"targets":[{"expr":"flowcore_interface_available","legendFormat":"{{interface}}","refId":"A"}]},
+    {"id":2,"title":"Egress throughput (Mbit/s)","type":"timeseries","gridPos":{"x":12,"y":0,"w":12,"h":7},"targets":[{"expr":"flowcore_interface_tx_mbps","legendFormat":"{{interface}}","refId":"A"}]},
+    {"id":3,"title":"Root backlog (bytes)","type":"timeseries","gridPos":{"x":0,"y":7,"w":12,"h":7},"targets":[{"expr":"flowcore_interface_root_backlog_bytes","legendFormat":"{{interface}}","refId":"A"}]},
+    {"id":4,"title":"Application P99 (seconds)","type":"timeseries","gridPos":{"x":12,"y":7,"w":12,"h":7},"targets":[{"expr":"flowcore_application_request_duration_seconds{quantile=\"0.99\",window_seconds=\"10\"}","legendFormat":"{{service}}","refId":"A"}]},
+    {"id":5,"title":"Controller probes and reversals","type":"timeseries","gridPos":{"x":0,"y":14,"w":12,"h":7},"targets":[{"expr":"flowcore_controller_probe_pending","refId":"A"},{"expr":"flowcore_controller_reversals","refId":"B"}]},
+    {"id":6,"title":"Daemon health and policy revision","type":"timeseries","gridPos":{"x":12,"y":14,"w":12,"h":7},"targets":[{"expr":"flowcore_daemon_healthy","refId":"A"},{"expr":"flowcore_policy_revision","refId":"B"}]}
+  ]
+}

@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "interface": "fc0",
+  "lab": {
+    "bandwidth_kbit": 20000,
+    "delay_ms": 5,
+    "jitter_ms": 1,
+    "loss_pct": 0,
+    "reorder_pct": 0
+  },
+  "telemetry_seconds": 2,
+  "log_level": "info",
+  "policies": {
+    "default": {
+      "scheduler": "htb",
+      "classes": {
+        "critical": {
+          "port": 9000,
+          "min_pct": 30,
+          "max_pct": 100,
+          "priority": 0
+        },
+        "interactive": {
+          "port": 9002,
+          "min_pct": 20,
+          "max_pct": 100,
+          "priority": 1
+        },
+        "standard": {
+          "port": 9003,
+          "min_pct": 20,
+          "max_pct": 100,
+          "priority": 2
+        },
+        "background": {
+          "port": 9001,
+          "min_pct": 30,
+          "max_pct": 100,
+          "priority": 3
+        }
+      }
+    },
+    "fair": {
+      "scheduler": "cake"
+    }
+  },
+  "observability": {
+    "enabled": true,
+    "bpf": "auto",
+    "windows": [
+      1,
+      10,
+      60
+    ],
+    "max_sockets": 512,
+    "services": {
+      "demo": {
+        "class": "critical",
+        "slo_ms": 15
+      }
+    },
+    "thresholds": {
+      "rtt_us": 20000,
+      "retransmit_ratio": 0.02,
+      "backlog_bytes": 32768,
+      "drops_per_second": 10,
+      "min_tx_bytes_per_second": 0,
+      "failures_per_second": 3,
+      "min_samples": 5,
+      "window_seconds": 10,
+      "enter_windows": 2,
+      "exit_windows": 3
+    }
+  },
+  "adaptive": {
+    "window_seconds": 4,
+    "minimum_samples": 20,
+    "enter_windows": 2,
+    "cooldown_seconds": 4,
+    "background_floor_pct": 20,
+    "step_pct": 5,
+    "maximum_boost_pct": 15,
+    "maximum_actions": 8,
+    "recovery_windows": 3,
+    "maximum_reversals": 2
+  }
+}

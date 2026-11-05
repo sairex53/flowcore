@@ -1,0 +1,91 @@
+"""Bounded TCP socket snapshots using Linux INET_DIAG and TCP_INFO."""
+import errno
+import ipaddress
+import socket
+import struct
+import time
+
+from network_state import HEADER, attrs, messages
+
+# Linux UAPI tcp_info byte offsets. Fields beyond returned optlen are absent.
+INFO = {
+    'rto_us': (8, 'I'), 'rtt_us': (68, 'I'), 'rttvar_us': (72, 'I'),
+    'cwnd_segments': (80, 'I'), 'rcv_space_bytes': (96, 'I'),
+    'total_retrans_segments': (100, 'I'), 'bytes_acked': (120, 'Q'),
+    'bytes_received': (128, 'Q'), 'data_segments_out': (156, 'I'),
+    'delivery_rate_bytes_per_second': (160, 'Q'), 'bytes_sent': (200, 'Q'),
+    'bytes_retrans': (208, 'Q'), 'peer_receive_window_bytes': (228, 'I'),
+    'local_receive_window_bytes': (232, 'I'), 'total_rto': (240, 'H'),
+    'total_rto_time_ms': (244, 'I'),
+}
+STATES = {1: 'established', 2: 'syn_sent', 3: 'syn_recv', 4: 'fin_wait_1',
+          5: 'fin_wait_2', 6: 'time_wait', 7: 'closed', 8: 'close_wait',
+          9: 'last_ack', 10: 'listen', 11: 'closing', 12: 'new_syn_recv'}
+
+
+def tcp_info(data):
+    return {key: struct.unpack_from('=' + fmt, data, offset)[0]
+            for key, (offset, fmt) in INFO.items() if len(data) >= offset + struct.calcsize(fmt)}
+
+
+def decode(body):
+    family, state, timer, retrans = body[:4]
+    sport, dport = struct.unpack_from('!HH', body, 4)
+    iface, low, high = struct.unpack_from('=III', body, 40)
+    _, recvq, sendq, uid, inode = struct.unpack_from('=IIIII', body, 52)
+    attributes = attrs(body[72:])
+    size = 4 if family == socket.AF_INET else 16
+    cookie = None if (low, high) == (0xffffffff, 0xffffffff) else f'{high:08x}{low:08x}'
+    memory = attributes.get(7, b'')
+    return dict(cookie=cookie, family=family, state=STATES.get(state, str(state)),
+                local_address=str(ipaddress.ip_address(body[8:8+size])),
+                remote_address=str(ipaddress.ip_address(body[24:24+size])),
+                local_port=sport, remote_port=dport, bound_interface_index=iface or None,
+                uid=uid, inode=inode, cgroup_id=struct.unpack_from('=Q', attributes[21])[0] if 21 in attributes else None,
+                retransmit_timer=timer, retransmit_backoff_count=retrans,
+                receive_queue=recvq, send_queue=sendq,
+                memory={key: struct.unpack_from('=I', memory, i * 4)[0]
+                        for i, key in enumerate(('receive_alloc_bytes', 'receive_buffer_bytes',
+                            'send_alloc_bytes', 'send_buffer_bytes', 'forward_alloc_bytes',
+                            'send_queued_bytes', 'option_bytes', 'backlog_bytes', 'socket_drops'))
+                        if len(memory) >= (i + 1) * 4},
+                tcp_info=tcp_info(attributes.get(2, b'')), source='inet_diag/tcp_info')
+
+
+def connections(limit):
+    rows = []
+    with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 4) as sock:
+        sock.bind((0, 0))
+        deadline = time.monotonic() + .7
+        for family in (socket.AF_INET, socket.AF_INET6):
+            request = struct.pack('=BBBBI', family, socket.IPPROTO_TCP, 0x42, 0, 0x1ffe) + bytes(40) + b'\xff'*8
+            sock.sendto(HEADER.pack(16 + len(request), 20, 0x301, family, 0) + request, (0, 0))
+            done = False
+            for _ in range(128):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('inet_diag snapshot deadline exceeded')
+                sock.settimeout(min(.35, remaining))
+                data, _, flags, sender = sock.recvmsg(262144)
+                if sender[0] or flags & socket.MSG_TRUNC:
+                    raise RuntimeError('invalid inet_diag response')
+                for kind, flags, seq, body in messages(data):
+                    if seq != family:
+                        continue
+                    if flags & 16:
+                        raise RuntimeError('interrupted inet_diag dump')
+                    if kind in (2, 3):
+                        error = struct.unpack_from('=i', body)[0] if body else 0
+                        if error:
+                            raise OSError(-error, errno.errorcode.get(-error))
+                        done = True
+                        break
+                    if kind == 20:
+                        if len(rows) == limit:
+                            return rows, True
+                        rows.append(decode(body))
+                if done:
+                    break
+            if not done:
+                return rows, True
+    return rows, False
