@@ -193,3 +193,15 @@ logical service identities in the workload ledger and registers each
 traffic class once. The later Linux default run exposed the absence of
 qdisc accounting for noqueue. The report now marks that counter domain
 unavailable and uses the independent link counters.
+
+The reverse-path blackhole test kept the interface up and set netem loss
+to 100% for six seconds. It recorded 126 timeouts, 220 inflight-cap
+rejections and 544 total deadline misses out of 580 offers. The repeated
+unshaped Linux check still flagged high dispatch lag. The noqueue counter
+domain was correctly unavailable in the repeated report.
+
+Final evidence includes `results/research-1793844613183331850/` for the
+blackhole and `results/research-1793844623875831767/` for unshaped Linux.
+The validation set spans 40 valid runs. From the project root,
+`sha256sum --quiet -c results/v2-evidence.sha256` checks the 692 indexed
+evidence files.
