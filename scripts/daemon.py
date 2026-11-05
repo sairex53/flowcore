@@ -438,7 +438,7 @@ def main():
                         watchers = [host, *service.watches]
                         observer_fd = service.observer.bpf.fd()
                         inputs = [server, *watchers] + ([observer_fd] if observer_fd is not None else [])
-                        ready, _, _ = select.select(inputs, [], [], .25)
+                        ready, _, _ = select.select(inputs, [], [], .25 if service.lab else 1)
                         if observer_fd is not None:
                             service.observer.drain()
                         for index, watcher in enumerate(watchers):

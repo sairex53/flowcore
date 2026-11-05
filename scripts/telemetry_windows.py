@@ -9,6 +9,7 @@ class Histogram:
 
     def __init__(self):
         self.counts = [0] * self.bins
+        self.occupied = []
         self.count = 0
         self.overflow = 0
 
@@ -17,14 +18,18 @@ class Histogram:
         if index >= self.bins:
             self.overflow += 1
         else:
+            if self.counts[index] == 0:
+                self.occupied.append(index)
             self.counts[index] += 1
         self.count += 1
 
     def merge(self, other):
         self.count += other.count
         self.overflow += other.overflow
-        for index, count in enumerate(other.counts):
-            self.counts[index] += count
+        for index in other.occupied:
+            if self.counts[index] == 0:
+                self.occupied.append(index)
+            self.counts[index] += other.counts[index]
 
     def quantile(self, fraction):
         rank = math.ceil(self.count * fraction)

@@ -56,6 +56,8 @@ def trial(output, mode, duration, rate, report=False, verify_loss=False):
     cfg['telemetry_seconds'] = 1
     cfg['observability']['enabled'] = mode != 'off'
     cfg['observability']['bpf'] = 'auto' if mode == 'bpf' else 'off'
+    if mode == 'basic':
+        cfg['observability']['max_sockets'] = 64
     (output / 'config.json').write_text(json.dumps(cfg, indent=2))
     server = daemon = client = None
     with (output / 'daemon.log').open('w') as daemon_log, (output / 'server.log').open('w') as server_log, (output / 'client.log').open('w') as client_log:
@@ -77,6 +79,10 @@ def trial(output, mode, duration, rate, report=False, verify_loss=False):
                 deadline = time.monotonic() + 5
                 while not request('health')['backend']['active'] and time.monotonic() < deadline:
                     time.sleep(.05)
+            if mode in ('shadow','active'):
+                request('intent_register',intent=dict(name='demo',target_p99_ms=15,ttl_seconds=duration+60))
+                request('controller_shadow' if mode=='shadow' else 'controller_start',strategy='hybrid')
+                report = True
             before = request('observe')
             if report:
                 args += ['--report-service', 'demo', '--deadline-ms', '20']
@@ -221,6 +227,8 @@ def main():
     parser.add_argument('--duration', type=int, default=8)
     parser.add_argument('--rate', type=int, default=100)
     parser.add_argument('--repetitions', type=int, default=2)
+    parser.add_argument('--modes', nargs='+', choices=('off','basic','diag','bpf','shadow','active'),
+                        default=['off','diag','bpf'])
     parser.add_argument('--seed', type=int, default=20261105)
     parser.add_argument('--verify-live', action='store_true', help='also send real application reports')
     parser.add_argument('--live-only', action='store_true', help='run only real telemetry verification')
@@ -235,7 +243,7 @@ def main():
     directory = RESULTS / f'observer-perf-{time.time_ns()}'
     owned_directory(directory)
     print(f'Evidence: {directory}', flush=True)
-    order = [(repeat, mode) for repeat in range(args.repetitions) for mode in ('off', 'diag', 'bpf')]
+    order = [(repeat, mode) for repeat in range(args.repetitions) for mode in args.modes]
     random.Random(args.seed).shuffle(order)
     git = subprocess.run(['git','rev-parse','HEAD'],cwd=ROOT,capture_output=True,text=True)
     dirty = subprocess.run(['git','status','--porcelain'],cwd=ROOT,capture_output=True,text=True)
