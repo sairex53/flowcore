@@ -205,3 +205,7 @@ blackhole and `results/research-1793844623875831767/` for unshaped Linux.
 The validation set spans 40 valid runs. From the project root,
 `sha256sum --quiet -c results/v2-evidence.sha256` checks the 692 indexed
 evidence files.
+
+A later controller investigation identified bulk-generator event-loop starvation
+on fast unshaped veth. The corrected reference and the limits of historical
+unshaped latency comparisons are recorded in [ADAPTIVE_ROOT_CAUSE.md](ADAPTIVE_ROOT_CAUSE.md).

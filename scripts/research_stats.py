@@ -37,7 +37,7 @@ def load_summary(path):
                 or len(set(seeds)) != len(seeds)):
             raise ValueError('invalid benchmark block identities')
     rows = data.get('runs')
-    if not isinstance(rows,list) or len(rows)>360:
+    if not isinstance(rows,list) or len(rows)>data['manifest']['repetitions']*len(data['manifest']['modes']):
         raise ValueError('invalid research run list')
     seen = set()
     for row in rows:

@@ -98,6 +98,9 @@ async def client(output, duration, rate, payload, request_port, background_port,
                     writer.write(b'B' * count)
                     await writer.drain()
                     sent += count
+                    # drain() can complete synchronously on a fast veth.
+                    # Give request timers and reporters a turn even then.
+                    await asyncio.sleep(0)
                 writer.close()
                 await writer.wait_closed()
                 return

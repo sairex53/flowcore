@@ -121,3 +121,6 @@ root in the client process. See [PRIVILEGES.md](PRIVILEGES.md) and
 
 For comparable benchmark matrices, failure-aware metrics and reproducible
 paired experiments, see [BENCHMARK_V2.md](BENCHMARK_V2.md).
+
+The adaptive-control investigation, measured limitations and reproduction
+commands are in [ADAPTIVE_ROOT_CAUSE.md](ADAPTIVE_ROOT_CAUSE.md).

@@ -101,12 +101,16 @@ class Unit(unittest.TestCase):
             before = engine.plan(window, boosted)['objectives']['demo']
             engine.pending = dict(service='demo', allocation=baseline, before=before,
                                   start_ns=0, end_ns=0, verified_ns=0)
+            engine.last_tick = time.monotonic()
             window['application']['demo']['application']['samples'] = 250
+            window['application']['demo']['application']['deadline_miss'] = 10
             engine.tick()
             self.assertEqual(engine.history[-1]['result'], 'inconclusive')
+            self.assertTrue(engine.history[-1]['degraded'])
             self.assertEqual(engine.reversals, 0)
             self.assertEqual(engine.current, baseline)
             window['application']['demo']['application']['samples'] = 150
+            window['application']['demo']['application']['deadline_miss'] = 0
             for _ in range(2):
                 engine.current = boosted
                 engine.last_tick = 0
@@ -142,6 +146,44 @@ class Unit(unittest.TestCase):
                 engine.tick()
             self.assertEqual(engine.current, baseline)
             self.assertEqual(engine.history[-1]['result'], 'released')
+
+    def test_probe_cutoff_is_kernel_commit_and_deadline_is_independent(self):
+        observer = Observer(copy.deepcopy(DEFAULT))
+        service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
+                       config={'telemetry_seconds':1,
+                               'policies':{'default':{'classes':{'critical':{'priority':0}}}}})
+        engine = Controller(service)
+        engine.registry.register({'name':'demo'}, 0)
+        engine.base = engine.current = {'critical':(3000,10000),'interactive':(2000,10000),
+                                       'standard':(2000,10000),'background':(3000,10000)}
+        engine.mode = 'active'
+        engine.revision = engine.registry.revision
+        window = dict(queue={'root':{'utilization':.9},
+                             'critical':dict(backlogged_samples=2,bytes_per_second=400000)},
+                      backlog={'p95_bytes':10000},
+                      application={'demo':{'application':dict(samples=150,p99_us=100000)}})
+        service.telemetry = dict(qdisc=[], **{'class':[
+            dict(handle=f'1:{minor}', rate=engine.current[name][0]*125,
+                 ceil=10000*125, **{'class':'htb'}) for name,minor in CLASSES.items()]})
+        service.telemetry['class'].append(dict(handle='1:1',rate=1250000,ceil=1250000,**{'class':'htb'}))
+        verified = time.monotonic_ns()
+        def write(target):
+            engine.current = target
+            return dict(verified_ns=verified)
+        engine.write = write
+        with patch.object(observer,'window',return_value=window):
+            for _ in range(2):
+                engine.last_tick = 0
+                observer.sampled_ns = time.monotonic_ns()
+                engine.tick()
+        self.assertIsNotNone(engine.pending)
+        self.assertEqual(observer.probe_start_ns, verified)
+        self.assertGreater(engine.pending['start_ns'], verified)
+        now = engine.pending['start_ns']+10_000_000
+        with patch.object(observer,'clock',return_value=now):
+            observer.ingest(dict(op='request_sample',service='demo',outcome='ok',duration_us=20000),0)
+        app = observer.window(now,2)['application']['demo']['application']
+        self.assertEqual(app['probe_overlap'],0)
 
     def test_completed_windows_exclude_partial_and_track_probe_overlap(self):
         now = 10_100_000_000

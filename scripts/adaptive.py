@@ -254,7 +254,9 @@ class Controller:
             self.service.observer.probe_start_ns = None
             self.streak.clear()
             self.next_action = now + seconds
-        if now - self.last_tick < seconds:
+        now_ns = time.monotonic_ns()
+        verdict_due = self.pending is not None and now_ns >= self.pending['end_ns'] + NANO//4
+        if now - self.last_tick < seconds and not verdict_due:
             return
         self.last_tick = now
         observer = self.service.observer
@@ -291,7 +293,9 @@ class Controller:
             old = self.pending
             if began < old['end_ns'] + NANO//4:
                 return
+            evaluation_start = time.monotonic_ns()
             post = observer.window(old['end_ns'], seconds, complete=True)
+            aggregated = time.monotonic_ns()
             intent = self.registry.rows[old['service']]['intent']
             measured = objective(post, old['service'], intent, self.cfg['minimum_samples'])
             before = old['before']
@@ -315,7 +319,8 @@ class Controller:
                                   and measured['p99_us'] <= before['p99_us'] * 1.1)
             keep = (comparable and not degraded and (latency_improved or throughput_improved)
                     and (not demanded or (bg is not None and bg >= plan['background_floor_kbit']*.8)))
-            verdict = 'kept' if keep else 'rolled_back' if comparable or degraded else 'inconclusive'
+            verdict = 'kept' if keep else 'rolled_back' if comparable else 'inconclusive'
+            assessed = time.monotonic_ns()
             rollback = None
             if not keep:
                 rollback = self.write(old['allocation'])
@@ -323,7 +328,10 @@ class Controller:
             self.record(result=verdict, service=old['service'], comparable=comparable, degraded=degraded,
                         before=before, measured=measured, background_kbit=bg, allocation=self.current,
                         post_start_ns=old['start_ns'], post_end_ns=old['end_ns'],
-                        time_to_evaluate_ns=began-old['verified_ns'], rollback=rollback)
+                        time_to_evaluate_ns=began-old['verified_ns'],
+                        verdict_lag_ns=max(0,began-old['end_ns']-NANO//4),
+                        post_aggregation_ns=aggregated-evaluation_start,
+                        post_policy_ns=assessed-aggregated, rollback=rollback)
             self.pending = None
             observer.probe_start_ns = None
             self.streak.clear()
@@ -375,7 +383,7 @@ class Controller:
         if 'service' in plan:
             verified = timing['verified_ns']
             start = ((verified + NANO - 1)//NANO + 1)*NANO
-            observer.probe_start_ns = start
+            observer.probe_start_ns = verified
             self.pending = dict(service=name, allocation=previous, before=plan['objectives'][name],
                                 start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified)
 

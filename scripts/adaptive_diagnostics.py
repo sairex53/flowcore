@@ -77,7 +77,9 @@ def analyze_run(directory, result, manifest):
     for key in ('pre_read_ns','apply_ns','verify_ns','refresh_ns'):
         timings['actuator_'+key.removesuffix('_ns')+'_ms'] = distribution([
             row['timing'].get(key) for row in decisions if row.get('timing')],1e6)
-    timings['verdict_ms'] = distribution([row.get('time_to_evaluate_ns') for row in decisions],1e6)
+    for label, key in (('verdict_ms','time_to_evaluate_ns'), ('verdict_lag_ms','verdict_lag_ns'),
+                       ('post_aggregation_ms','post_aggregation_ns'), ('post_policy_ms','post_policy_ns')):
+        timings[label] = distribution([row.get(key) for row in decisions],1e6)
     probes = []
     for row in decisions:
         if row['result'] not in ('pending','hypothetical','kept','rolled_back','inconclusive','verified','released','oscillation_guard'):
