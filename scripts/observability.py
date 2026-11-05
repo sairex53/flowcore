@@ -46,7 +46,8 @@ class Observer:
         self.reset()
 
     def reset(self):
-        self.windows = Windows(max(*self.cfg['windows'], self.cfg['thresholds']['window_seconds']))
+        self.probe_start_ns = None
+        self.windows = Windows(max(*self.cfg['windows'], self.cfg['thresholds']['window_seconds'])+1)
         self.requests = {}
         self.current = {}
         self.previous = {}
@@ -124,16 +125,21 @@ class Observer:
             duration = request.get('duration_us')
             number(duration, 0, 600_000_000)
             source = 'application'
-        bucket = self.windows.at(now)
+        stamp = request.get('completed_ns', now) if source == 'application' else now
+        if type(stamp) is not int or not now-2*NANO <= stamp <= now:
+            raise ValueError('invalid or stale application completion timestamp')
+        bucket = self.windows.at(stamp)
         if bucket is None:
             raise RuntimeError('application timestamp expired')
         key = f'app.{name}.{source}'
         bucket.counters[f'{key}.{outcome}'] += 1
+        if self.probe_start_ns is not None and stamp-int(duration*1000) < self.probe_start_ns:
+            bucket.counters[f'{key}.probe_overlap'] += 1
         if reason:
             bucket.counters[f'{key}.reason.{reason}'] += 1
         if outcome == 'ok':
             bucket.observe(key, duration)
-        if deadline is not None and (duration > deadline * 1000 or outcome == 'timeout'):
+        if deadline is not None and (duration > deadline * 1000 or outcome != 'ok'):
             bucket.counters[f'{key}.deadline_miss'] += 1
         self.processed += 1
         return dict(accepted=True, service=name, traffic_class=cls, provenance=source)
@@ -211,12 +217,21 @@ class Observer:
         bucket = self.windows.at(ts)
         if type(root.get('backlog')) is int:
             bucket.observe('backlog', root['backlog'])
+        leaves = {row.get('parent'): row for row in tc.get('qdisc', []) if row.get('parent')}
+        for name, row in tc.get('traffic_classes', {}).items():
+            leaf = leaves.get(row['handle'], {})
+            value = leaf.get('backlog')
+            if type(value) is int:
+                bucket.observe(f'backlog.{name}', value)
+                bucket.counters[f'q.{name}.backlogged'] += int(value > 0)
+            current[name] = dict(current[name], ecn_mark=leaf.get('ecn_mark'))
         if self.queue_time is not None:
             elapsed = (ts - self.queue_time) / NANO
             for name, values in current.items():
                 prior = self.previous.get(name, {})
                 valid = False
-                for field in ('bytes', 'drops', 'tx_bytes', 'tx_packets', 'rx_packets', 'tx_errors', 'rx_errors'):
+                for field in ('bytes', 'drops', 'tx_bytes', 'tx_packets', 'rx_packets', 'tx_errors', 'rx_errors',
+                              'borrowed', 'lended', 'overlimits', 'ecn_mark'):
                     value = delta(values, prior, field)
                     if value is not None:
                         bucket.counters[f'q.{name}.{field}'] += value
@@ -254,17 +269,17 @@ class Observer:
         self.detect(self.clock())
         self.sample_cpu_ns += time.process_time_ns() - cpu
 
-    def window(self, now, seconds):
-        bucket = self.windows.summarize(now, seconds)
+    def window(self, now, seconds, *, complete=False):
+        bucket = self.windows.summarize(now, seconds, complete=complete)
         counters = bucket.counters
         empty = dict(samples=0, overflow_samples=0, p50_us=None, p95_us=None, p99_us=None)
-        hist = {key: item.summary('bytes' if key == 'backlog' else 'us') for key, item in bucket.histograms.items()}
+        hist = {key: item.summary('bytes' if key.startswith('backlog') else 'us') for key, item in bucket.histograms.items()}
         app = {}
         for name, settings in self.cfg['services'].items():
             app[name] = dict(traffic_class=settings['class'])
             for source in ('application', 'ipc_boundary'):
                 key = f'app.{name}.{source}'
-                counts = {outcome: counters[f'{key}.{outcome}'] for outcome in ('ok', 'failure', 'timeout', 'deadline_miss')}
+                counts = {outcome: counters[f'{key}.{outcome}'] for outcome in ('ok', 'failure', 'timeout', 'deadline_miss', 'probe_overlap')}
                 total = counts['ok'] + counts['failure'] + counts['timeout']
                 app[name][source] = dict(**hist.get(key, empty), **counts,
                                          failure_reasons={reason: counters[f'{key}.reason.{reason}']
@@ -280,7 +295,13 @@ class Observer:
             queue[name] = dict(samples=counters[prefix + 'samples'], observed_seconds=observed,
                                bytes_per_second=throughput,
                                utilization=throughput / capacity if throughput is not None and capacity else None,
-                               drops_per_second=counters[prefix + 'drops'] / observed if observed and prefix + 'drops' in counters else None)
+                               drops_per_second=counters[prefix + 'drops'] / observed if observed and prefix + 'drops' in counters else None,
+                               backlogged_samples=counters[prefix+'backlogged'],
+                               backlog=hist.get(f'backlog.{name}'),
+                               borrowed=counters.get(prefix+'borrowed'),
+                               lended=counters.get(prefix+'lended'),
+                               overlimits=counters.get(prefix+'overlimits'),
+                               ecn_marks=counters.get(prefix+'ecn_mark'))
         segments = counters['tcp.segments']
         hooks = self.bpf.hooks
         traced = {

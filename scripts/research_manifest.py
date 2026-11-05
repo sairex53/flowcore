@@ -6,9 +6,9 @@ from pathlib import Path
 from service_config import keys, number, profile, unique
 
 LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
-MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', 'static20', 'static30', 'static40')
+MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', 'static20', 'static30', 'static40', 'static35', 'slo-shadow', 'slo-single', 'slo-long', 'static-step')
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset(('static', 'threshold', 'slo', 'htb-fq_codel', 'static20', 'static30', 'static40'))
+CLASSIFIED = frozenset(('static', 'threshold', 'slo', 'htb-fq_codel', 'static20', 'static30', 'static40', 'static35', 'slo-shadow', 'slo-single', 'slo-long', 'static-step'))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 FAULTS = ('bandwidth_kbit', 'base_rtt_ms', 'jitter_ms', 'loss_pct', 'reorder_pct', 'link_up')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
@@ -98,6 +98,8 @@ def validate(value):
     faults = value['faults']
     if not isinstance(faults, list) or len(faults) > 32:
         raise ValueError('at most 32 scheduled network transitions')
+    if 'static-step' in modes and (faults or value['duration_seconds'] < 6):
+        raise ValueError('static-step requires a fault-free experiment of at least six seconds')
     previous = 0
     current = dict(network)
     for fault in faults:

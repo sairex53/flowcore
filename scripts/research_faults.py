@@ -162,3 +162,23 @@ def update_conditions(service, lab, profile, mode, seed, link_up):
     service.profile = profile
     service.research_link_up = link_up
     return dict(applied_ns=time.monotonic_ns(), capacity_kbit=cap, netem=observed, link_up=link_up)
+
+
+
+def reservation_step(service):
+    """Single fixed 5-point intervention for a research counterfactual."""
+    lab, control = service.lab, service.controller
+    capacity, policy = control.capacity(), control.policy()
+    allocation = {name: (capacity*cls['min_pct']//100, capacity*cls['max_pct']//100)
+                  for name, cls in policy['classes'].items()}
+    step = capacity*5//100
+    critical, ceil = allocation['critical']
+    background, background_ceil = allocation['background']
+    if background-step < capacity*control.cfg['background_floor_pct']//100:
+        raise ValueError('fixed step would violate the background floor')
+    desired = dict(allocation, critical=(critical+step,ceil),
+                   background=(background-step,background_ceil))
+    timing = adaptive_tc.change(lab, capacity, policy, allocation, desired)
+    control.record(result='verified', reason='fixed research reservation step',
+                   previous=allocation, allocation=desired, timing=timing)
+    return timing

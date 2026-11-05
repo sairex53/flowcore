@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 import adaptive_tc
-from adaptive import Controller, objective
+from adaptive import Controller, STRATEGIES, objective
 from intents import Registry
 from observability import Observer
 from observability_config import DEFAULT
@@ -62,7 +62,14 @@ class Unit(unittest.TestCase):
                        'standard':(2000,10000),'background':(3000,10000)}
         engine.current = engine.base
         window = {'queue':{'root':{'utilization':.9}},'backlog':{'p95_bytes':10000},
-                  'application':{'demo':{'application':{'samples':30,'p99_us':100000}}}}
+                  'application':{'demo':{'application':{'samples':150,'p99_us':100000}}}}
+        measured = objective(window,'demo',engine.registry.rows['demo']['intent'],20)
+        self.assertTrue(STRATEGIES['slo'](measured, True, None))
+        self.assertEqual(engine.plan(window, engine.current)['action'], 'hold')
+        window['queue']['critical'] = dict(backlogged_samples=2, bytes_per_second=400000, borrowed=35)
+        window['application']['demo']['application']['samples'] = 30
+        self.assertEqual(engine.plan(window, engine.current)['action'], 'hold')
+        window['application']['demo']['application']['samples'] = 150
         proposed = engine.plan(window, engine.current)['proposed']
         self.assertEqual(proposed['background'][0], 2500)
         self.assertEqual(proposed['critical'][0], 3500)
@@ -83,18 +90,29 @@ class Unit(unittest.TestCase):
         engine.mode = 'active'
         engine.write = lambda target: setattr(engine, 'current', target)
         window = {'queue':{'root':{'utilization':.9}},'backlog':{'p95_bytes':10000},
-                  'application':{'demo':{'application':{'samples':30,'p99_us':100000}}}}
+                  'application':{'demo':{'application':{'samples':150,'p99_us':100000}}}}
         rows = [{'class':'htb','handle':f'1:{minor}','rate':boosted[name][0]*125,
                  'ceil':boosted[name][1]*125} for name,minor in CLASSES.items()]
         rows.append({'class':'htb','handle':'1:1','rate':1250000,'ceil':1250000})
         service.telemetry = {'class':rows,'qdisc':[]}
         with patch.object(observer, 'window', return_value=window):
+            engine.current = boosted
+            observer.sampled_ns = time.monotonic_ns()
+            before = engine.plan(window, boosted)['objectives']['demo']
+            engine.pending = dict(service='demo', allocation=baseline, before=before,
+                                  start_ns=0, end_ns=0, verified_ns=0)
+            window['application']['demo']['application']['samples'] = 250
+            engine.tick()
+            self.assertEqual(engine.history[-1]['result'], 'inconclusive')
+            self.assertEqual(engine.reversals, 0)
+            self.assertEqual(engine.current, baseline)
+            window['application']['demo']['application']['samples'] = 150
             for _ in range(2):
                 engine.current = boosted
                 engine.last_tick = 0
                 observer.sampled_ns = time.monotonic_ns()
                 before = engine.plan(window, boosted)['objectives']['demo']
-                engine.pending = dict(service='demo', allocation=baseline, before=before, check_at=0)
+                engine.pending = dict(service='demo', allocation=baseline, before=before, start_ns=0,end_ns=0,verified_ns=0)
                 engine.tick()
             self.assertEqual(engine.mode, 'off')
             self.assertIn('oscillation', engine.error)
@@ -111,6 +129,12 @@ class Unit(unittest.TestCase):
             engine.mode = 'active'
             engine.current = boosted
             engine.next_action = 0
+            window['application']['demo']['application']['p99_us'] = 5000
+            for _ in range(engine.cfg['recovery_windows']):
+                engine.last_tick = 0
+                observer.sampled_ns = time.monotonic_ns()
+                engine.tick()
+            self.assertEqual(engine.current, boosted)
             window['queue']['root']['utilization'] = .5
             for _ in range(engine.cfg['recovery_windows']):
                 engine.last_tick = 0
@@ -118,6 +142,23 @@ class Unit(unittest.TestCase):
                 engine.tick()
             self.assertEqual(engine.current, baseline)
             self.assertEqual(engine.history[-1]['result'], 'released')
+
+    def test_completed_windows_exclude_partial_and_track_probe_overlap(self):
+        now = 10_100_000_000
+        observer = Observer(copy.deepcopy(DEFAULT), clock=lambda: now)
+        observer.probe_start_ns = 9_000_000_000
+        observer.ingest(dict(op='request_sample', service='demo', outcome='ok',
+                             duration_us=100_000, completed_ns=9_020_000_000), 0)
+        observer.ingest(dict(op='request_sample', service='demo', outcome='failure',
+                             duration_us=100, completed_ns=9_050_000_000, deadline_ms=10), 0)
+        observer.ingest(dict(op='request_sample', service='demo', outcome='ok', duration_us=20), 0)
+        complete = observer.window(now, 2, complete=True)['application']['demo']['application']
+        self.assertEqual((complete['ok'], complete['failure'], complete['probe_overlap']), (1,1,1))
+        self.assertEqual(complete['deadline_miss'], 1)
+        self.assertEqual(observer.window(now,2)['application']['demo']['application']['ok'],2)
+        with self.assertRaises(ValueError):
+            observer.ingest(dict(op='request_sample', service='demo', outcome='ok',
+                                 duration_us=10, completed_ns=now+1), 0)
 
     def test_transaction_rolls_back_partial_write_and_refuses_drift(self):
         before = {'critical':(3000,10000),'interactive':(2000,10000),

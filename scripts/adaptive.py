@@ -6,6 +6,9 @@ from collections import deque
 import adaptive_tc
 from intents import Registry
 
+NANO = 10**9
+LATENCY_MIN_SAMPLES = 100
+
 
 def static(*_):
     return False
@@ -35,9 +38,12 @@ def objective(window, name, intent, minimum):
     valid = samples >= minimum and p99 is not None and (not desired or kbit is not None)
     bad = valid and (p99 > target or (desired and kbit < desired))
     outside_deadband = bool(valid and (p99 > target * 1.1 or (desired and kbit < desired * .9)))
+    failures = app.get('failure', 0) + app.get('timeout', 0)
     return dict(state='violated' if bad else 'met' if valid else 'insufficient_data',
                 outside_deadband=outside_deadband, samples=samples, p99_us=p99, p50_us=app.get('p50_us'), p95_us=app.get('p95_us'),
-                error_ratio=app.get('error_ratio'), deadline_miss=app.get('deadline_miss'),
+                error_ratio=app.get('error_ratio'), deadline_miss=app.get('deadline_miss') or 0,
+                failures=failures, reports=app.get('ok', samples)+failures,
+                probe_overlap=app.get('probe_overlap', 0),
                 target_p99_us=target, throughput_kbit=kbit, desired_kbit=desired)
 
 
@@ -61,7 +67,7 @@ class Controller:
         self.recovery = 0
         self.error = None
         self.starvation = 0
-        self.starvation_tick = None
+        self.timing = {}
 
     def restore(self, runtime):
         self.registry.restore(runtime)
@@ -116,12 +122,13 @@ class Controller:
         self.recovery = 0
         self.error = None
         self.starvation = 0
-        self.starvation_tick = None
+        self.timing = {}
 
     def write(self, target):
-        adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target)
+        timing = adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target)
         self.current = dict(target)
         self.service.poll_metrics()
+        return dict(timing, refresh_ns=time.monotonic_ns()-timing['verified_ns'])
 
     def stop(self, reason):
         if self.mode == 'active' and self.current != self.base and self.service.lab:
@@ -129,12 +136,14 @@ class Controller:
             self.record(result='restored_baseline', reason=reason, allocation=self.base)
         self.mode = 'off'
         self.pending = None
+        self.service.observer.probe_start_ns = None
 
     def detach(self):
         if self.mode != 'off':
             self.record(result='lab_closed', reason='topology removed')
         self.mode = 'off'
         self.current = self.base = self.pending = None
+        self.service.observer.probe_start_ns = None
 
     def register(self, value, uid, pid):
         intent = self.registry.validate(value)
@@ -161,6 +170,7 @@ class Controller:
             row['intent']['background_min_pct'] for row in self.registry.rows.values())])
         bg_floor = capacity * floor_pct // 100
         outcomes = {}
+        attribution = {}
         bounds = dict(current)
         for name, row in sorted(self.registry.rows.items()):
             intent = row['intent']
@@ -170,8 +180,15 @@ class Controller:
             if cap < rate or cap > self.base[cls][1] or intent['min_kbit'] > self.base[cls][0] or bg_floor > self.base['background'][0]:
                 raise ValueError('registered hard bounds conflict with current lab capacity')
             bounds[cls] = (rate, cap)
-            outcomes[name] = objective(window, name, intent, cfg['minimum_samples'])
-        detail = dict(previous=current, proposed=bounds, objectives=outcomes, pressure=pressure,
+            measured = outcomes[name] = objective(window, name, intent, cfg['minimum_samples'])
+            queue = window['queue'].get(cls, {})
+            attribution[name] = dict(backlogged_samples=queue.get('backlogged_samples', 0),
+                                     borrowed=queue.get('borrowed'), guaranteed_kbit=rate,
+                                     eligible=queue.get('backlogged_samples', 0) >= 2
+                                     and (measured['throughput_kbit'] or 0) >= .9*rate
+                                     and not measured['failures']
+                                     and measured['samples'] >= max(LATENCY_MIN_SAMPLES, cfg['minimum_samples']))
+        detail = dict(previous=current, proposed=bounds, objectives=outcomes, attribution=attribution, pressure=pressure,
                       background_floor_kbit=bg_floor, background_throughput_kbit=(
                           bg['bytes_per_second']/125 if bg.get('bytes_per_second') is not None else None))
         if bounds != current:
@@ -184,7 +201,7 @@ class Controller:
             intent = self.registry.rows[name]['intent']
             cls = intent['priority']
             rate, ceil = current[cls]
-            if not STRATEGIES[self.strategy](outcomes[name], pressure, intent):
+            if not attribution[name]['eligible'] or not STRATEGIES[self.strategy](outcomes[name], pressure, intent):
                 continue
             step = min(capacity * cfg['step_pct']//100, current['background'][0]-bg_floor,
                        self.base[cls][0]+capacity*cfg['maximum_boost_pct']//100-rate, ceil-rate)
@@ -217,7 +234,7 @@ class Controller:
             current = adaptive_tc.read(self.service.lab, self.capacity(), self.policy())
             self.base = current
         try:
-            window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'])
+            window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'], complete=True)
             return dict(self.plan(window, current), dry_run=True, fairness=self.fairness(window))
         finally:
             self.base = original
@@ -234,6 +251,7 @@ class Controller:
                 self.record(result='restored_baseline', reason='intent set changed', allocation=self.base)
             self.revision = self.registry.revision
             self.pending = None
+            self.service.observer.probe_start_ns = None
             self.streak.clear()
             self.next_action = now + seconds
         if now - self.last_tick < seconds:
@@ -252,8 +270,14 @@ class Controller:
                   for row in self.service.telemetry.get('class', []) if row.get('class') == 'htb'}
         if actual != expected:
             raise RuntimeError('telemetry readback shows HTB capacity or allocation drift')
-        window = observer.window(time.monotonic_ns(), seconds)
+        began = time.monotonic_ns()
+        window = observer.window(began, seconds, complete=True)
+        window_end = time.monotonic_ns()
         plan = self.plan(window, self.current)
+        self.timing = dict(time_ns=began, aggregation_ns=window_end-began,
+                           policy_ns=time.monotonic_ns()-window_end,
+                           telemetry_age_ns=max(0, began-observer.sampled_ns),
+                           attribution=plan['attribution'])
         bg = plan['background_throughput_kbit']
         leaf = next((q for q in self.service.telemetry.get('qdisc', [])
                      if q.get('parent') == '1:20'), {})
@@ -265,10 +289,23 @@ class Controller:
             return
         if self.pending:
             old = self.pending
-            if now < old['check_at']:
+            if began < old['end_ns'] + NANO//4:
                 return
-            measured = plan['objectives'].get(old['service'], {})
+            post = observer.window(old['end_ns'], seconds, complete=True)
+            intent = self.registry.rows[old['service']]['intent']
+            measured = objective(post, old['service'], intent, self.cfg['minimum_samples'])
             before = old['before']
+            post_bg = post['queue'].get('background', {})
+            bg_rate = post_bg.get('bytes_per_second')
+            bg = bg_rate/125 if bg_rate is not None else None
+            demanded = post_bg.get('backlogged_samples', 0) > 0
+            enough = measured['samples'] >= max(LATENCY_MIN_SAMPLES, self.cfg['minimum_samples'])
+            comparable = (enough and not measured['probe_overlap']
+                          and .8*before['reports'] <= measured['reports'] <= 1.2*before['reports'])
+            degraded = (measured['reports'] >= self.cfg['minimum_samples'] and
+                        ((measured['error_ratio'] or 0) > (before['error_ratio'] or 0)
+                         or measured['deadline_miss']/measured['reports'] >
+                            before['deadline_miss']/before['reports'] + .02))
             latency_improved = (measured.get('p99_us') is not None and before['p99_us'] is not None
                                 and measured['p99_us'] < before['p99_us'] * .9)
             throughput_improved = (before['desired_kbit'] > 0 and measured.get('throughput_kbit') is not None
@@ -276,16 +313,21 @@ class Controller:
                                   and measured['throughput_kbit'] > before['throughput_kbit'] * 1.1
                                   and measured.get('p99_us') is not None and before['p99_us'] is not None
                                   and measured['p99_us'] <= before['p99_us'] * 1.1)
-            keep = (measured.get('state') != 'insufficient_data' and (latency_improved or throughput_improved)
+            keep = (comparable and not degraded and (latency_improved or throughput_improved)
                     and (not demanded or (bg is not None and bg >= plan['background_floor_kbit']*.8)))
+            verdict = 'kept' if keep else 'rolled_back' if comparable or degraded else 'inconclusive'
+            rollback = None
             if not keep:
-                self.write(old['allocation'])
-                self.next_action = now + max(3*seconds, self.cfg['cooldown_seconds'])
-            self.record(result='kept' if keep else 'rolled_back', service=old['service'],
-                        before=before, measured=measured, background_kbit=bg, allocation=self.current)
+                rollback = self.write(old['allocation'])
+                self.next_action = time.monotonic() + max(3*seconds, self.cfg['cooldown_seconds'])
+            self.record(result=verdict, service=old['service'], comparable=comparable, degraded=degraded,
+                        before=before, measured=measured, background_kbit=bg, allocation=self.current,
+                        post_start_ns=old['start_ns'], post_end_ns=old['end_ns'],
+                        time_to_evaluate_ns=began-old['verified_ns'], rollback=rollback)
             self.pending = None
+            observer.probe_start_ns = None
             self.streak.clear()
-            self.reversals = 0 if keep else self.reversals + 1
+            self.reversals = 0 if keep else self.reversals + int(verdict == 'rolled_back')
             if self.reversals >= self.cfg['maximum_reversals']:
                 self.stop('repeated rejected probes')
                 self.error = 'oscillation guard: consecutive transfer reversals'
@@ -294,9 +336,8 @@ class Controller:
         boosted = any(self.current[key][0] > self.base[key][0] for key in self.current)
         if boosted and self.mode == 'active':
             healthy = (not plan['pressure'] or all(
-                item['state'] == 'met' or
-                (item['state'] == 'insufficient_data' and item['throughput_kbit'] is not None
-                 and item['throughput_kbit'] < .1 * self.base[self.registry.rows[name]['intent']['priority']][0])
+                item['throughput_kbit'] is not None
+                and item['throughput_kbit'] < .1 * self.base[self.registry.rows[name]['intent']['priority']][0]
                 for name, item in plan['objectives'].items()))
             self.recovery = self.recovery + 1 if healthy else 0
             if self.recovery >= self.cfg['recovery_windows'] and now >= self.next_action:
@@ -329,11 +370,14 @@ class Controller:
             self.record(result='hypothetical', **plan)
             return
         previous = self.current
-        self.write(plan['proposed'])
-        self.record(result='pending' if 'service' in plan else 'verified', **plan)
+        timing = self.write(plan['proposed'])
+        self.record(result='pending' if 'service' in plan else 'verified', timing=timing, **plan)
         if 'service' in plan:
+            verified = timing['verified_ns']
+            start = ((verified + NANO - 1)//NANO + 1)*NANO
+            observer.probe_start_ns = start
             self.pending = dict(service=name, allocation=previous, before=plan['objectives'][name],
-                                check_at=now+seconds)
+                                start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified)
 
     def safe_tick(self):
         try:
@@ -353,4 +397,4 @@ class Controller:
         return dict(mode=self.mode, strategy=self.strategy, allocation=self.current,
                     actions=self.actions, pending=self.pending, error=self.error,
                     allocation_verified=self.error is None and self.mode != 'off', reversals=self.reversals,
-                    fairness=self.fairness(window))
+                    fairness=self.fairness(window), timing=self.timing)

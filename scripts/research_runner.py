@@ -150,7 +150,7 @@ def convergence(samples, history, transitions, m, start, mode):
     anchor = max([start, *(item['applied_ns']/NANO for item in transitions if not item.get('initial'))])
     width = m['controller']['window_seconds']
     last_change = max([anchor, *(row['time_ns']/NANO for row in history
-        if row['result'] in ('pending','released','rolled_back','verified','restored_baseline','research_rebase'))])
+        if row['result'] in ('pending','released','rolled_back','verified','restored_baseline','inconclusive','research_rebase'))])
     eligible = None
     for sample in samples:
         stamp = sample['time_ns']/NANO
@@ -203,9 +203,9 @@ def summarize(directory, m, rep, mode, samples, history, start, end, host_ticks)
     bpf = samples[-1]['backend']
     loss = None if not bpf['active'] or bpf['kernel_reserve_drops'] is None or bpf['transport_drops'] is None else sum(
         bpf[key] for key in ('kernel_reserve_drops','transport_drops','parse_drops'))
-    changes = [r for r in history if r['result'] in ('pending','verified','released','rolled_back','restored_baseline')]
+    changes = [r for r in history if r['result'] in ('pending','verified','released','rolled_back','inconclusive','restored_baseline')]
     probes = [r for r in history if r['result']=='pending']
-    verdicts = [r for r in history if r['result'] in ('kept','rolled_back')]
+    verdicts = [r for r in history if r['result'] in ('kept','rolled_back','inconclusive')]
     first_response = (probes[0]['time_ns']/NANO-start) if probes else None
     verdict_time = ((verdicts[0]['time_ns']-probes[0]['time_ns'])/NANO) if probes and verdicts else None
     ticks, idle = host_ticks
@@ -254,7 +254,12 @@ def trial(directory, m, rep, mode, seed=None):
     cfg['observability']['bpf'] = m['controller']['bpf']
     cfg['adaptive'].update(window_seconds=m['controller']['window_seconds'],
                            minimum_samples=m['controller']['minimum_samples'])
-    if mode.startswith('static'):
+    if mode == 'slo-single':
+        cfg['adaptive']['maximum_actions'] = 1
+    if mode == 'slo-long':
+        cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
+        cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
+    if mode.startswith('static') and mode != 'static-step':
         reserve = m['static_critical_pct'] if mode == 'static' else int(mode.removeprefix('static'))
         cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
         cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
@@ -313,8 +318,10 @@ def trial(directory, m, rep, mode, seed=None):
                 return child(['nsenter', f'--net=/proc/self/fd/{fd}', '--', *argv[4:]],
                              pass_fds=(fd,), stdout=log, stderr=log)
 
-            if mode in ('threshold','slo'):
-                request('controller_start',strategy=mode)
+            if mode == 'slo-shadow':
+                request('controller_shadow',strategy='slo')
+            elif mode == 'threshold' or mode.startswith('slo'):
+                request('controller_start',strategy='threshold' if mode == 'threshold' else 'slo')
             plan = directory/'workload.json'
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services)
@@ -332,7 +339,9 @@ def trial(directory, m, rep, mode, seed=None):
             samples = []
             begin_ticks = cpu_ticks()
             def sample():
+                begin = time.monotonic_ns()
                 value = request('research_sample')
+                value['runner_ipc_ns'] = time.monotonic_ns()-begin
                 samples.append(value)
                 timeline.write(json.dumps(value)+'\n')
                 timeline.flush()
@@ -343,7 +352,8 @@ def trial(directory, m, rep, mode, seed=None):
             sample()
             next_sample = start+1
             link_up = True
-            for index,fault in enumerate([*m['faults'],{'at_seconds':m['duration_seconds']}],1):
+            events = m['faults'] if mode != 'static-step' else [dict(at_seconds=4, reservation_step=True)]
+            for index,fault in enumerate([*events,{'at_seconds':m['duration_seconds']}],1):
                 deadline = start+fault['at_seconds']
                 while next_sample < deadline:
                     time.sleep(max(0,next_sample-time.monotonic()))
@@ -355,6 +365,14 @@ def trial(directory, m, rep, mode, seed=None):
                     snapshot('measurement_end' if len(fault)==1 else 'pre_transition')
                 if len(fault)==1:
                     break
+                if fault.get('reservation_step'):
+                    step = request('research_reservation_step')
+                    transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),
+                                                      requested=fault, **step))+'\n')
+                    transitions.flush()
+                    if version2:
+                        snapshot('post_transition')
+                    continue
                 network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
                 link_up = fault.get('link_up',link_up)
                 begun = time.monotonic_ns()

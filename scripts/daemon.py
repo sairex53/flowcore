@@ -39,6 +39,7 @@ class Service:
         self.events = deque(maxlen=64)
         self.watches = []
         self.telemetry = {}
+        self.telemetry_timing = {}
         self.error = None
         self.sampled = 0
         self.capabilities = {}
@@ -51,6 +52,7 @@ class Service:
         self.research = False
         self.research_link_up = True
         self.research_mode = None
+        self.research_step_done = False
 
     def log(self, event, **fields):
         if self.config['log_level'] == 'info' or event == 'error':
@@ -101,6 +103,7 @@ class Service:
         self.active, self.profile = name, settings
         self.research_link_up = True
         self.research_mode = None
+        self.research_step_done = False
         self.observer.start(candidate)
         self.log('lab_ready', policy=name, profile=settings)
         return True
@@ -113,8 +116,12 @@ class Service:
             if any(holder.poll() is not None for holder in self.lab.holders):
                 self.close_lab()
                 raise RuntimeError('namespace holder exited; lab closed')
+            begin = time.monotonic_ns()
             self.telemetry = self.lab.counters()
+            collected = time.monotonic_ns()
             self.observer.sample(self.lab, self.telemetry, self.profile['bandwidth_kbit'])
+            self.telemetry_timing = dict(time_ns=begin, counters_ns=collected-begin,
+                                         observer_ns=time.monotonic_ns()-collected)
             if self.container_attachment and self.container_attachment['active']:
                 from containers import attachment_sample
                 attachment_sample(self)
@@ -166,12 +173,19 @@ class Service:
         if op in ('lab_up','lab_configure','policy_apply','controller_start','controller_shadow',
                   'research_conditions','platform_apply_intent') and os.geteuid()!=0:
             raise PermissionError('privileged operation requires the laboratory daemon')
-        if op in ('research_conditions', 'research_sample', 'research_snapshot'):
+        if op in ('research_conditions', 'research_sample', 'research_snapshot', 'research_reservation_step'):
             if not self.research:
                 raise ValueError('research commands require a research daemon')
             if op == 'research_conditions':
                 from research_faults import apply_conditions
                 return apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'))
+            if op == 'research_reservation_step':
+                if not self.lab or self.research_mode != 'static-step' or self.research_step_done or self.controller.mode != 'off':
+                    raise ValueError('requires an unused static-step research lab')
+                from research_faults import reservation_step
+                timing = reservation_step(self)
+                self.research_step_done = True
+                return dict(applied_ns=timing['verified_ns'], timing=timing)
             if op == 'research_snapshot':
                 if not self.lab:
                     raise ValueError('research snapshot requires a lab')
@@ -188,6 +202,7 @@ class Service:
                 return result
             view = self.observer.snapshot()
             return dict(time_ns=view['time_ns'], tc=self.telemetry, overhead=view['overhead'],
+                        telemetry_timing=self.telemetry_timing,
                         backend=view['bpf'], state=self.controller.status(),
                         sample_ns=self.observer.sampled_ns,
                         control_window=self.observer.window(view['time_ns'],

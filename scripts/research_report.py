@@ -59,7 +59,7 @@ def run_charts(path, row):
     fault_rows = read_lines(directory/'transitions.jsonl')
     faults = [item['applied_ns']/1e9 for item in fault_rows if not item.get('initial')]
     decisions = json.loads((directory/'decisions.json').read_text())
-    actions = [item['time_ns']/1e9 for item in decisions if item['result'] in ('pending','rolled_back','released','verified')]
+    actions = [item['time_ns']/1e9 for item in decisions if item['result'] in ('pending','rolled_back','inconclusive','released','verified')]
     seconds = {}
     with (directory/'requests.csv').open() as stream:
         for item in csv.DictReader(stream):

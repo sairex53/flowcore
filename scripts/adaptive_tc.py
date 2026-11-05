@@ -1,5 +1,6 @@
 """Readback-verified in-place HTB updates on an owned ServiceLab."""
 import json
+import time
 from service_config import CLASSES
 
 
@@ -30,8 +31,10 @@ def change(lab, capacity, policy, expected, desired):
     if sum(rate for rate, _ in desired.values()) > capacity or any(
             not 0 < rate <= ceil <= capacity for rate, ceil in desired.values()):
         raise ValueError('unsafe HTB allocation')
+    start = time.monotonic_ns()
     if read(lab, capacity, policy) != expected:
         raise RuntimeError('class allocation drift, refusing to overwrite')
+    pre_read_ns = time.monotonic_ns()-start
     current = dict(expected)
 
     def write(name, value):
@@ -47,9 +50,14 @@ def change(lab, capacity, policy, expected, desired):
                 write(name, target[name])
 
     try:
+        apply_start = time.monotonic_ns()
         apply(desired)
+        verify_start = time.monotonic_ns()
         if read(lab, capacity, policy) != desired:
             raise RuntimeError('HTB readback differs from desired allocation')
+        verified_ns = time.monotonic_ns()
+        return dict(pre_read_ns=pre_read_ns, apply_ns=verify_start-apply_start,
+                    verify_ns=verified_ns-verify_start, verified_ns=verified_ns)
     except Exception as failure:
         try:
             observed = read(lab, capacity, policy)

@@ -72,8 +72,8 @@ class Windows:
             self.buckets[second] = Bucket()
         return self.buckets[second]
 
-    def summarize(self, ns, seconds):
-        end = ns // 1_000_000_000
+    def summarize(self, ns, seconds, *, complete=False):
+        end = ns // 1_000_000_000 - int(complete)
         result = Bucket()
         for tick, bucket in self.buckets.items():
             if not end - seconds < tick <= end:
