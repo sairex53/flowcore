@@ -48,8 +48,20 @@ def load_summary(path):
                 or not 0<=rep<data['manifest']['repetitions'] or type(row.get('valid')) is not bool
                 or row.get('artifact')!=f'r{rep}-{mode}' or (rep,mode) in seen):
             raise ValueError('invalid or repeated research run identity')
-        if data['version'] == 2 and row.get('workload_seed') != seeds[rep]:
-            raise ValueError('run seed differs from its block')
+        if data['version'] == 2:
+            if row.get('workload_seed') != seeds[rep]:
+                raise ValueError('run seed differs from its block')
+            if row['valid']:
+                counts = [row.get(key) for key in ('offered', 'completed', 'failed')]
+                if (any(type(count) is not int or count < 0 for count in counts)
+                        or not counts[0] or counts[0] != counts[1]+counts[2]):
+                    raise ValueError('invalid offered, completed or failed accounting')
+                if any(row.get(key) is not None and (type(row[key]) not in (int, float)
+                        or not math.isfinite(row[key]) or row[key]<0) for key in METRICS):
+                    raise ValueError('invalid numeric run metric')
+                deadline = row.get('deadline_attainment')
+                if deadline is not None and deadline > 1:
+                    raise ValueError('deadline attainment outside unit interval')
         seen.add((rep,mode))
     return data
 
@@ -110,8 +122,11 @@ def compare_v2(base, candidate, baseline, contender):
              and gates['baseline'] == baseline and comparable(base, candidate))
     left = {row['repetition']: row for row in base['runs'] if row['mode'] == baseline}
     right = {row['repetition']: row for row in candidate['runs'] if row['mode'] == contender}
+    complete = (base.get('status') == candidate.get('status') == 'complete'
+                and len(left) == base['manifest']['repetitions']
+                and len(right) == candidate['manifest']['repetitions'])
     bad = any(not row['valid'] for row in (*left.values(), *right.values()))
-    invalid = not equal or bad
+    invalid = not equal or not complete or bad
     family = max(1, len(candidate['manifest']['modes'])-1)*len(margins)
     confidence = 1-.05/family
     findings = []
@@ -198,3 +213,25 @@ def compare(base,candidate,base_mode=None,candidate_mode=None):
                                 positive_pairs=positive,adjusted_p=adjusted,status=status))
     return dict(comparable_manifest_and_environment=equivalent,method='one-sided paired sign test with Bonferroni',
                 findings=results)
+
+
+
+def investigations(summary):
+    """Annotate runs without deleting them or changing gate inputs."""
+    flagged = {}
+    for row in summary['runs']:
+        if row.get('warnings'):
+            flagged[row['artifact']] = list(row['warnings'])
+    for mode in summary['manifest']['modes']:
+        rows = [row for row in summary['runs'] if row['mode']==mode and row['valid']]
+        for metric in ('p99_ms','failure_ratio','total_mbps','dispatch_lag_p99_ms'):
+            usable = [(row, v) for row in rows if (v := value(row,metric)) is not None]
+            if len(usable) < 6:
+                continue
+            first, _, third = statistics.quantiles([v for _,v in usable],method='inclusive')
+            width = third-first
+            if width:
+                for row, v in usable:
+                    if v < first-1.5*width or v > third+1.5*width:
+                        flagged.setdefault(row['artifact'],[]).append(f'{metric} outside Tukey fences')
+    return flagged

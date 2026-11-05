@@ -118,3 +118,6 @@ describes reproducible experiment reports.
 The optional isolated network helper accepts typed operator commands without
 root in the client process. See [PRIVILEGES.md](PRIVILEGES.md) and
 [THREAT_MODEL.md](THREAT_MODEL.md).
+
+For comparable benchmark matrices, failure-aware metrics and reproducible
+paired experiments, see [BENCHMARK_V2.md](BENCHMARK_V2.md).

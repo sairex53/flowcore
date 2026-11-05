@@ -178,7 +178,7 @@ def receiver_metrics(path, start, end):
         for line in stream:
             row = json.loads(line)
             when, counters = row['time'], row['bytes']
-            if (not math.isfinite(when) or not isinstance(counters, list) or not counters
+            if (not math.isfinite(when) or not isinstance(counters, list)
                     or any(type(count) is not int or count < 0 for count in counters)):
                 raise ValueError('invalid receiver sample')
             if records:

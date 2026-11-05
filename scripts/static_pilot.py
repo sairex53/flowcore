@@ -1,6 +1,7 @@
 """Freeze a static reservation using a separately seeded pilot."""
 import hashlib
 import json
+import random
 import statistics
 
 from research_manifest import load_manifest
@@ -13,10 +14,14 @@ def tune(pilot_path, evaluation_path, output):
     modes = {'static20', 'static30', 'static40'}
     if (manifest['version'] != 2 or evaluation['version'] != 2 or set(manifest['modes']) != modes
             or manifest['repetitions'] < 2 or manifest['seed'] == evaluation['seed']
+            or manifest['workload']['deadline_ms'] is None
             or evaluation['gates']['baseline'] != 'static' or pilot.get('status') != 'complete'
             or any(manifest[key] != evaluation[key] for key in
                    ('topology','network','workload','duration_seconds','faults','controller'))):
         raise ValueError('pilot must use separate seeds and the same workload and network')
+    evaluation_seeds = random.Random(evaluation['seed']).sample(range(1,2**32), evaluation['repetitions'])
+    if set(pilot['block_seeds']).intersection(evaluation_seeds):
+        raise ValueError('pilot and evaluation block seeds overlap')
     selection = []
     for mode in sorted(modes):
         rows = [row for row in pilot['runs'] if row['mode'] == mode and row['valid']]

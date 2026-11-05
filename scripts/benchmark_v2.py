@@ -145,8 +145,10 @@ def observed(before, after, configured):
     sender, receiver = [deltas(interface(before, i)['counters'], interface(after, i)['counters'],
                               ('tx_bytes', 'rx_bytes', 'tx_packets', 'rx_packets', 'rx_dropped'))
                         for i in (0, 1)]
-    queue = deltas(root(before['tc']['qdisc']), root(after['tc']['qdisc']),
-                   ('bytes', 'packets', 'drops', 'overlimits'))
+    queue_fields = ('bytes', 'packets', 'drops', 'overlimits')
+    first_queue, last_queue = (root(item['tc']['qdisc']) for item in (before, after))
+    queue = (dict.fromkeys(queue_fields) if first_queue['kind'] == 'noqueue'
+             else deltas(first_queue, last_queue, queue_fields))
     class_bytes = {name: deltas(row.get('stats',row), after_row.get('stats',after_row), ('bytes','packets'))
                    for name, row in before['tc']['traffic_classes'].items()
                    if (after_row := after['tc']['traffic_classes'].get(name))}

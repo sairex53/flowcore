@@ -72,7 +72,8 @@ are investigated as warnings, with raw counters retained.
 - Host evidence includes kernel, VM identity where exposed, CPU topology,
   affinity and governor, load average, aggregate CPU ticks and PSI counters.
   Dispatch lag, high steal time, pressure and counter gaps are warning
-  signals. No observations are automatically removed. Application dispatch
+  signals. Reports also flag observations outside Tukey fences when a mode
+  has at least six usable runs. No observations are automatically removed. Application dispatch
   lag includes event-loop overhead and is not a direct scheduler trace.
   A guest cannot observe every source of hypervisor noise.
 
@@ -97,7 +98,8 @@ available for inspection. Repeats on one VM do not generalize to other hosts.
 A gate is PASS when its upper interval bound stays within the declared
 harm margin, REGRESSION when the lower bound exceeds it, and INCONCLUSIVE
 when the interval overlaps the margin or there are too few eligible pairs.
-An infrastructure or readback failure produces INVALID EXPERIMENT. A
+An infrastructure or readback failure produces INVALID EXPERIMENT. A report
+from an incomplete block schedule cannot pass a gate. A
 successful-only P99 pair is excluded from that gate if either run has a
 failure. The same pair remains in failure and deadline comparisons.
 A PASS means the harm margins were met. A lower-P99 claim additionally
@@ -113,6 +115,8 @@ sudo ./build/flowcore bench run results/v2-heavy-evaluation.json
 sudo ./build/flowcore bench run scenarios/v2-linux-default.json
 sudo ./build/flowcore bench run scenarios/v2-low-load.json
 sudo ./build/flowcore bench run scenarios/v2-transitions.json
+sudo ./build/flowcore bench run scenarios/v2-outage.json
+sudo ./build/flowcore bench run scenarios/v2-blackhole.json
 ```
 
 The low-load and transitions manifests use one repetition for functional
@@ -128,3 +132,64 @@ keeps the request and receiver ledgers, kernel and fault timeline, topology,
 host-noise samples, controller history, configuration and logs. The
 recorded Git commit, build digest and source hashes identify the run
 implementation. Raw artifacts remain in the local ignored results tree.
+
+## Fedora 45 ARM64 validation
+
+The two-block pilot selected a 30% critical reservation. The 30% mode
+had slightly higher median deadline attainment than the 40% mode, which
+had the lower successful-request P99. The selection was frozen before
+starting evaluation. In this evaluation, both static and SLO therefore
+started from the same 30% critical reservation.
+
+The heavy-load evaluation completed 10 paired blocks, with 20 valid runs
+and 5,400 offered requests per mode. Each measurement lasted six seconds.
+
+| Metric | Tuned static | FLOWCORE SLO |
+|---|---:|---:|
+| Median run successful-request P99 | 21.00 ms | 21.08 ms |
+| Median run background goodput | 6.419 Mbit/s | 6.401 Mbit/s |
+| Median run combined goodput | 9.365 Mbit/s | 9.347 Mbit/s |
+| Median run 25 ms deadline attainment | 99.63% | 99.63% |
+| Failed requests | 0 / 5,400 | 0 / 5,400 |
+
+Sender egress ranged from 9.848 to 10.003 Mbit/s across the 20 runs
+against the 10 Mbit/s readback. All 20 windows also recorded shaper
+overlimits and positive byte increments in every configured class. The
+largest sender TX to receiver RX gaps were below 0.08% for both bytes
+and packets. The median paired P99 change for SLO versus static was
+**+2.45%**, with an exact conservative simultaneous interval from
+**−25.97% to +52.26%**. The 10% harm margin falls inside the interval.
+The P99 gate and overall result are **INCONCLUSIVE**. The combined
+goodput, failure-rate and deadline-attainment gates passed for this
+workload. One SLO adjustment was recorded across the ten short runs.
+This experiment provides limited evidence about behavior after a
+controller adjustment. The host ran local unit checks during an early
+block. That block was retained and possible scheduling interference
+remains a limitation.
+
+Raw pilot `results/research-1793844111837735576/`, frozen manifest
+`results/v2-heavy-evaluation.json`, and evaluation
+`results/research-1793844193353514534/`. The evaluation began before
+its source was committed. All 53 recorded source digests match commit
+`c9cae43`. The build digest and dirty Git status at launch remain in
+the original summary.
+
+The transition matrix completed seven valid functional runs. It observed
+egress near 7 Mbit/s during the capacity reduction and near 10 Mbit/s after
+restoration when the shaper was saturated. The low-load runs observed
+about 1.84 Mbit/s egress against a 10 Mbit/s configured cap. The link-down
+scenario produced 501 socket errors out of 580 offers in each mode.
+Its conditional P99 was rendered, with zero eligible P99 pairs and the
+failure and deadline data retained for the gates. These one-block
+experiments are functional checks.
+
+Other evidence directories in `results/` are
+`research-1793844369151764735` (transitions),
+`research-1793844442248983740` (low load), and
+`research-1793844467587775171` (link outage). The initial Linux default
+attempt was retained as invalid after discovering that the daemon allows
+one registration per traffic class. The implementation now records
+logical service identities in the workload ledger and registers each
+traffic class once. The later Linux default run exposed the absence of
+qdisc accounting for noqueue. The report now marks that counter domain
+unavailable and uses the independent link counters.

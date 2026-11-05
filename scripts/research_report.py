@@ -6,7 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from research_stats import METRICS, aggregate, compare, load_summary, value
+from research_stats import METRICS, aggregate, compare, investigations, load_summary, value
 from workload import percentile
 
 COLORS = ('#2563eb','#15803d','#7c3aed','#b45309','#be185d')
@@ -149,7 +149,8 @@ def report(summary_path, baseline=None):
     outcome = ('INVALID EXPERIMENT' if any(not row['valid'] for row in data['runs']) or
                'INVALID EXPERIMENT' in outcomes else 'REGRESSION' if 'REGRESSION' in outcomes
                else 'PASS' if outcomes == {'PASS'} else 'INCONCLUSIVE')
-    artifact = dict(version=data['version'], outcome=outcome, environment=data['environment'],manifest=data['manifest'],
+    flags = investigations(data) if data['version']==2 else {}
+    artifact = dict(version=data['version'], outcome=outcome, investigations=flags, environment=data['environment'],manifest=data['manifest'],
                     aggregate=stats,regression=comparisons,runs=data['runs'],raw_summary=summary_path.name)
     write_artifact(path/'report.json',json.dumps(artifact,indent=2,allow_nan=False)+'\n')
     stream = io.StringIO()
@@ -185,6 +186,10 @@ def report(summary_path, baseline=None):
                   for result in comparisons for item in result['findings'])
     details = ''.join(run_charts(path,row) if row['valid'] else
                       f'<p>{html.escape(row["artifact"])}: {html.escape(row["error"])}</p>' for row in data['runs'])
+    flags_html = ''.join(f'<li>{html.escape(name)} · {html.escape("; ".join(notes))}</li>'
+                         for name, notes in flags.items())
+    extra_links = (' · <a href="aggregate.csv">Aggregate CSV</a> · <a href="reproduce.sh">Reproduction command</a>'
+                   if data['version'] == 2 else '')
     page = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FLOWCORE Research Lab</title><style>
 body{{font:15px system-ui;color:#0f172a;background:#f8fafc;max-width:1150px;margin:32px auto;padding:0 18px}}
@@ -195,9 +200,10 @@ summary{{cursor:pointer;font-weight:650}}svg{{width:100%;max-width:100%;font-siz
 pre{{white-space:pre-wrap}}a{{color:#1d4ed8}}</style><h1>FLOWCORE Research Lab</h1>
 <p>{text(data['environment']['kernel'])} · {text(data['environment']['architecture'])} · Git {text(data['environment']['git_commit'])}</p>
 <p>Outcome {outcome}. Per-run medians below. Request P99 is conditional on success. Confidence intervals and variance are in JSON.</p>
-<p><a href="report.json">JSON</a> · <a href="report.csv">CSV</a> · <a href="experiment.json">Replay manifest</a></p>
+<p><a href="report.json">JSON</a> · <a href="report.csv">CSV</a> · <a href="experiment.json">Replay manifest</a>{extra_links}</p>
 <table><thead><tr><th>Mode</th><th>Valid</th><th>P99 ms</th><th>Total Mbit/s</th><th>Jain</th><th>CPU s</th><th>Adjustments/min</th><th>Failure ratio</th><th>Deadline attainment</th></tr></thead><tbody>{table}</tbody></table>
 {comparison_chart}<h2>Run-level regression checks</h2><table><tr><th>Pair</th><th>Metric</th><th>Runs</th><th>Median change</th><th>Interval or adjusted p</th><th>Result</th></tr>{reg}</table>
+<h2>Investigation flags</h2><ul>{flags_html}</ul>
 <h2>Timelines and raw artifacts</h2>{details}
 <details><summary>Experiment manifest</summary><pre>{html.escape(json.dumps(data['manifest'],indent=2))}</pre></details></html>'''
     write_artifact(path/'report.html',page)

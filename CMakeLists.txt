@@ -100,7 +100,7 @@ endif()
 
 add_test(NAME platform_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_test.py")
 install(FILES monitoring/flowcore-grafana.json DESTINATION "${FLOWCORE_DATA}/monitoring")
-install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md
+install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md

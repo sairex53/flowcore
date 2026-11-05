@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 from benchmark import receiver_metrics
-from benchmark_v2 import account
+from benchmark_v2 import account, observed
 from research_faults import apply_conditions
 from research_manifest import load_manifest, validate
 from research_report import report
@@ -31,6 +31,7 @@ class Research(unittest.TestCase):
                 path.write_text(''.join(json.dumps(dict(time=t, bytes=b))+'\n' for t,b in samples))
                 return receiver_metrics(path, start, end)
             self.assertEqual(measure([(0,[0,0]),(1,[125000,125000])])['background_mbps'], 2)
+            self.assertEqual(measure([(0,[]),(1,[])])['background_mbps'], 0)
             for invalid in ([(0,[0]),(0,[2])], [(0,[1]),(1,[0])],
                             [(0,[0,0]),(1,[1])], [(0,[0]),(float('nan'),[1])]):
                 with self.assertRaises(ValueError):
@@ -94,7 +95,7 @@ class Research(unittest.TestCase):
 
     def test_v2_paired_gates(self):
         manifest = load_manifest(ROOT/'scenarios/v2-heavy-paired.json')
-        data = dict(version=2, experiment_id='fixture', block_seeds=list(range(1,11)),
+        data = dict(version=2, status='complete', experiment_id='fixture', block_seeds=list(range(1,11)),
                     manifest=manifest, environment=self.dataset(1,10)['environment'], runs=[])
         for rep in range(10):
             for mode in manifest['modes']:
@@ -110,7 +111,10 @@ class Research(unittest.TestCase):
         self.assertGreaterEqual(decision['findings'][0]['simultaneous_median_ci']['coverage'],.9875)
         short = copy.deepcopy(data)
         short['runs'] = short['runs'][:-2]
+        short['manifest']['repetitions'] = 9
+        short['block_seeds'] = short['block_seeds'][:-1]
         self.assertEqual(result(short)['outcome'],'INCONCLUSIVE')
+        self.assertEqual(result(dict(data,status='running'))['outcome'],'INVALID EXPERIMENT')
         failed = copy.deepcopy(data)
         for row in failed['runs']:
             if row['mode']=='slo':
@@ -122,6 +126,26 @@ class Research(unittest.TestCase):
         self.assertEqual(result(failed)['outcome'],'INVALID EXPERIMENT')
         other = dict(data,experiment_id='other-run')
         self.assertEqual(compare(data,other,'static','slo')['outcome'],'INVALID EXPERIMENT')
+
+    def test_observed_rate_and_noqueue_counters(self):
+        def snapshot(t, count, kind):
+            return dict(begin_ns=t, end_ns=t, links=[
+                [dict(name='fc0', counters=dict(tx_bytes=count, tx_packets=count//1000))],
+                [dict(name='fc1', counters=dict(rx_bytes=count, rx_packets=count//1000))]],
+                tc=dict(qdisc=[dict(root=True, kind=kind, bytes=count, overlimits=count//1000)],
+                        traffic_classes={'critical': dict(stats=dict(bytes=count, packets=count//1000))}))
+        first, last = (snapshot(0,0,'htb'),snapshot(10**9,1250000,'htb'))
+        rate = observed(first,last,10000)
+        self.assertEqual(rate['sender_egress_mbps'],10)
+        self.assertTrue(rate['saturation_supported'])
+        self.assertEqual(rate['tc_class']['critical']['bytes'],1250000)
+        self.assertEqual(rate['forward_link_bytes_relative_gap'],0)
+        first['tc']['qdisc'][0]['kind'] = 'noqueue'
+        last['tc']['qdisc'][0]['kind'] = 'noqueue'
+        rate = observed(first,last,None)
+        self.assertIsNone(rate['sender_qdisc']['bytes'])
+        self.assertIsNone(rate['qdisc_to_sender_bytes_relative_gap'])
+        self.assertFalse(rate['saturation_supported'])
 
     def test_failure_aware_accounting(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
