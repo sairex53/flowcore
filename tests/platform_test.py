@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-from ipc_security import authorize, decode
+from ipc_security import authorize, decode, private_directory, private_lock
 from platform_network import Inventory
 from platform_policy import PolicyStore, load_json, merged, validate
 
@@ -45,6 +45,26 @@ class Platform(unittest.TestCase):
             recovered.restore(Path(work))
             self.assertEqual(recovered.state,store.state)
             self.assertEqual(len(recovered.state['audit']),1)
+
+    def test_private_control_files(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
+            root = Path(work)
+            private_directory(root)
+            lock = root/'lock'
+            with private_lock(lock):
+                self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+            symlink = root/'alias'
+            symlink.symlink_to(lock)
+            with self.assertRaises(OSError):
+                private_lock(symlink)
+            alias = root/'hardlink'
+            alias.hardlink_to(lock)
+            with self.assertRaises(ValueError):
+                private_lock(lock)
+            linked_directory = root/'dirlink'
+            linked_directory.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                private_directory(linked_directory)
 
     def test_ipc_and_authorization(self):
         for payload in (b'{"op":"status","op":"lab_up"}',b'{"op":[]}',b'{"op":"status","number":NaN}',

@@ -1,70 +1,21 @@
 """Traffic control for disposable FLOWCORE-owned namespace interfaces."""
 from paths import BINDIR, RESULTS
-import contextlib
 import json
-import os
-import subprocess
-import sys
-from benchmark import ENV, Lab, ROOT, TC, run
+from benchmark import Lab, TC, run
 from network_state import snapshot, subscribe
 from service_config import CLASSES
 
 
-@contextlib.contextmanager
-def network_namespace(pid):
-    with open('/proc/self/ns/net', 'rb') as previous, open(f'/proc/{pid}/ns/net', 'rb') as target:
-        os.setns(target.fileno(), os.CLONE_NEWNET)
-        try:
-            yield
-        finally:
-            os.setns(previous.fileno(), os.CLONE_NEWNET)
-
-
 class ServiceLab(Lab):
-    def holder_command(self):
-        return [sys.executable, ROOT / 'scripts/namespace_holder.py', str(os.getpid())]
-
-    def pin_research_namespaces(self):
-        self.research_fds = []
-        host = os.stat('/proc/self/ns/net')
-        try:
-            for holder in self.holders:
-                if holder.poll() is not None:
-                    raise RuntimeError('research namespace holder exited')
-                fd = os.open(f'/proc/{holder.pid}/ns/net', os.O_RDONLY | os.O_CLOEXEC)
-                self.research_fds.append(fd)
-                ns = os.fstat(fd)
-                if (holder.poll() is not None or (ns.st_dev,ns.st_ino)==(host.st_dev,host.st_ino)
-                        or any(os.fstat(previous).st_ino==ns.st_ino for previous in self.research_fds[:-1])):
-                    raise RuntimeError('unsafe research namespace identity')
-        except BaseException:
-            for fd in self.research_fds:
-                os.close(fd)
-            self.research_fds.clear()
-            raise
-
-    def close(self):
-        for fd in getattr(self, 'research_fds', []):
-            os.close(fd)
-        self.research_fds = []
-        super().close()
-
     def command(self, index, argv):
-        if not getattr(self, 'research_fds', None):
-            return run(self.ns(index, argv))
-        if self.holders[index].poll() is not None:
-            raise RuntimeError('research namespace holder exited')
-        fd = self.research_fds[index]
-        return subprocess.run(['nsenter', f'--net=/proc/self/fd/{fd}', '--', *map(str,argv)],
-                              pass_fds=(fd,), check=True, capture_output=True, text=True,
-                              env=ENV, timeout=10).stdout
+        return run(self.ns(index, argv))
 
     def network(self, index):
-        with network_namespace(self.holders[index].pid):
+        with self.enter(index):
             return snapshot(sysfs_speed=False)
 
     def watcher(self, index):
-        with network_namespace(self.holders[index].pid):
+        with self.enter(index):
             return subscribe()
 
     def validate(self):

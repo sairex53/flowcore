@@ -127,9 +127,8 @@ class ObserverTests(unittest.TestCase):
 
     def test_collector_failure_and_fallback(self):
         observer = self.engine()
-        lab = Mock(holders=[Mock(pid=1), Mock(pid=2)])
-        with patch('observability.network_namespace', return_value=nullcontext()), \
-             patch('observability.connections', side_effect=OSError('injected dump failure')):
+        lab = Mock(enter=Mock(return_value=nullcontext()))
+        with patch('observability.connections', side_effect=OSError('injected dump failure')):
             observer.sample(lab, {}, 20000)
         self.assertIn('inet_diag', observer.errors)
         self.assertIsNone(observer.snapshot()['sample_age_seconds'])

@@ -1,2 +1,2 @@
 #!/bin/sh
-exec /usr/bin/python3 -B "@CMAKE_CURRENT_SOURCE_DIR@/scripts/daemon.py" "$@"
+exec /usr/bin/python3 -E -s -B "@CMAKE_CURRENT_SOURCE_DIR@/scripts/daemon.py" "$@"

@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <array>
 #include <cstring>
+#include <cstddef>
 #include <stdexcept>
 namespace flowcore {
 LinkStats link_stats(const std::string& interface) {
@@ -29,8 +30,19 @@ LinkStats link_stats(const std::string& interface) {
                reinterpret_cast<sockaddr*>(&kernel), sizeof(kernel)) < 0)
         throw std::runtime_error("RTM_GETLINK send failed");
     alignas(nlmsghdr) std::array<char, 65536> buffer{};
-    int remaining = recv(socket_fd.fd, buffer.data(), buffer.size(), 0);
-    if (remaining <= 0) throw std::runtime_error("RTM_GETLINK receive failed");
+    sockaddr_nl sender{};
+    iovec payload{buffer.data(), buffer.size()};
+    msghdr message{};
+    message.msg_name = &sender;
+    message.msg_namelen = sizeof(sender);
+    message.msg_iov = &payload;
+    message.msg_iovlen = 1;
+    int remaining = recvmsg(socket_fd.fd, &message, 0);
+    if (remaining <= 0 || (message.msg_flags & MSG_TRUNC) ||
+        message.msg_namelen < sizeof(sender) || sender.nl_family != AF_NETLINK || sender.nl_pid != 0)
+        throw std::runtime_error("invalid RTM_GETLINK reply");
+    constexpr size_t required_stats = offsetof(rtnl_link_stats64, rx_dropped) +
+                                      sizeof(rtnl_link_stats64::rx_dropped);
     for (auto* header = reinterpret_cast<nlmsghdr*>(buffer.data()); NLMSG_OK(header, remaining); header = NLMSG_NEXT(header, remaining)) {
         if (header->nlmsg_seq != 1) continue;
         if (header->nlmsg_type == NLMSG_ERROR) throw std::runtime_error("RTM_GETLINK kernel error");
@@ -39,9 +51,9 @@ LinkStats link_stats(const std::string& interface) {
         if (info->ifi_index != static_cast<int>(index)) continue;
         int size = IFLA_PAYLOAD(header);
         for (auto* attr = IFLA_RTA(info); RTA_OK(attr, size); attr = RTA_NEXT(attr, size)) {
-            if (attr->rta_type == IFLA_STATS64 && RTA_PAYLOAD(attr) >= sizeof(rtnl_link_stats64)) {
+            if (attr->rta_type == IFLA_STATS64 && RTA_PAYLOAD(attr) >= required_stats) {
                 rtnl_link_stats64 stats{};
-                std::memcpy(&stats, RTA_DATA(attr), sizeof(stats));
+                std::memcpy(&stats, RTA_DATA(attr), required_stats);
                 return {stats.tx_bytes, stats.tx_dropped, stats.rx_bytes, stats.rx_dropped,
                         stats.tx_packets, stats.rx_packets, stats.tx_errors, stats.rx_errors};
             }

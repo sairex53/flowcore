@@ -18,7 +18,7 @@ from pathlib import Path
 from benchmark import ROOT
 from network_state import attrs, messages, snapshot, subscribe
 from observability import Observer
-from ipc_security import authorize, decode, notify
+from ipc_security import authorize, decode, notify, private_directory, private_lock
 from platform_network import Inventory
 from platform_policy import PolicyStore, merged
 from adaptive import Controller
@@ -85,8 +85,6 @@ class Service:
         watches = []
         try:
             candidate.start()
-            if self.research:
-                candidate.pin_research_namespaces()
             policy = self.config['policies'][name]
             candidate.install_policy(policy, settings)
             self.capabilities[policy['scheduler']] = 'verified'
@@ -353,16 +351,10 @@ def main():
         service.research = args.research
         service.monitor_only = args.monitor_only
         os.umask(0o077)
-        RUNTIME.mkdir(mode=0o700, exist_ok=True)
-        stat = RUNTIME.lstat()
-        if RUNTIME.is_symlink() or stat.st_uid != os.geteuid() or stat.st_mode & 0o077:
-            raise ValueError('runtime must be a private directory owned by daemon UID')
+        private_directory(RUNTIME)
         if STATE != RUNTIME:
-            STATE.mkdir(mode=0o700,exist_ok=True)
-            state_stat = STATE.lstat()
-            if STATE.is_symlink() or state_stat.st_uid!=os.geteuid() or state_stat.st_mode&0o077:
-                raise ValueError('state must be private and owned by daemon UID')
-        with (RUNTIME / 'daemon.lock').open('a') as lock, (STATE/'state.lock').open('a') as state_lock:
+            private_directory(STATE)
+        with private_lock(RUNTIME/'daemon.lock') as lock, private_lock(STATE/'state.lock') as state_lock:
             fcntl.flock(state_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             for stale in RUNTIME.glob('lab-*'):

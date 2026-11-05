@@ -62,10 +62,11 @@ std::string rpc(const std::string& path, std::string data) {
         unsent.remove_prefix(static_cast<size_t>(count));
     }
     std::string reply;
-    while (reply.size() < 32768) {
+    constexpr size_t reply_limit = 32768;
+    while (reply.size() < reply_limit) {
         wait_for(fd.value, POLLIN, deadline);
         char buffer[4096];
-        auto count = recv(fd.value, buffer, sizeof(buffer), 0);
+        auto count = recv(fd.value, buffer, std::min(sizeof(buffer), reply_limit - reply.size()), 0);
         if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         if (count <= 0) break;
         reply.append(buffer, static_cast<size_t>(count));

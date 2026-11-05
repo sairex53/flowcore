@@ -21,7 +21,7 @@ class BpfSource:
         self.events = 0
         self.started = 0
 
-    def start(self, holders, workspace):
+    def start(self, namespace_fds, workspace):
         self.close()
         self.loss = {'kernel': None, 'transport': None}
         self.events = self.parse_drops = 0
@@ -39,8 +39,8 @@ class BpfSource:
         else:
             self.log = (workspace / 'observer-bpf.log').open('w+')
             try:
-                self.proc = subprocess.Popen([binary, obj, *(str(os.stat(f'/proc/{p.pid}/ns/net').st_ino)
-                                                              for p in holders)],
+                self.proc = subprocess.Popen([binary, obj, *(str(os.fstat(fd).st_ino)
+                                                              for fd in namespace_fds)],
                                              stdout=subprocess.PIPE, stderr=self.log)
                 os.set_blocking(self.proc.stdout.fileno(), False)
                 self.started = time.monotonic()

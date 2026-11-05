@@ -21,7 +21,7 @@ sudo python3 scripts/benchmark.py --duration 12 --repetitions 3
 The machine already provides GCC, CMake, Ninja, Python, ip, ethtool, setpriv,
 nsenter, unshare, rpm2cpio and cpio. The setup script extracts Fedora iproute-tc
 under tools/ and uses the existing shared libraries. It does not require a
-system-wide tc installation. The lab configuration contains its absolute path.
+system-wide tc installation. The benchmark supplies the selected tc path to the legacy controller.
 
 A short functional run is available with
 

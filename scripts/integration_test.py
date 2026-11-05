@@ -23,9 +23,11 @@ def main():
     try:
         lab.start()
         lab.configure('flowcore')
-        controller = lab.spawn(0, [BINDIR/'flowcore', '--config', ROOT / 'config/lab.conf'],
-                               'controller', privileged=True, stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE)
+        rejected = subprocess.run([BINDIR/'flowcore', '--config', ROOT/'config/lab.conf',
+                                   '--lab-netns', '/proc/self/ns/net'], capture_output=True, text=True, timeout=3)
+        check(rejected.returncode == 1 and 'owned lab namespace' in rejected.stderr,
+              'legacy controller accepted the host namespace')
+        controller = lab.spawn_legacy_controller(stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         telemetry = []
         pending = bytearray()
         def event():
@@ -70,6 +72,16 @@ def main():
         controller.stdin.close()
         check(controller.wait(timeout=5) == 1, 'malformed input not rejected')
         check(rates()['1:10']['rate'] == 500000, 'error rollback failed')
+        controller = lab.spawn_legacy_controller(stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        check(event()['event'] == 'start', 'missing restart')
+        feed('30 100\n')
+        check(feed('30 100\n')['state'] == 'protected', 'restart did not protect')
+        controller.stdout.close()
+        controller.stdin.write(b'30 100\n')
+        controller.stdin.flush()
+        controller.stdin.close()
+        check(controller.wait(timeout=5) == 1, 'closed telemetry pipe skipped error handling')
+        check(rates()['1:10']['rate'] == 500000, 'closed telemetry pipe skipped rollback')
         lab.snapshot('final')
         (output / 'telemetry.json').write_text(json.dumps(telemetry, indent=2))
         print(f'PASS: transition, real class rates, stale telemetry, recovery and error rollback. {output}')

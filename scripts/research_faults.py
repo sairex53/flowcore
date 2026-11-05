@@ -1,5 +1,7 @@
 """Network faults scoped to an already-created ServiceLab."""
 import json
+import struct
+import subprocess
 import time
 import adaptive_tc
 from service_config import CLASSES, keys, number
@@ -62,7 +64,6 @@ def root(rows, kind):
 
 def apply_conditions(service, settings, mode, seed, link_up):
     """Operate only on interfaces owned by the daemon's ephemeral veth lab."""
-    from benchmark import TC
     from research_manifest import FAULTS, MODES, net_profile
     if not service.lab:
         raise ValueError('research requires an owned lab')
@@ -74,9 +75,23 @@ def apply_conditions(service, settings, mode, seed, link_up):
     if type(link_up) is not bool:
         raise ValueError('link_up must be boolean')
     lab = service.lab
-    cap = profile['bandwidth_kbit']
-    if not getattr(lab, 'research_fds', None):
+    if not lab.namespace_fds:
         raise RuntimeError('research namespace handles are not pinned')
+    if service.research_mode is not None and mode != service.research_mode:
+        raise ValueError('research mode cannot change within a trial')
+    try:
+        return update_conditions(service, lab, profile, mode, seed, link_up)
+    except (OSError, ValueError, RuntimeError, KeyError, struct.error, subprocess.SubprocessError) as error:
+        # qdisc, class and netem updates are separate kernel operations. An
+        # uncertain partial update invalidates the trial and its disposable lab.
+        service.close_lab()
+        service.error = f'research update failed; lab removed: {error}'
+        raise RuntimeError(service.error) from error
+
+
+def update_conditions(service, lab, profile, mode, seed, link_up):
+    from benchmark import TC
+    cap = profile['bandwidth_kbit']
     if service.research_mode is None:
         if mode in ('linux', 'fifo', 'fq_codel'):
             installed = service.config['policies'][service.active]
@@ -92,8 +107,6 @@ def apply_conditions(service, settings, mode, seed, link_up):
                 lab.tc('qdisc','add','dev','fc0','parent','1:20',
                        'pfifo' if mode=='fifo' else 'fq_codel','limit','1000')
         service.research_mode = mode
-    elif mode != service.research_mode:
-        raise ValueError('research mode cannot change within a trial')
     qdiscs = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
     if mode == 'cake':
         root(qdiscs, 'cake')

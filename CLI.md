@@ -43,5 +43,5 @@ workload examples and phase timing.
 Exit codes are 0 for success, 1 for rejection or experiment failure, 2 for
 invalid CLI syntax, 3 for unavailable IPC or a Linux query error, and 130
 for an interrupted research run. A confirmed regression also returns 1.
-`--config FILE` and `--link IFACE` preserve the original C++ controller
+`--config FILE --lab-netns PATH` and `--link IFACE` expose the legacy benchmark controller
 and read-only link-stat entry points.

@@ -1,5 +1,6 @@
 #include "flowcore/policy.hpp"
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <poll.h>
 #include <unistd.h>
 #include <filesystem>
@@ -32,6 +33,15 @@ void tc_class(const flowcore::Config& c, int id, int percent, int priority) {
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
         throw std::runtime_error("tc class update failed");
 }
+void require_lab_namespace(const char* path) {
+    struct stat current{}, initial{}, expected{};
+    auto same = [](const struct stat& left, const struct stat& right) {
+        return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+    };
+    if (stat("/proc/self/ns/net", &current) || stat("/proc/1/ns/net", &initial) ||
+        stat(path, &expected) || same(current, initial) || !same(current, expected))
+        throw std::runtime_error("legacy controller requires the owned lab namespace");
+}
 void apply(const flowcore::Config& c, bool protected_mode) {
     int critical = protected_mode ? c.protected_percent : c.balanced_percent;
     // Decrease a reservation before increasing its peer's reservation.
@@ -47,6 +57,7 @@ void log(const flowcore::Config& c, bool protected_mode, const std::string& even
               << (protected_mode ? "protected" : "balanced") << "\",\"p99_ms\":" << p99
               << ",\"samples\":" << samples << ",\"tx_bytes\":" << stats.tx_bytes
               << ",\"tx_dropped\":" << stats.tx_dropped << "}\n" << std::flush;
+    if (!std::cout) throw std::runtime_error("controller telemetry write failed");
 }
 }
 int main(int argc, char** argv) {
@@ -83,12 +94,14 @@ int main(int argc, char** argv) {
                       << ",\"tx_errors\":" << s.tx_errors << ",\"rx_errors\":" << s.rx_errors << "}\n";
             return 0;
         }
-        if (argc != 3 || std::string(argv[1]) != "--config")
-            throw std::runtime_error("usage: flowcore --config FILE | --link INTERFACE");
+        if (argc != 5 || std::string(argv[1]) != "--config" || std::string(argv[3]) != "--lab-netns")
+            throw std::runtime_error("usage: flowcore --config FILE --lab-netns PATH | --link INTERFACE");
+        require_lab_namespace(argv[4]);
         config = flowcore::read_config(argv[2]);
         flowcore::Policy policy(config);
         std::signal(SIGTERM, stop);
         std::signal(SIGINT, stop);
+        std::signal(SIGPIPE, SIG_IGN);
         actuator_started = true;
         apply(config, false);
         log(config, false, "start");

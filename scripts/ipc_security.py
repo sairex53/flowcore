@@ -3,6 +3,7 @@ import json
 import math
 import os
 import socket
+import stat
 from service_config import unique
 
 READ = frozenset(('status','lab_status','interfaces','observe','health','metrics','events','connections',
@@ -39,6 +40,26 @@ def decode(raw):
 def authorize(op, readonly, uid, owner):
     if (uid!=owner and not (uid==0 and op in READ)) or (readonly and op not in READ):
         raise PermissionError('operation forbidden by local daemon policy')
+
+
+def private_directory(path):
+    path.mkdir(mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ValueError(f'expected private daemon-owned directory: {path}')
+
+
+def private_lock(path):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise ValueError(f'expected private regular lock file: {path}')
+        return os.fdopen(fd, 'a')
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def notify(message):

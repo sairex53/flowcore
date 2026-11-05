@@ -22,14 +22,22 @@ CONTAINER = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}')
 def cgroup(pid):
     if type(pid) is not int or pid<=0:
         raise ValueError('container is not running')
-    with open(f'/proc/{pid}/cgroup') as stream:
-        path = next((line.rstrip().split(':',2)[2] for line in stream if line.startswith('0::')),None)
+    proc = os.open(f'/proc/{pid}', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        # A single proc directory anchors all reads to the same task identity.
+        task = Path(f'/proc/self/fd/{proc}')
+        started = (task/'stat').read_text().rsplit(')', 1)[1].split()[19]
+        with (task/'cgroup').open() as stream:
+            path = next((line.rstrip().split(':',2)[2] for line in stream if line.startswith('0::')),None)
+        netns = (task/'ns/net').stat().st_ino
+    finally:
+        os.close(proc)
     if not path or len(path)>4096 or not SAFE_CGROUP.fullmatch(path) or any(part in ('.','..') for part in path.split('/')):
         raise ValueError('no supported non-root cgroup v2 path')
     directory = (CGROUP/path.lstrip('/')).resolve()
     if not directory.is_relative_to(CGROUP):
         raise ValueError('cgroup path escaped mount')
-    return dict(path=path,id=directory.stat().st_ino,network_namespace=os.stat(f'/proc/{pid}/ns/net').st_ino)
+    return dict(path=path,id=directory.stat().st_ino,network_namespace=netns,process_start_ticks=started)
 
 
 def podman(store=None):
@@ -66,7 +74,7 @@ def attach(service, pid, traffic_class):
         raise ValueError('cgroup classification requires the explicitly owned research lab')
     lab = service.lab
     identity = cgroup(pid)
-    owned = os.fstat(lab.research_fds[0]).st_ino
+    owned = os.fstat(lab.namespace_fds[0]).st_ino
     if identity['network_namespace']!=owned:
         raise ValueError('container does not share the owned sender namespace')
     policy = service.config['policies'][service.active]

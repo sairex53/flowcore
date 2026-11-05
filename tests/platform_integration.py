@@ -13,7 +13,7 @@ from benchmark import TC, owned_directory
 from observer_perf import await_service, stop
 from platform_network import Inventory
 from platform_policy import PolicyStore, load_json
-from service_lab import ServiceLab, network_namespace
+from service_lab import ServiceLab
 
 
 def check(condition,message):
@@ -25,15 +25,18 @@ def test_interfaces(path):
     lab = ServiceLab(path)
     try:
         lab.start()
-        lab.pin_research_namespaces()
-        lab.command(0,['ip','link','add','testa','type','veth','peer','name','testb','netns',lab.holders[1].pid])
+        lab.command(0,['ip','link','add','testa','type','veth','peer','name','testb','netns',lab.namespace_path(1)])
         for index,name,addr in ((0,'testa','10.205.0.1/30'),(1,'testb','10.205.0.2/30')):
             lab.command(index,['ip','addr','add',addr,'dev',name])
             lab.command(index,['ip','link','set',name,'up'])
+        assert len(lab.namespace_fds) == 2
+        for index, fd in enumerate(lab.namespace_fds):
+            assert os.stat(lab.namespace_path(index)).st_ino == os.fstat(fd).st_ino
+            assert os.fstat(fd).st_ino != os.stat('/proc/self/ns/net').st_ino
         lab.command(0,[TC,'qdisc','add','dev','testa','root','pfifo','limit','64'])
         inventory = Inventory(PolicyStore())
         def snapshot():
-            with network_namespace(lab.holders[0].pid):
+            with lab.enter(0):
                 inventory.refresh()
             view = inventory.status()
             check(view['error'] is None,'inventory read failed')
@@ -54,6 +57,14 @@ def test_interfaces(path):
         events = {event['event'] for event in recovered['events']}
         check({'link_unavailable','recovered','routes_changed'}<=events,'missing lifecycle notifications')
         (path/'interfaces.json').write_text(json.dumps(recovered,indent=2))
+        lab.holders[1].terminate()
+        lab.holders[1].wait(timeout=3)
+        try:
+            lab.namespace_path(1)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError('dead namespace holder still accepted for commands')
     finally:
         lab.close()
 

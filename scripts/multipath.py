@@ -133,12 +133,11 @@ def experiment(duration=10):
         with (path/'server.log').open('w') as sl,(path/'client.log').open('w') as cl:
             try:
                 lab.start()
-                lab.pin_research_namespaces()
                 initial = [json.loads(lab.command(i,[sys.executable,'-B',__file__,'capabilities'])) for i in (0,1)]
                 save(path/'capabilities.json',initial)
                 if not all(row['socket_supported'] and row['limits'] is not None for row in initial):
                     raise RuntimeError(f'MPTCP unavailable in lab namespaces: {path}')
-                lab.command(0,['ip','link','add','mp0','type','veth','peer','name','mp1','netns',lab.holders[1].pid])
+                lab.command(0,['ip','link','add','mp0','type','veth','peer','name','mp1','netns',lab.namespace_path(1)])
                 for index,interface,ip in ((0,'mp0','10.204.0.1/30'),(1,'mp1','10.204.0.2/30')):
                     lab.command(index,['ip','addr','add',ip,'dev',interface])
                     lab.command(index,['ip','link','set',interface,'up'])
@@ -146,7 +145,7 @@ def experiment(duration=10):
                 lab.command(1,['ip','mptcp','endpoint','add','10.204.0.2','dev','mp1','id','2','signal'])
                 save(path/'endpoints.json',[json.loads(lab.command(i,['ip','-j','mptcp','endpoint','show'])) for i in (0,1)])
                 def worker(index, role, log):
-                    fd = lab.research_fds[index]
+                    fd = lab.namespace_fds[index]
                     return child(['nsenter',f'--net=/proc/self/fd/{fd}','--',sys.executable,'-B',__file__,
                                   role,path/'transfer.jsonl',str(duration)],pass_fds=(fd,),stdout=log,stderr=log)
                 server = worker(1,'server',sl)

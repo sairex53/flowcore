@@ -10,7 +10,7 @@ RuntimeDirectory=flowcore
 RuntimeDirectoryMode=0700
 StateDirectory=flowcore
 StateDirectoryMode=0700
-Environment=FLOWCORE_STATE=/var/lib/flowcore
+Environment=FLOWCORE_STATE=/var/lib/flowcore/state
 UMask=0077
 NoNewPrivileges=yes
 CapabilityBoundingSet=

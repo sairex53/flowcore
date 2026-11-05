@@ -8,7 +8,6 @@ from pathlib import Path
 
 from bpf_source import BpfSource
 from service_config import number
-from service_lab import network_namespace
 from tcp_diag import connections
 from telemetry_windows import Windows
 
@@ -67,7 +66,7 @@ class Observer:
         self.generation += 1
         self.reset()
         if self.cfg['enabled']:
-            self.bpf.start(lab.holders, lab.output)
+            self.bpf.start(lab.namespace_fds, lab.output)
         else:
             self.bpf.reason = 'observability disabled'
 
@@ -239,7 +238,7 @@ class Observer:
         truncated = False
         try:
             for index, name in enumerate(('sender', 'receiver')):
-                with network_namespace(lab.holders[index].pid):
+                with lab.enter(index):
                     found, limited = connections(self.cfg['max_sockets'] // 2)
                 for row in found:
                     row['namespace'] = name

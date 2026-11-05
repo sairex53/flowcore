@@ -16,19 +16,24 @@ def command(argv, **kw):
 def main():
     if os.geteuid()==0:
         raise SystemExit('run the installed monitor test unprivileged')
+    build = Path(os.environ.get('FLOWCORE_TEST_BUILD', ROOT/'build')).resolve()
     with tempfile.TemporaryDirectory(prefix='deploy-',dir=ROOT/'build') as work:
         work = Path(work)
         stage = work/'stage'
         env = dict(os.environ,DESTDIR=str(stage),TMPDIR=str(work))
-        command(['cmake','--install',ROOT/'build','--prefix','/usr'],env=env)
+        command(['cmake','--install',build,'--prefix','/usr'],env=env)
         prefix = stage/'usr'
-        manifest = [stage/line.lstrip('/') for line in (ROOT/'build/install_manifest.txt').read_text().splitlines()]
+        manifest = [stage/line.lstrip('/') for line in (build/'install_manifest.txt').read_text().splitlines()]
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)
         cli,daemon = (prefix/'bin'/name for name in ('flowcore','flowcored'))
         assert command([cli,'--version']).strip()=='FLOWCORE 0.2.0'
         assert command([daemon,'--version']).strip()=='0.2.0'
         runtime = work/'runtime'
-        state = work/'state'
+        private_state = work/'private-state'
+        private_state.mkdir(mode=0o700)
+        public_state = work/'public-state'
+        public_state.symlink_to(private_state, target_is_directory=True)
+        state = public_state/'state'
         notify = work/'notify'
         env = dict(os.environ,FLOWCORE_RUNTIME=str(runtime),FLOWCORE_STATE=str(state),NOTIFY_SOCKET=str(notify))
         env.pop('DESTDIR',None)
@@ -38,6 +43,7 @@ def main():
             proc = subprocess.Popen([daemon,'--monitor-only'],env=env,stdout=log,stderr=log)
             try:
                 assert notifications.recv(256)==b'READY=1'
+                assert (private_state/'state/state.lock').is_file()
                 assert b'/share/flowcore/scripts/daemon.py' in Path(f'/proc/{proc.pid}/cmdline').read_bytes()
                 assert any(line.split()[1]=='0000000000000000' for line in
                            Path(f'/proc/{proc.pid}/status').read_text().splitlines() if line.startswith('CapEff:'))

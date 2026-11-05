@@ -1,5 +1,5 @@
 """Execute validated manifests using the existing daemon and TCP workloads."""
-from paths import BINDIR, RESULTS
+from paths import BINDIR, RESULTS, RUNTIME
 import contextlib
 import csv
 import fcntl
@@ -10,19 +10,22 @@ import random
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from adaptive_experiment import await_ready
 from benchmark import ROOT, owned_directory, receiver_metrics, run, TC
 from cli import request
+from ipc_security import private_directory, private_lock
 from daemon import SOCKET
 from observer_perf import await_service, command, stop, cpu_ticks
 from research_manifest import FAULTS, net_profile, validate
 from service_config import load
 from workload import percentile
 
-MARKER = RESULTS/'.research-active.json'
+MARKER = RUNTIME/'research-active.json'
+LOCK = RUNTIME/'research.lock'
 NANO = 1_000_000_000
 
 
@@ -35,7 +38,8 @@ def exclusive():
     if os.geteuid() != 0:
         raise ValueError('research networking requires sudo')
     RESULTS.mkdir(exist_ok=True)
-    with (RESULTS/'.research.lock').open('a') as lock:
+    private_directory(RUNTIME)
+    with private_lock(LOCK) as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
@@ -50,9 +54,14 @@ def exclusive():
         for sig in old:
             signal.signal(sig, interrupt)
         try:
-            temporary = MARKER.with_suffix('.tmp')
-            temporary.write_text(json.dumps(dict(pid=os.getpid(), start=process_start(os.getpid()))))
-            temporary.replace(MARKER)
+            with tempfile.NamedTemporaryFile(mode='w', dir=RUNTIME, delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    json.dump(dict(pid=os.getpid(), start=process_start(os.getpid())), stream)
+                    stream.close()
+                    temporary.replace(MARKER)
+                finally:
+                    temporary.unlink(missing_ok=True)
             yield
         finally:
             for sig, handler in old.items():
@@ -64,13 +73,14 @@ def cancel():
     if os.geteuid() != 0:
         raise ValueError('research stop requires sudo')
     try:
+        private_directory(RUNTIME)
         row = json.loads(MARKER.read_text())
         with contextlib.ExitStack() as stack:
             fd = os.pidfd_open(row['pid'])
             stack.callback(os.close, fd)
             if process_start(row['pid']) != row['start']:
                 raise ValueError('stale research runner identity')
-            target = (RESULTS/'.research.lock').stat()
+            target = LOCK.stat()
             owned = False
             for descriptor in Path(f'/proc/{row["pid"]}/fd').iterdir():
                 try:
@@ -83,7 +93,7 @@ def cancel():
             if not owned:
                 raise ValueError('process does not own the research workspace descriptor')
             # A live lock proves the workspace has a runner.
-            with (RESULTS/'.research.lock').open('a') as lock:
+            with private_lock(LOCK) as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:

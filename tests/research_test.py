@@ -5,10 +5,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
+from benchmark import receiver_metrics
+from research_faults import apply_conditions
 from research_manifest import load_manifest, validate
 from research_report import report
 from research_runner import convergence
@@ -18,6 +21,31 @@ from research_stats import aggregate, compare, median_ci
 class Research(unittest.TestCase):
     def manifest(self):
         return load_manifest(ROOT/'scenarios/chaos-smoke.json')
+
+    def test_receiver_sample_validation(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
+            path = Path(work)/'receiver.jsonl'
+            def measure(samples, start=0, end=1):
+                path.write_text(''.join(json.dumps(dict(time=t, bytes=b))+'\n' for t,b in samples))
+                return receiver_metrics(path, start, end)
+            self.assertEqual(measure([(0,[0,0]),(1,[125000,125000])])['background_mbps'], 2)
+            for invalid in ([(0,[0]),(0,[2])], [(0,[1]),(1,[0])],
+                            [(0,[0,0]),(1,[1])], [(0,[0]),(float('nan'),[1])]):
+                with self.assertRaises(ValueError):
+                    measure(invalid)
+            with self.assertRaises(ValueError):
+                measure([(0,[0]),(1,[1])], 1, 1)
+
+    def test_failed_fault_removes_lab(self):
+        service = Mock(lab=Mock(namespace_fds=[10,11]), research_mode='fq_codel')
+        network = self.manifest()["network"]
+        with self.assertRaises(ValueError):
+            apply_conditions(service, network, 'fifo', 1, True)
+        service.close_lab.assert_not_called()
+        with patch('research_faults.update_conditions', side_effect=OSError('injected kernel failure')):
+            with self.assertRaisesRegex(RuntimeError, 'lab removed'):
+                apply_conditions(service, network, 'fq_codel', 1, True)
+        service.close_lab.assert_called_once()
 
     def test_validation_and_replay(self):
         m = self.manifest()

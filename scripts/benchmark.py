@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Isolated, repeatable namespace experiment. Run from the project root as root."""
 import argparse
+import contextlib
+import sys
 import hashlib
 import json
+import math
 import os
 import random
 import signal
@@ -11,7 +14,7 @@ import time
 from pathlib import Path
 
 from paths import BINDIR, RESULTS, ROOT, TC
-ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', FLOWCORE_TC=str(TC))
 if (ROOT/'tools/root/usr/lib64/tc').is_dir():
     ENV['TC_LIB_DIR'] = str(ROOT/'tools/root/usr/lib64/tc')
 UID = int(os.environ.get('SUDO_UID', '0'))
@@ -35,6 +38,7 @@ class Lab:
         self.processes = []
         self.holders = []
         self.files = []
+        self.namespace_fds = []
 
     def close(self):
         # Worker groups first, namespace holders last. No host interface is created.
@@ -52,9 +56,27 @@ class Lab:
                 proc.wait()
         for stream in self.files:
             stream.close()
+        for fd in self.namespace_fds:
+            os.close(fd)
+        self.namespace_fds.clear()
+
+    def namespace_path(self, index):
+        if self.holders[index].poll() is not None:
+            raise RuntimeError('lab namespace holder exited')
+        return f'/proc/{os.getpid()}/fd/{self.namespace_fds[index]}'
+
+    @contextlib.contextmanager
+    def enter(self, index):
+        self.namespace_path(index)
+        with open('/proc/self/ns/net', 'rb') as previous:
+            os.setns(self.namespace_fds[index], os.CLONE_NEWNET)
+            try:
+                yield
+            finally:
+                os.setns(previous.fileno(), os.CLONE_NEWNET)
 
     def ns(self, index, argv):
-        return ['nsenter', '--target', str(self.holders[index].pid), '--net', '--'] + [str(arg) for arg in argv]
+        return ['nsenter', f'--net={self.namespace_path(index)}', '--', *map(str, argv)]
 
     def command(self, index, argv):
         command = self.ns(index, argv)
@@ -63,22 +85,39 @@ class Lab:
         return run(command)
 
     def holder_command(self):
-        return ['unshare', '--net', '--', 'sleep', '3600']
+        return [sys.executable, '-I', '-B', ROOT/'scripts/namespace_holder.py', str(os.getpid())]
 
     def start(self):
+        host = os.stat('/proc/self/ns/net')
+        identities = {(host.st_dev, host.st_ino)}
         for _ in range(2):
             proc = subprocess.Popen(self.holder_command(), start_new_session=True)
             self.holders.append(proc)
             for attempt in range(100):
                 if proc.poll() is not None:
                     raise RuntimeError('network namespace creation failed')
-                if os.stat(f'/proc/{proc.pid}/ns/net').st_ino != os.stat('/proc/self/ns/net').st_ino:
-                    break
+                fd = os.open(f'/proc/{proc.pid}/ns/net', os.O_RDONLY | os.O_CLOEXEC)
+                try:
+                    if proc.poll() is not None:
+                        raise RuntimeError('network namespace holder exited during startup')
+                    ns = os.fstat(fd)
+                    identity = ns.st_dev, ns.st_ino
+                    if identity != (host.st_dev, host.st_ino):
+                        if identity in identities:
+                            raise RuntimeError('lab namespaces must be distinct')
+                        identities.add(identity)
+                        self.namespace_fds.append(fd)
+                        fd = None
+                        break
+                finally:
+                    if fd is not None:
+                        os.close(fd)
                 time.sleep(.01)
             else:
                 raise RuntimeError('network namespace creation timed out')
         (self.output / 'namespace-pids.json').write_text(json.dumps([p.pid for p in self.holders]))
-        self.command(0, ['ip', 'link', 'add', 'fc0', 'type', 'veth', 'peer', 'name', 'fc1', 'netns', self.holders[1].pid])
+        self.command(0, ['ip', 'link', 'add', 'fc0', 'type', 'veth', 'peer', 'name', 'fc1',
+                         'netns', self.namespace_path(1)])
         for index, interface, address in [(0, 'fc0', '10.203.0.1/30'), (1, 'fc1', '10.203.0.2/30')]:
             self.command(index, ['ip', 'link', 'set', 'lo', 'up'])
             self.command(index, ['ip', 'addr', 'add', address, 'dev', interface])
@@ -107,6 +146,11 @@ class Lab:
         if classified:
             self.tc('filter', 'add', 'dev', 'fc0', 'parent', '1:', 'protocol', 'ip', 'pref', '10', 'flower', 'ip_proto', 'tcp', 'dst_port', '9000', 'classid', '1:10')
 
+    def spawn_legacy_controller(self, **kwargs):
+        return self.spawn(0, [BINDIR/'flowcore', '--config', ROOT/'config/lab.conf',
+                              '--lab-netns', self.namespace_path(0)],
+                          'controller', privileged=True, **kwargs)
+
     def snapshot(self, label):
         for kind in ['qdisc', 'class', 'filter']:
             (self.output / f'{label}-{kind}.json').write_text(self.tc('-s', '-j', kind, 'show', 'dev', 'fc0'))
@@ -127,7 +171,22 @@ class Lab:
 
 
 def receiver_metrics(path, start, end):
-    records = [json.loads(line) for line in path.read_text().splitlines()]
+    if not math.isfinite(start) or not math.isfinite(end) or start >= end:
+        raise ValueError('invalid receiver measurement interval')
+    records = []
+    with path.open() as stream:
+        for line in stream:
+            row = json.loads(line)
+            when, counters = row['time'], row['bytes']
+            if (not math.isfinite(when) or not isinstance(counters, list) or not counters
+                    or any(type(count) is not int or count < 0 for count in counters)):
+                raise ValueError('invalid receiver sample')
+            if records:
+                previous = records[-1]
+                if (when <= previous['time'] or len(counters) != len(previous['bytes'])
+                        or any(right < left for left, right in zip(previous['bytes'], counters))):
+                    raise ValueError('receiver samples are not monotonic or flow count changed')
+            records.append(row)
     def interpolate(when):
         for a, b in zip(records, records[1:]):
             if a['time'] <= when <= b['time']:
@@ -160,7 +219,7 @@ def trial(parent, mode, duration, label):
             raise RuntimeError('server startup timed out')
         controller = None
         if mode == 'flowcore':
-            controller = lab.spawn(0, [BINDIR/'flowcore', '--config', ROOT / 'config/lab.conf'], 'controller', privileged=True, stdin=subprocess.PIPE)
+            controller = lab.spawn_legacy_controller(stdin=subprocess.PIPE)
         client = lab.spawn(0, ['python3', ROOT / 'scripts/workload.py', 'client', output,
                               '--duration', duration], 'client', stdout=controller.stdin if controller else subprocess.DEVNULL)
         if controller:
@@ -191,7 +250,8 @@ def trial(parent, mode, duration, label):
         result.update(mode=mode, trial=label, duration=duration, valid=(rc == 0))
         result['bandwidth_gate'] = result['background_mbps'] >= 10 and result['jain_index'] >= .8
         (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-        print(f"{label}: p99={result['p99_ms']:.2f} ms bg={result['background_mbps']:.2f} Mbit/s Jain={result['jain_index']:.3f}", flush=True)
+        tail = f"{result['p99_ms']:.2f} ms" if result['p99_ms'] is not None else 'unavailable'
+        print(f"{label}: p99={tail} bg={result['background_mbps']:.2f} Mbit/s Jain={result['jain_index']:.3f}", flush=True)
         return result
     except Exception as error:
         result = {'mode': mode, 'trial': label, 'valid': False, 'error': str(error)}

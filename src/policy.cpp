@@ -1,5 +1,6 @@
 #include "flowcore/policy.hpp"
 #include <cmath>
+#include <cstdlib>
 #include <algorithm>
 #include <fstream>
 #include <set>
@@ -40,6 +41,10 @@ Config read_config(const std::string& path) {
     if (c.interface.empty() || c.interface.size() >= 16 ||
         c.interface.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos)
         throw std::runtime_error("invalid interface");
+    if (c.tc.empty()) {
+        const auto* tc = std::getenv("FLOWCORE_TC");
+        c.tc = tc ? tc : "/usr/sbin/tc";
+    }
     if (c.tc.empty() || c.tc.front() != '/') throw std::runtime_error("tc must be an absolute path");
     if (c.capacity_kbit < 1000 || c.capacity_kbit > 10000000 ||
         !std::isfinite(c.slo_ms) || c.slo_ms <= 0 || c.slo_ms > 60000 ||
