@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,13 +96,18 @@ def main():
             'if(argc==2){if(!s.wait_ready(std::chrono::seconds(3)))return 2;'
             'for(int n=0;n<16;++n){auto r=s.begin_request();(void)r.complete();'
             'if(!s.flush(std::chrono::seconds(3)))return 4;'
-            'if(s.statistics().accepted>=2)return 0;}return 3;} }\n')
+            'if(s.statistics().accepted>=2){auto t=s.transport_statistics();'
+            'return t.session_connections==1 && !t.legacy_requests?0:5;}}return 3;} }\n')
         command(['cmake','-S',sdk,'-B',sdk/'build','-G','Ninja',f'-DCMAKE_PREFIX_PATH={prefix}'])
         command(['cmake','--build',sdk/'build'])
         command([sdk/'build/consumer'])
         with (work/'installed-intent.log').open('w') as log:
             proc=subprocess.Popen([daemon],env=env,stdout=log,stderr=log)
             try:
+                deadline=time.monotonic()+3
+                while not (runtime/'control.sock').exists():
+                    assert proc.poll() is None and time.monotonic()<deadline
+                    time.sleep(.01)
                 command([sdk/'build/consumer',runtime/'control.sock'])
             finally:
                 proc.terminate()

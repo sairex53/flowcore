@@ -10,10 +10,14 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"unsafe"
 )
 
 func main() {
+	// Keep separate fc_v2_error reads on the C call's OS thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if len(os.Args) != 2 {
 		panic("provide daemon socket path")
 	}
@@ -42,5 +46,10 @@ func main() {
 	if C.fc_v2_stats(service, &statistics) == 0 || statistics.accepted == 0 || statistics.rejected != 0 {
 		panic("telemetry was not acknowledged")
 	}
+	var transport C.fc_v2_transport_statistics
+	if C.fc_v2_transport_stats(service, &transport) == 0 {
+		panic("transport diagnostics unavailable")
+	}
+	fmt.Printf("sessions=%d frames=%d generation=%d\n", uint64(transport.session_connections), uint64(transport.session_requests), uint64(C.fc_v2_generation(service)))
 	fmt.Printf("accepted=%d rejected=%d dropped=%d\n", uint64(statistics.accepted), uint64(statistics.rejected), uint64(statistics.dropped))
 }

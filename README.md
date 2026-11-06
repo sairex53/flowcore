@@ -129,3 +129,5 @@ Application integration: [Intent API V2](INTENT_API.md) and [C++ / C / Python ex
 V2 provides process-bound cooperative request telemetry and FD-attested socket correlation; it does not promise per-request packet scheduling.
 
 Opt-in [eBPF flow engine](EBPF_FLOW_ENGINE.md): owned-namespace TCP/UDP classification and [measured performance](EBPF_PERFORMANCE.md). Read-only fallback: `flowcore flows --json`.
+
+Intent V2 now supports persistent authenticated sessions, renewable process leases, UDP socket bindings and explicit dissociation. See [application integration](APPLICATION_INTEGRATION.md) for the shared-connection multiplex demo.

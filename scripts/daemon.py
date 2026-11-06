@@ -24,6 +24,7 @@ from platform_policy import PolicyStore, merged
 from adaptive import Controller
 from service_config import keys, load, profile
 from service_lab import ServiceLab
+from intent_session import Sessions
 
 LIMIT = 65536
 from paths import RUNTIME, SOCKET, STATE, VERSION
@@ -149,7 +150,7 @@ class Service:
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
         if op == 'intent_v2_revoke':
             keys(request,('op','name'))
-            return self.intent_api.revoke(request.get('name'))
+            return self.intent_api.revoke(request.get('name'),uid,pid)
         if op == 'intent_v2':
             return self.intent_api.call(request,uid,pid,passed_fd)
         if op == 'platform_interfaces':
@@ -451,7 +452,7 @@ def main():
             service.observer.sample_host(service.inventory)
             if SOCKET.is_socket():
                 SOCKET.unlink()
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host, Sessions(service,RUNTIME/'intent.sock') as sessions:
                 server.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
                 server.bind(str(SOCKET))
                 try:
@@ -468,7 +469,7 @@ def main():
                     while not stopped:
                         watchers = [host, *service.watches]
                         observer_fd = service.observer.bpf.fd()
-                        inputs = [server, *watchers] + ([observer_fd] if observer_fd is not None else [])
+                        inputs = [server, *watchers, *sessions.inputs()] + ([observer_fd] if observer_fd is not None else [])
                         ready, _, _ = select.select(inputs, [], [], .25 if service.lab else 1)
                         if observer_fd is not None:
                             service.observer.drain()
@@ -477,6 +478,7 @@ def main():
                                 service.event(watcher, ('host', 'sender', 'receiver')[index])
                         if server in ready:
                             handle(server, service)
+                        sessions.poll(ready)
                         if service.lab and time.monotonic()-service.sampled >= service.config['telemetry_seconds']:
                             service.poll_metrics()
                         service.intent_api.expire()

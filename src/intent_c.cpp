@@ -38,7 +38,8 @@ fc_v2_request* fc_v2_begin(fc_v2_service* s,uint32_t us,uint64_t cookie) {
 }
 int fc_v2_finish(fc_v2_request* r,uint32_t outcome) {
     if (!r) return 0;
-    bool ok=r->value.complete(outcome<=3?static_cast<Outcome>(outcome):Outcome::Failure);
+    if (outcome>3) { delete r;error="invalid request outcome";return 0; }
+    bool ok=r->value.complete(static_cast<Outcome>(outcome));
     delete r;
     return ok;
 }
@@ -52,5 +53,23 @@ uint32_t fc_v2_notifications(fc_v2_service* s) { return s ? s->value.notificatio
 uint64_t fc_v2_associate(fc_v2_service* s,int fd) {
     try { return s ? s->value.associate_socket(fd) : 0; } catch (...) { save();return 0; }
 }
+int fc_v2_dissociate(fc_v2_service* s,uint64_t cookie,uint64_t* abandoned) {
+    try {
+        if (!s) return 0;
+        auto count=s->value.dissociate_socket(cookie);
+        if (abandoned) *abandoned=count;
+        return 1;
+    } catch (...) { save();return 0; }
+}
+int fc_v2_transport_stats(fc_v2_service* s,fc_v2_transport_statistics* out) {
+    if (!s || !out) return 0;
+    auto stats=s->value.transport_statistics();
+    *out={stats.session_connections,stats.session_requests,stats.legacy_requests};
+    return 1;
+}
+uint32_t fc_v2_last_error(fc_v2_service* s) { return s?static_cast<uint32_t>(s->value.last_error()):1; }
+uint64_t fc_v2_generation(fc_v2_service* s) { return s?s->value.registration_generation():0; }
+uint64_t fc_v2_notifications_time(fc_v2_service* s) { return s?s->value.notifications_time_ns():0; }
+uint64_t fc_v2_request_id(const fc_v2_request* r) { return r?r->value.id():0; }
 const char* fc_v2_error() { return error.c_str(); }
 }

@@ -1,4 +1,5 @@
 #include "flowcore/intent_v2.hpp"
+#include "intent_transport.hpp"
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -29,10 +30,9 @@ std::string field(std::string_view text, std::string_view key) {
     return std::string(text.substr(pos,end-pos));
 }
 std::uint64_t integer(std::string_view text, std::string_view key) {
-    auto pos=text.find(key);
-    if (pos==std::string_view::npos) throw std::runtime_error("missing integer field");
-    return std::stoull(std::string(text.substr(pos+key.size())));
+    return detail::unsigned_field(text,key);
 }
+
 bool label(std::string_view text) {
     return !text.empty() && text.size()<=32 && text[0]>='a' && text[0]<='z' &&
            text.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-")==std::string_view::npos;
@@ -47,7 +47,8 @@ struct Event {
 struct Channel {
     const pid_t owner=getpid();
     const std::string path, registration;
-    const std::uint32_t default_deadline;
+    const std::uint32_t default_deadline,lifetime;
+    Transport transport;
     std::mutex mutex;
     std::condition_variable changed;
     std::array<Event,512> queue{};
@@ -57,10 +58,14 @@ struct Channel {
     std::atomic<bool> connected{false};
     std::atomic<std::uint64_t> sequence{0}, generation{0}, queued{0}, accepted{0}, dropped{0}, rejected{0}, errors{0};
     std::atomic<std::uint32_t> notifications{0};
+    std::atomic<Error> last_error{Error::None};
+    std::atomic<std::uint64_t> notification_time{0};
+    std::uint64_t renew_after=0;
+    bool first=true,can_renew=false;
     std::thread worker;
 
     Channel(std::string socket, const Intent& intent)
-        : path(std::move(socket)), registration(make_registration(intent)), default_deadline(intent.deadline_us),
+        : path(std::move(socket)), registration(make_registration(intent)), default_deadline(intent.deadline_us),lifetime(intent.lifetime_seconds),transport(path),
           worker([this]{ run(); }) {}
     static std::string make_registration(const Intent& i) {
         if ((i.priority!=Priority::Standard && i.priority!=Priority::Interactive && i.priority!=Priority::Critical) || !label(i.service) || i.deadline_us>600000000 || !i.lifetime_seconds || i.lifetime_seconds>3600 ||
@@ -72,10 +77,10 @@ struct Channel {
                              i.priority==Priority::Interactive ? "interactive" : "standard";
         return "{\"op\":\"intent_v2\",\"version\":2,\"action\":\"register\",\"isolation\":\""+
             std::string(i.prefer_isolation?"dedicated_preference":"shared")+"\",\"intent\":{\"name\":\""+i.service+
-            "\",\"priority\":\""+priority+"\",\"target_p99_ms\":"+std::to_string(i.target_latency_us/1000.0)+
+            "\",\"priority\":\""+priority+"\",\"target_p99_ms\":"+milliseconds(i.target_latency_us)+
             ",\"desired_kbit\":"+std::to_string(i.desired_kbit)+",\"min_kbit\":"+std::to_string(i.minimum_kbit)+
             ",\"max_kbit\":"+std::to_string(i.maximum_kbit)+",\"ttl_seconds\":"+std::to_string(i.lifetime_seconds)+
-            ",\"deadline_ms\":"+(i.deadline_us?std::to_string(i.deadline_us/1000.0):"null")+
+            ",\"deadline_ms\":"+(i.deadline_us?milliseconds(i.deadline_us):"null")+
             ",\"reliability\":\""+(i.prefer_reliable?"prefer_reliable":"balanced")+"\"}}";
     }
     ~Channel() {
@@ -103,9 +108,11 @@ struct Channel {
             std::string token;
             {
                 std::unique_lock lock(mutex);
-                changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return stopping || count;});
+                if (!first) changed.wait_for(lock,std::chrono::milliseconds(lifetime<=1?200:500),[&]{return stopping || count;});
+                first=false;
                 if (stopping) break;
                 busy=true;
+                if (count && count<32) changed.wait_for(lock,std::chrono::milliseconds(1),[&]{return stopping || count>=32;});
                 token=lease;
                 while (count && size<batch.size()) {
                     batch[size++]=queue[head];
@@ -115,15 +122,23 @@ struct Channel {
             }
             try {
                 if (!connected) {
-                    auto reply=flowcore::detail::exchange(path,registration,-1);
+                    auto reply=transport.exchange(registration);
                     auto next=field(reply,"\"lease\": \"");
                     if (next.size()!=32 || next.find_first_not_of("0123456789abcdef")!=std::string::npos)
                         throw std::runtime_error("invalid lease");
                     { std::lock_guard lock(mutex); lease=next; token=next; }
+                    can_renew=reply.find("\"renewable\": true")!=std::string::npos;
+                    notifications=0;notification_time=0;
                     ++generation;
                     connected=true;
+                    renew_after=now()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
+                    last_error=Error::None;
                     dropped+=size;
                 } else {
+                    if (can_renew && now()>=renew_after) {
+                        transport.exchange(envelope("renew",token)+"}");
+                        renew_after=now()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
+                    }
                     std::string message=envelope("batch",token)+",\"events\":[";
                     std::size_t sent=0;
                     constexpr const char* phases[]={"start","ok","timeout","failure","cancelled"};
@@ -136,30 +151,41 @@ struct Channel {
                             ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null")+"}";
                     }
                     message+="]}";
-                    auto reply=flowcore::detail::exchange(path,std::move(message),-1);
-                    accepted+=integer(reply,"\"accepted\": ");
-                    rejected+=integer(reply,"\"rejected\": ");
+                    auto reply=transport.exchange(std::move(message));
+                    auto acknowledged=integer(reply,"\"accepted\": ");
+                    auto invalid=integer(reply,"\"rejected\": ");
+                    if (acknowledged>sent || invalid>sent || acknowledged+invalid!=sent)
+                        throw RpcError(Error::ProtocolError,"invalid event acknowledgement counts");
+                    accepted+=acknowledged;
+                    rejected+=invalid;
+                    last_error=invalid?Error::EventRejected:Error::None;
                     std::uint32_t flags=0;
                     constexpr const char* names[]={"slo_risk","congestion","policy_fallback","interface_degradation","insufficient_capacity"};
                     for (unsigned i=0;i<5;++i)
                         if (reply.find("\""+std::string(names[i])+"\": true")!=std::string::npos) flags|=1U<<i;
                     notifications=flags;
+                    if (reply.find("\"observed_ns\": ")!=std::string::npos)
+                        notification_time=integer(reply,"\"observed_ns\": ");
                 }
+            } catch (const RpcError& error) {
+                ++errors; dropped+=size; last_error=error.code;
+                if (error.retry_registration) connected=false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
             } catch (const std::exception& error) {
-                ++errors; dropped+=size;
+                ++errors; dropped+=size; last_error=Error::TransportUnavailable;
                 // Preserve a known lease on transport ambiguity; retries must not leak leases.
                 // A restarted daemon rejects the stale lease and permits fresh registration.
-                if (std::string_view(error.what())=="FLOWCORE operation forbidden") connected=false;
+                if (std::string_view(error.what())=="FLOWCORE operation forbidden") { connected=false;last_error=Error::AuthorizationDenied; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             } catch (...) {
-                ++errors; dropped+=size; connected=false;
+                ++errors; dropped+=size; connected=false; last_error=Error::ProtocolError;
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
             { std::lock_guard lock(mutex); busy=false; }
             changed.notify_all();
         }
         if (!lease.empty()) {
-            try { flowcore::detail::exchange(path,envelope("close",lease)+"}",-1); } catch (...) {}
+            try { transport.exchange(envelope("close",lease)+"}"); } catch (...) {}
         }
     }
 };
@@ -180,13 +206,30 @@ bool Service::flush(std::chrono::milliseconds timeout) const {
 Statistics Service::statistics() const noexcept {
     return {channel_->queued,channel_->accepted,channel_->dropped,channel_->rejected,channel_->errors};
 }
+TransportStatistics Service::transport_statistics() const noexcept {
+    return {channel_->transport.connections,channel_->transport.requests,channel_->transport.legacy};
+}
+Error Service::last_error() const noexcept { return channel_->last_error; }
+std::uint64_t Service::registration_generation() const noexcept { return channel_->generation; }
+std::uint64_t Service::notifications_time_ns() const noexcept { return channel_->notification_time; }
 std::uint32_t Service::notifications() const noexcept { return channel_->notifications; }
 std::uint64_t Service::associate_socket(int fd) const {
     std::string token;
-    { std::lock_guard lock(channel_->mutex); token=channel_->lease; }
-    if (!ready()) throw std::runtime_error("daemon unavailable");
+    { std::lock_guard lock(channel_->mutex);
+      if (!ready()) throw std::runtime_error("daemon unavailable");
+      token=channel_->lease; }
     auto reply=flowcore::detail::exchange(channel_->path,channel_->envelope("associate",token)+"}",fd);
     return std::stoull(field(reply,"\"cookie\": \""));
+}
+std::uint64_t Service::dissociate_socket(std::uint64_t cookie) const {
+    if (!cookie) throw std::invalid_argument("socket cookie required");
+    std::string token;
+    { std::lock_guard lock(channel_->mutex);
+      if (!ready()) throw std::runtime_error("daemon unavailable");
+      token=channel_->lease; }
+    auto reply=flowcore::detail::exchange(channel_->path,
+        channel_->envelope("dissociate",token)+",\"cookie\":"+std::to_string(cookie)+"}",-1);
+    return integer(reply,"\"abandoned\": ");
 }
 Request::Request(std::shared_ptr<detail::Channel> channel, std::uint32_t deadline, std::uint64_t cookie)
     : channel_(std::move(channel)), start_(now()), generation_(channel_->generation), cookie_(cookie),

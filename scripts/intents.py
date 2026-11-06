@@ -101,7 +101,7 @@ class Registry:
         cgroup = None
         if pid:
             try:
-                with open(f'/proc/{pid}/cgroup') as stream:
+                with open(f'/proc/{pid}/cgroup',encoding='utf-8',errors='replace') as stream:
                     cgroup = stream.read(4096).strip()
             except OSError:
                 pass

@@ -4,6 +4,7 @@ import json
 import os
 import random
 import signal
+import shutil
 import socket
 import socketserver
 import struct
@@ -133,6 +134,29 @@ class Echo(socketserver.BaseRequestHandler):
             self.request.sendall(b'R'*64)
 
 
+
+class Multiplex(socketserver.BaseRequestHandler):
+    def handle(self):
+        identifiers=[]
+        self.request.settimeout(3)
+        self.request.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        def read(size):
+            data=b''
+            while len(data)<size:
+                part=self.request.recv(size-len(data))
+                if not part: raise EOFError('short multiplex request')
+                data+=part
+            return data
+        for _ in range(8):
+            identifier,size=struct.unpack('!II',read(8))
+            if size>1024: raise ValueError('oversize demo payload')
+            read(size)
+            identifiers.append(identifier)
+        for identifier in reversed(identifiers):
+            time.sleep(.002)
+            self.request.sendall(struct.pack('!I',identifier))
+
+
 def live():
     with tempfile.TemporaryDirectory(dir=BUILD,prefix='v2-live-') as directory:
         directory=Path(directory)
@@ -172,6 +196,8 @@ def live():
                             assert not json.loads(probe.recv(4096))['ok']
                 time.sleep(.05)
                 assert len(list(Path(f'/proc/{proc.pid}/fd').iterdir()))<=baseline
+                session_output=subprocess.check_output([BUILD/'intent_session_native',path],text=True,timeout=12)
+                assert json.loads(session_output)['connections']==1
                 output=subprocess.check_output([BUILD/'intent_v2_native',path],text=True,timeout=8)
                 assert int(output.split()[0])>0
                 subprocess.run([BUILD/'flowcore-intent-c-demo',path],check=True,timeout=5)
@@ -180,12 +206,53 @@ def live():
                     assert 'accepted=' in subprocess.check_output([go,path],text=True,timeout=5)
                 with Bridge(BUILD/'libflowcore_intent.so',path,'python_demo') as client:
                     assert client.ready()
+                    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
+                        probe.settimeout(2)
+                        probe.connect(str(path))
+                        probe.sendall(b'{"op":"intent_inspect","name":"python_demo"}\n')
+                        assert json.loads(probe.recv(8192))['ok']
                     with client.request():
                         time.sleep(.001)
                     assert client.flush()
+                # Legacy daemon interoperability: no sidecar means explicit stream fallback.
+                endpoint=runtime/'intent.sock'
+                hidden=runtime/'intent.compat-hidden'
+                endpoint.rename(hidden)
+                try:
+                    with Bridge(BUILD/'libflowcore_intent.so',path,'legacy_compat') as client:
+                        assert client.ready()
+                        with client.request(): pass
+                        assert client.flush()
+                        stats=client.transport_statistics()
+                        assert stats['session_connections']==0 and stats['legacy_requests']>=2,stats
+                finally:
+                    hidden.rename(endpoint)
+                with socketserver.ThreadingTCPServer(('127.0.0.1',0),Multiplex) as multiplex_server:
+                    worker=threading.Thread(target=multiplex_server.serve_forever,daemon=True)
+                    worker.start()
+                    try:
+                        mux=json.loads(subprocess.check_output([sys.executable,'-B',
+                            ROOT/'examples/python/multiplex_demo.py',BUILD/'libflowcore_intent.so',path,
+                            str(multiplex_server.server_address[1])],text=True,timeout=10))
+                        assert (mux['offered'],mux['completed'],mux['failed'],mux['tcp_connections'])==(8,8,0,1)
+                        assert [row['wire_id'] for row in mux['results']]==list(reversed(range(8)))
+                    finally:
+                        multiplex_server.shutdown()
+                        worker.join()
                 with socketserver.ThreadingTCPServer(('127.0.0.1',0),Echo) as server:
                     thread=threading.Thread(target=server.serve_forever,daemon=True)
                     thread.start()
+                    # Real application I/O still succeeds with an unavailable intent daemon.
+                    with Bridge(BUILD/'libflowcore_intent.so',runtime/'absent.sock','offline_io') as offline:
+                        with socket.create_connection(('127.0.0.1',server.server_address[1]),timeout=2) as network:
+                            with offline.request():
+                                network.sendall(struct.pack('!I',7)+b'offline')
+                                reply=b''
+                                while len(reply)<64:
+                                    part=network.recv(64-len(reply))
+                                    assert part
+                                    reply+=part
+                        assert offline.statistics()['accepted']==0 and offline.statistics()['dropped']>0
                     workers=[subprocess.Popen([BUILD/'flowcore-intent-v2-demo',path,
                         str(server.server_address[1]),name,str(size)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
                         for name,size in (('payment',4096),('database',16384),('background',65536))]
@@ -201,6 +268,7 @@ def live():
                     with client.request(): pass
                     assert client.flush()
                     before=client.statistics()['accepted']
+                    first_generation=client.generation()
                     # Ambiguous timeout must preserve admission rather than duplicate a live lease.
                     os.kill(proc.pid,signal.SIGSTOP)
                     try:
@@ -220,7 +288,10 @@ def live():
                         reply=b''
                         while not reply.endswith(b'\n'):
                             reply+=probe.recv(32768)
-                        assert len(json.loads(reply)['result']['instances'])==1,reply
+                        view=json.loads(reply)
+                        assert view.get('ok'),view
+                        assert len(view['result']['instances'])==1
+                    assert client.generation()==first_generation
                     before=client.statistics()['accepted']
                     proc.terminate()
                     proc.wait(timeout=5)
@@ -233,6 +304,12 @@ def live():
                         if client.statistics()['accepted']>before: break
                         time.sleep(.05)
                     assert client.statistics()['accepted']>before,client.statistics()
+                    assert client.generation()>first_generation
+                    with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as udp:
+                        cookie=client.associate_socket(udp.fileno())
+                        with client.request(cookie=cookie): pass
+                        assert client.flush()
+                        assert client.dissociate_socket(cookie)==0
                 # A SIGKILL must reclaim the process lease without graceful SDK close.
                 code="import sys,time;sys.path.insert(0,sys.argv[1]);from flowcore_intent import Service;s=Service(sys.argv[2],sys.argv[3],'crashed');assert s.ready();print('ready',flush=True);time.sleep(60)"
                 crashed=subprocess.Popen([sys.executable,'-c',code,str(ROOT/'examples/python'),
@@ -252,10 +329,12 @@ def live():
                     while not reply.endswith(b'\n'):
                         reply+=probe.recv(32768)
                     assert b'crashed' not in reply,reply
-                print(json.dumps(dict(native_concurrency=output.strip(),network=results)))
+                print(json.dumps(dict(native_concurrency=output.strip(),persistent_session=json.loads(session_output),legacy_transport=stats,offline_tcp_success=True,multiplex=mux,network=results)))
             finally:
                 proc.terminate()
                 proc.wait(timeout=5)
+                log.flush()
+                shutil.copyfile(log.name,ROOT/'results/intent-session-daemon.log')
 
 
 if __name__=='__main__':

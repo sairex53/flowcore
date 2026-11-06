@@ -88,7 +88,7 @@ endif()
 
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
-add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp)
+add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -161,3 +161,14 @@ add_test(NAME intent_v2_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE
 set_tests_properties(intent_v2_live PROPERTIES TIMEOUT 30 ENVIRONMENT "FLOWCORE_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
 
 add_test(NAME flow_engine_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/flow_engine_test.py")
+
+add_executable(intent_session_native tests/intent_session_native.cpp)
+target_link_libraries(intent_session_native PRIVATE flowcore_sdk)
+target_compile_options(intent_session_native PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME intent_session_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_session_test.py")
+
+add_executable(intent_parser_test tests/intent_parser.cpp)
+target_include_directories(intent_parser_test PRIVATE src)
+target_link_libraries(intent_parser_test PRIVATE flowcore_sdk)
+target_compile_options(intent_parser_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME intent_parser COMMAND intent_parser_test)
