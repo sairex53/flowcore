@@ -3,7 +3,7 @@
 Outcome: **INCONCLUSIVE** for a latency or throughput advantage over existing
 flower classification. No general eBPF speedup or zero-overhead claim is supported.
 
-## Actual experiment
+## Shared experiment definition
 
 Fedora 45 ARM64 VM; kernel 7.2.11-300.fc45.aarch64; libbpf 1.7.0.
 The native loader/BPF program were built and loaded on this machine, not simulated.
@@ -28,7 +28,66 @@ Socket timeout one second. No discarded warmup or outliers. Actual run durations
 all request latency arrays and failures are retained. P99 is the nearest-rank
 successful latency; errors and deadline attainment (25 ms) are reported separately.
 
-## Recorded results
+## ABI-2 remeasurement
+
+Current native/BPF implementation: results/flow-benchmark-1793965181104142879/.
+Same ten paired randomized blocks, three modes, two-second workload and seed.
+Medians below are run summaries, not pooled independent request experiments.
+
+| Mode | Successful P99 ms | Total payload Mbit/s | Background Mbit/s | VM busy CPU s | Offered | Failed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HTB default | 11.930 | 18.209 | 17.273 | 0.745 | 9221 | 0 |
+| flower | 8.661 | 18.152 | 17.119 | 0.810 | 10212 | 0 |
+| TCX ABI 2 | 10.069 | 18.006 | 16.987 | 0.755 | 10168 | 0 |
+
+**The engine lost to flower on successful-request P99 in this dataset.** The median
+paired change is +14.59%, order-statistic interval [+0.29%, +56.28%], coverage
+97.8515625%. Versus no classification: -17.91%, interval [-30.80%, -3.29%].
+TCX-versus-flower total goodput change: -1.55%, interval [-1.80%, +1.55%]; busy CPU:
+-3.60%, interval [-11.54%, +8.70%]. Zero request failures does not establish tail
+reliability beyond the observed workload. No predeclared performance regression
+threshold exists in this exploratory comparison: aggregate outcome remains
+INCONCLUSIVE; the observed adverse latency difference must not be hidden by that
+label. Multiple exploratory comparisons were not multiplicity-adjusted.
+
+These runs do not isolate parser cost or compare ABI 1 and 2 in paired randomized
+blocks; historical differences cannot establish causality. Do not infer that the
+new parser caused the loss, or that eBPF acceleration was demonstrated. The complete
+TCX intelligence engine is compared with classification-only flower functionality.
+
+All ten BPF captures were complete, with 100/100 retained flows matching expected
+policy metadata. Map-full packets and output_lost were zero in these runs. Engine
+VmHWM was 5,140,480–6,516,736 bytes; CPU deltas remained below clock-tick resolution.
+Current map fdinfo accounting totals 825,672 bytes: policy 3904, flows_v2 820864,
+totals 904. Key/value sizes 64/72 bytes; this is not total kernel allocation cost.
+Evidence: results/flow-engine-1793965287635882182/map-memory.json.
+
+Independent correctness test results/flow-v2-1793965419935991329/ exported 1200
+real short-lived UDP sockets across IPv4/IPv6 in 33.90 ms (one observation, not a
+latency distribution or performance guarantee). Neighbour entries were resolved
+before the burst: without that, pending ARP/ND can discard traffic before TCX,
+so counting all send calls as observed packets would be incorrect. SNAT changed
+the observed tuple while exact-cookie socket association survived. Frozen pages,
+invalid snapshot references and an injected exporter crash were tested. Partial
+exports fail explicitly. 1070 separate BPF_PROG_TEST_RUN fixtures, including 1000
+malformed IP-length cases, exercised actual kernel code but transmitted zero wire
+packets; these are not throughput or packet-loss measurements.
+
+The manifest records the exact native/BPF/parser and initially imported Python
+sources. Subsequent wrapper-only validation tightening was not re-imported by the
+running benchmark process. No heavy build/test suite ran during its measurement
+windows; lightweight source edits and individual schema checks did occur, and host
+noise remains uncontrolled. Raw requests, per-run JSON, complete capture metadata,
+configuration, source hashes, CSV and summary remain preserved locally. No dataset
+was removed to select a favourable result.
+
+Validated after these changes: both 16-test CTest configurations, actual verifier
+load/TCX attachment, existing privileged engine integration and the new ABI-2
+namespace suite. Installed-mode checks are recorded separately with the test logs.
+Remaining performance work: fixed open-loop per-service schedules, longer runs,
+isolated classification-only versus full-observation cost and high-PPS profiling.
+
+## Historical ABI-1 results (not current implementation)
 
 Medians of run-level metrics; every mode has ten independent runs:
 
@@ -107,8 +166,9 @@ results/flow-engine-service-regression.log.
 This is a low-rate, short veth/VM experiment. Closed-loop offered counts differ;
 pooled P99 combines three TCP classes and UDP, so changing completion composition
 can change the percentile. Inspect per-stream raw samples before service-specific
-claims. No claim covers physical NICs, very high PPS, high-cardinality production
+claims. No performance claim covers physical NICs, very high PPS, high-cardinality production
 load, NUMA, prolonged memory pressure, loss recovery, NAT or arbitrary protocols.
+The isolated ABI-2 NAT check above establishes correctness only for its tested case.
 
 No new per-packet event stream exists; ring-buffer event-loss percentage is not
 applicable. Flow retention failures, exporter loss, cache overwrites and unsupported

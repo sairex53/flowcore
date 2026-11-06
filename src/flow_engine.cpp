@@ -16,7 +16,9 @@
 #include <signal.h>
 #include <unistd.h>
 #include <array>
+#include <algorithm>
 #include <charconv>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -27,6 +29,8 @@
 #include <vector>
 #include "flow_engine.h"
 namespace {
+static_assert(FC_FLOW_ABI==2 && sizeof(fc_flow_key)==64 && sizeof(fc_flow_value)==72,
+              "flow map ABI changed: version the map and exporter together");
 volatile sig_atomic_t stopped=0;
 void stop(int) { stopped=1; }
 void require(bool yes,const char* why) { if (!yes) throw std::runtime_error(why); }
@@ -37,6 +41,7 @@ unsigned number(const char* text) {
     require(parsed.ec==std::errc{} && parsed.ptr==input.end(),"invalid integer");
     return result;
 }
+struct Observation { fc_flow_key key;fc_flow_value value; };
 struct Engine {
     int policy_fd,flow_fd,total_fd;
     unsigned capacity,cpus;
@@ -45,6 +50,49 @@ struct Engine {
     std::vector<__u64> cpu_values;
     __u64 session=std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::vector<Observation> frozen{};
+    __u64 snapshot_id=0,captured_ns=0;
+    std::chrono::steady_clock::time_point expires{};
+    std::string flow_json(const Observation& observation) {
+        const auto& key=observation.key;const auto& value=observation.value;
+        char source[INET6_ADDRSTRLEN]{},destination[INET6_ADDRSTRLEN]{};
+        require(inet_ntop(key.family,key.source,source,sizeof(source)) &&
+                inet_ntop(key.family,key.destination,destination,sizeof(destination)),"invalid flow family");
+        std::ostringstream out;
+        out<<"{\"type\":\"flow\",\"session_ns\":"<<session<<",\"netns\":"<<netns<<",\"ifindex\":"<<key.ifindex
+           <<",\"cookie\":\""<<key.cookie<<"\",\"family\":"<<unsigned(key.family)
+           <<",\"protocol\":"<<unsigned(key.protocol)<<",\"source\":\""<<source
+           <<"\",\"destination\":\""<<destination<<"\",\"sport\":"<<key.sport<<",\"dport\":"<<key.dport
+           <<",\"first_ns\":"<<value.first_ns<<",\"last_ns\":"<<value.last_ns
+           <<",\"bytes\":"<<value.bytes<<",\"packets\":"<<value.packets<<",\"cgroup\":"<<value.cgroup
+           <<",\"generation\":"<<value.generation<<",\"service\":"<<value.service
+           <<",\"classid\":"<<value.classid<<",\"tcp_wire_flags\":"<<value.flags
+           <<",\"vlan_depth\":"<<unsigned(key.vlan_depth)
+           <<",\"vlan_id\":["<<key.vlan_id[0]<<','<<key.vlan_id[1]
+           <<"],\"vlan_proto\":["<<key.vlan_proto[0]<<','<<key.vlan_proto[1]<<"]}";
+        return out.str();
+    }
+    void page(__u64 id,unsigned cursor) {
+        validate(id && id==snapshot_id && std::chrono::steady_clock::now()<expires &&
+                 cursor<=frozen.size() && cursor%FC_FLOW_PAGE==0,"snapshot/cursor unavailable");
+        unsigned next=std::min<std::size_t>(cursor+FC_FLOW_PAGE,frozen.size());
+        std::ostringstream out;
+        out<<"{\"type\":\"page\",\"protocol\":2,\"snapshot\":"<<snapshot_id
+           <<",\"session_ns\":"<<session<<",\"captured_ns\":"<<captured_ns
+           <<",\"cursor\":"<<cursor<<",\"total\":"<<frozen.size()<<",\"next\":";
+        if (next<frozen.size()) out<<next;else out<<"null";
+        out<<",\"flows\":[";
+        for (unsigned i=cursor;i<next;++i) { if (i!=cursor) out<<',';out<<flow_json(frozen[i]); }
+        out<<"]}\n";
+        output(out.str());
+    }
+    void page_command(const std::string& command) {
+        validate(command.find_first_not_of("page 0123456789")==std::string::npos,"invalid page characters");
+        std::istringstream input(command);
+        std::string name,extra;__u64 id;unsigned cursor;
+        validate(bool(input>>name>>id>>cursor) && name=="page" && !(input>>extra),"invalid page command");
+        page(id,cursor);
+    }
     void output(const std::string& text) {
         require(text.size()<4096,"output bound exceeded");
         ssize_t size;
@@ -84,6 +132,7 @@ struct Engine {
         }
         timespec ts{}; clock_gettime(CLOCK_MONOTONIC,&ts);
         __u64 now=static_cast<__u64>(ts.tv_sec)*1000000000ULL+ts.tv_nsec;
+        if (dump) { frozen.clear();frozen.reserve(capacity); }
         fc_flow_key key{},next{};
         std::vector<fc_flow_key> keys;
         keys.reserve(capacity);
@@ -99,20 +148,7 @@ struct Engine {
                 continue;
             }
             ++entries;
-            if (!dump) continue;
-            char source[INET6_ADDRSTRLEN]{},destination[INET6_ADDRSTRLEN]{};
-            require(inet_ntop(key.family,key.source,source,sizeof(source)) &&
-                    inet_ntop(key.family,key.destination,destination,sizeof(destination)),"invalid flow family");
-            std::ostringstream out;
-            out<<"{\"type\":\"flow\",\"session_ns\":"<<session<<",\"netns\":"<<netns<<",\"ifindex\":"<<key.ifindex
-               <<",\"cookie\":\""<<key.cookie<<"\",\"family\":"<<unsigned(key.family)
-               <<",\"protocol\":"<<unsigned(key.protocol)<<",\"source\":\""<<source
-               <<"\",\"destination\":\""<<destination<<"\",\"sport\":"<<key.sport<<",\"dport\":"<<key.dport
-               <<",\"first_ns\":"<<value.first_ns<<",\"last_ns\":"<<value.last_ns
-               <<",\"bytes\":"<<value.bytes<<",\"packets\":"<<value.packets<<",\"cgroup\":"<<value.cgroup
-               <<",\"generation\":"<<value.generation<<",\"service\":"<<value.service
-               <<",\"classid\":"<<value.classid<<",\"tcp_wire_flags\":"<<value.flags<<"}\n";
-            output(out.str());
+            if (dump) frozen.push_back({key,value});
         }
         std::ostringstream out;
         out<<"{\"type\":\"stats\",\"dump\":"<<(dump?"true":"false")<<",\"session_ns\":"<<session<<",\"time_ns\":"<<now<<",\"generation\":"<<generation
@@ -121,8 +157,18 @@ struct Engine {
            <<",\"bytes\":"<<stats[FC_BYTES]<<",\"parsed\":"<<stats[FC_PARSED]
            <<",\"classified\":"<<stats[FC_CLASSIFIED]<<",\"applied\":"<<stats[FC_APPLIED]<<",\"unsupported\":"<<stats[FC_UNSUPPORTED]
            <<",\"map_full_packets\":"<<stats[FC_MAP_FULL]<<",\"created\":"<<stats[FC_CREATED]
-           <<",\"gso_segments\":"<<stats[FC_GSO_SEGMENTS]<<"}\n";
+           <<",\"gso_segments\":"<<stats[FC_GSO_SEGMENTS]
+           <<",\"bad_l2\":"<<stats[FC_BAD_L2]<<",\"bad_l3\":"<<stats[FC_BAD_L3]
+           <<",\"bad_l4\":"<<stats[FC_BAD_L4]<<",\"fragments\":"<<stats[FC_FRAGMENT]
+           <<",\"extension_limit\":"<<stats[FC_EXTENSION_LIMIT]<<",\"other_protocol\":"<<stats[FC_PROTOCOL]<<"}\n";
         output(out.str());
+        if (dump) {
+            require(++snapshot_id!=0,"snapshot identifier exhausted");
+            timespec completed{};require(!clock_gettime(CLOCK_MONOTONIC,&completed),"snapshot clock failed");
+            captured_ns=static_cast<__u64>(completed.tv_sec)*1000000000ULL+completed.tv_nsec;
+            expires=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+            page(snapshot_id,0);
+        }
     }
 };
 }
@@ -166,8 +212,10 @@ int main(int argc,char** argv) {
         }
         if_freenameindex(interfaces);
         require(iface && count==2 && if_nametoindex("lo"),"namespace must contain only lo/fc0");
-        auto* flows=bpf_object__find_map_by_name(object.get(),"flows");
-        require(flows && !bpf_map__set_max_entries(flows,capacity),"flow capacity setup failed");
+        auto* flows=bpf_object__find_map_by_name(object.get(),"flows_v2");
+        require(flows && bpf_map__key_size(flows)==sizeof(fc_flow_key) &&
+            bpf_map__value_size(flows)==sizeof(fc_flow_value) &&
+            !bpf_map__set_max_entries(flows,capacity),"flow ABI/capacity setup failed");
         require(!bpf_object__load(object.get()),"BPF load/verifier failed; use userspace fallback");
         int policy=bpf_object__find_map_fd_by_name(object.get(),"policies");
         int totals=bpf_object__find_map_fd_by_name(object.get(),"totals");
@@ -182,6 +230,7 @@ int main(int argc,char** argv) {
         bpf_tcx_opts options{}; options.sz=sizeof(options); options.expected_revision=query.revision;
         using Link=std::unique_ptr<bpf_link,decltype(&bpf_link__destroy)>;
         auto* program=bpf_object__find_program_by_name(object.get(),"flow_egress");
+        require(program,"flow program missing");
         auto* attached=bpf_program__attach_tcx(program,iface,&options);
         require(attached && !libbpf_get_error(attached),"TCX attach failed");
         Link link(attached,&bpf_link__destroy);
@@ -194,7 +243,7 @@ int main(int argc,char** argv) {
         int input_flags=fcntl(STDIN_FILENO,F_GETFL);
         require(input_flags>=0 && !fcntl(STDIN_FILENO,F_SETFL,input_flags|O_NONBLOCK),"input setup failed");
         signal(SIGINT,stop); signal(SIGTERM,stop); signal(SIGPIPE,SIG_IGN);
-        engine.output("{\"type\":\"ready\",\"netns\":"+std::to_string(target.st_ino)+",\"ifindex\":"+std::to_string(iface)+"}\n");
+        engine.output("{\"type\":\"ready\",\"protocol\":2,\"netns\":"+std::to_string(target.st_ino)+",\"ifindex\":"+std::to_string(iface)+"}\n");
         auto next=std::chrono::steady_clock::now();
         std::string pending;
         while (!stopped) {
@@ -211,6 +260,7 @@ int main(int argc,char** argv) {
                     auto command=pending.substr(0,end); pending.erase(0,end+1);
                     try {
                         if (command=="dump") engine.snapshot(true);
+                        else if (command.starts_with("page ")) engine.page_command(command);
                         else engine.policy(command);
                     } catch (const std::invalid_argument&) { engine.output("{\"type\":\"error\",\"error\":\"operation rejected\"}\n"); }
                 }
@@ -220,6 +270,7 @@ int main(int argc,char** argv) {
                 require(if_nametoindex("fc0")==iface &&
                     !bpf_prog_query_opts(iface,BPF_TCX_EGRESS,&current) &&
                     current.prog_cnt==1 && current.revision==revision,"interface/TCX ownership changed");
+                if (std::chrono::steady_clock::now()>=engine.expires) engine.frozen.clear();
                 engine.snapshot(false); next=std::chrono::steady_clock::now()+std::chrono::seconds(1);
             }
         }

@@ -70,7 +70,7 @@ the process owning a socket. A zero/missing cookie or cgroup stays unknown.
 ## Identification and lifecycle
 
 A key contains socket cookie, observed egress ifindex, IPv4/IPv6 addresses, source/
-destination ports and TCP/UDP protocol. Namespace is fixed by the attached interface
+destination ports, TCP/UDP protocol, and up to two VLAN IDs/protocols. Namespace is fixed by the attached interface
 and held namespace FD, exported with a loader monotonic session identifier.
 The isolated runner must retain the unshifted kernel monotonic time namespace;
 time-namespace clock offsets are not normalized. Persisted consumers must also retain boot identity; IDs are not globally eternal.
@@ -87,7 +87,12 @@ The tuple is exactly what this egress hook observes. NAT original/reply tuple
 correlation is not implemented. Forwarded traffic may have no socket metadata.
 Only sender egress is attached: this is not automatically a bidirectional session.
 TCP/UDP headers are read with bounded bpf_skb_load_bytes calls. IPv4 fragments,
-IPv6 extension headers, VLAN and unsupported EtherTypes remain unclassified.
+IPv6 fragments, ESP, jumbograms and unsupported EtherTypes remain unclassified.
+Up to two VLAN tags (including hardware metadata) and six IPv6 Hop-by-Hop, Routing,
+Destination or AH headers, at most 256 extension bytes, are decoded. Transport
+headers must fit the IP datagram length, even when Ethernet padding is present.
+Unknown or malformed headers preserve priority and increment a reason counter.
+This parses header structure, not extension-option semantics or checksums.
 TLS contents, HTTP/2 requests and QUIC streams are never parsed or inferred.
 
 ## Maps, bounded work and policy protocol
@@ -95,8 +100,8 @@ TLS contents, HTTP/2 requests and QUIC streams are never parsed or inferred.
 | Map | Type and bound | Meaning |
 | --- | --- | --- |
 | policies | HASH, one entry | Whole generation plus up to 16 ordered service rules |
-| flows | HASH, configurable 16–4096 entries | Per-key bytes, packets, activity, selected policy and metadata |
-| totals | PERCPU_ARRAY | Nine fixed aggregate counters |
+| flows_v2 | HASH, configurable 16–4096 entries | Per-key bytes, packets, activity, selected policy and metadata |
+| totals | PERCPU_ARRAY | Fifteen fixed aggregate counters |
 
 No packet ring buffer is used. All 16 rule positions are verifier-bounded/unrolled.
 The policy HASH value has no spinlock and is replaced using BPF_ANY. One packet
@@ -113,6 +118,7 @@ The stdin administrative protocol is bounded to 4096 bytes, unsigned decimal onl
 ```text
 set GENERATION COUNT PROTOCOL DPORT SERVICE CLASSID MARK CGROUP COOKIE ...
 dump
+page SNAPSHOT CURSOR
 ```
 Initial generation 1 is empty; later generations strictly increase.
 Rules allow TCP=6 or UDP=17, services 1..16, ports 0..65535, and only class IDs
@@ -139,12 +145,21 @@ FIN/RST activity after 2 seconds, other idle activity after 15 seconds.
 Lookup/delete can race new activity: retention is best effort, not a lossless ledger.
 
 Output is a nonblocking atomic pipe, each JSON record below 4096 bytes. EAGAIN counts
-output_lost. Flow dumps are best effort and can be incomplete at high cardinality;
-consumers must check loss/truncation and must not infer absence from missing rows.
-Python buffering is bounded (512 cached records plus bounded partial input);
-decode_lost also counts overwritten cached rows. Dumps use an explicit terminating
-dump=true stats record, distinct from periodic stats. Command backpressure fails
-rather than blocking indefinitely. Loss is not hidden by a fabricated zero metric.
+output_lost. Protocol 2 freezes at most 4096 observations, with a snapshot identifier,
+session, capture-end timestamp and total. Four rows per page keep replies atomic.
+A capture expires after ten seconds; new dumps replace it. Cursor and identity are
+validated. Pages share frozen values; the underlying cross-flow capture is not atomic.
+The Python wrapper assembles all pages within eight seconds, validates identity,
+count, uniqueness and timestamps, and returns either a complete retained snapshot
+or an explicit failure. It does not return a silently truncated 512-row cache.
+last_snapshot exposes completeness and export_failures counts failed exports.
+This does not make the bounded kernel flow map a lossless history: idle GC, map-full
+and missing metadata remain separate coverage limits. Missing records are not proof
+of no traffic. The stream cache stays bounded to 512; one frozen native capture and
+one assembled Python result are separately bounded to map capacity.
+
+ABI 2 uses a 64-byte flow key and 72-byte value. The versioned map name flows_v2
+and loader size checks reject mixed old/new artifacts before reading keys.
 
 ## Provenance and fallback
 
@@ -157,7 +172,10 @@ rather than blocking indefinitely. Loss is not hidden by a fabricated zero metri
 - TCP RTT/cwnd/retransmit totals and socket drops: INET_DIAG/TCP_INFO/SKMEMINFO,
   associated only when a nonzero cookie matches in the same namespace/protocol.
 - socket_snapshot in ServiceLab.flow_intelligence(): exact socket association, sampled
-  separately from packet counters. UDP socket counters can cover several peers.
+  separately from packet counters. tuple_relation reports same/different/not_comparable
+  versus the connected socket tuple; different alone does not prove NAT. An isolated
+  SNAT test verified exact-cookie joining despite changed source address and port.
+  Original/reply conntrack reconstruction is still absent. UDP socket counters can cover several peers.
   No fabricated TCP metrics are exposed for UDP or closed/unobservable sockets.
 
 flow_snapshot.py extends INET_DIAG to UDP and labels its reduced capabilities.
@@ -172,6 +190,7 @@ insufficient privilege, verifier failure and unsupported TCX all preserve this p
 ```sh
 ctest --test-dir build --output-on-failure
 sudo python3 -B tests/flow_engine_integration.py
+sudo python3 -B tests/flow_v2_integration.py
 sudo python3 -B scripts/flow_engine_benchmark.py --repetitions 10 --duration 2
 ```
 The dedicated root test covers exact capability reduction, dual-stack TCP/UDP, cookie/cgroup/mark selectors and socket snapshot
@@ -181,8 +200,17 @@ bounded-map exhaustion and GC, reload, oversize input, interface deletion and fi
 namespace cleanup. Host attachment is refused structurally; ordinary read-only
 tests require no root. No production high-PPS or long-duration soak claim is made.
 
-Remaining: NAT/conntrack correlation, IPv6 extension/VLAN parsing, robust paginated
-flow export, saturation/soak testing, persistent operator policy recovery and a
+Additional ABI-2 validation includes 1200 real short-lived dual-stack UDP sockets,
+complete export above the old 512-cache limit, frozen generation pages, invalid
+snapshot IDs, SNAT, exporter SIGKILL/reload and explicit incomplete-export failure.
+1070 BPF_PROG_TEST_RUN fixtures run the actual loaded program without attachment: TCP/UDP,
+VLAN, bounded IPv6 extensions, malformed/truncated lengths, fragments and 1000
+invalid length fixtures. These are synthetic kernel executions, not wire traffic
+or fuzz-coverage proof. See the [kernel test-run semantics](https://www.kernel.org/doc/html/latest/bpf/bpf_prog_run.html).
+Hardware VLAN offload metadata has not been validated on a physical NIC.
+
+Remaining: conntrack original/reply correlation, saturation/soak testing,
+persistent operator policy recovery and a
 separately reviewed production helper API for deployment beyond owned laboratories.
 The generic daemon controller does not automatically activate or optimize these
 flow rules. See EBPF_PERFORMANCE.md for measured scope and negative/inconclusive

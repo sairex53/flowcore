@@ -74,10 +74,15 @@ if(FLOWCORE_BPF)
             add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bpf/flow_engine.bpf.o"
                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-flow-bpf.sh"
                     "${BPF_CLANG}" "${CMAKE_CURRENT_BINARY_DIR}/bpf" "${CMAKE_CURRENT_SOURCE_DIR}"
-                DEPENDS flowcore-bpf-object bpf/flow_engine.bpf.c bpf/flow_engine.h scripts/build-flow-bpf.sh
+                DEPENDS flowcore-bpf-object bpf/flow_engine.bpf.c bpf/flow_engine.h bpf/flow_parse.h scripts/build-flow-bpf.sh
                 VERBATIM)
             add_custom_target(flowcore-flow-object ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bpf/flow_engine.bpf.o")
             add_dependencies(flowcore-flow-engine flowcore-flow-object)
+            add_executable(flow_parser_kernel tests/flow_parser_kernel.cpp)
+            target_include_directories(flow_parser_kernel PRIVATE bpf)
+            target_link_libraries(flow_parser_kernel PRIVATE PkgConfig::LIBBPF)
+            target_compile_options(flow_parser_kernel PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            add_dependencies(flow_parser_kernel flowcore-flow-object)
             install(TARGETS flowcore-flow-engine RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
             install(FILES "${CMAKE_CURRENT_BINARY_DIR}/bpf/flow_engine.bpf.o" DESTINATION "${FLOWCORE_DATA}/bpf")
         endif()

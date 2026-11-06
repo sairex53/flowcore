@@ -24,13 +24,18 @@ class ServiceLab(Lab):
         if not engine or not engine.ready:
             return sockets
         observations=engine.dump()
-        by_cookie={int(row['cookie'],16):row for row in sockets['flows'] if row.get('cookie')}
+        by_cookie={int(row['cookie'],16):row for row in sockets['flows'] if row.get('cookie') and int(row['cookie'],16)!=0}
         for row in observations:
-            match=by_cookie.get(int(row['cookie']))
-            row['socket_snapshot']=match if match and match['protocol']==row['protocol'] else None
+            match=by_cookie.get(int(row['cookie'])) if int(row['cookie']) else None
+            row['socket_snapshot']=match if match and match['protocol']==row['protocol'] and match['netns']==row['netns'] else None
             row['socket_association']='exact_cookie' if row['socket_snapshot'] else 'unavailable'
+            row['tuple_relation']='not_comparable'
+            if row['socket_snapshot'] and match['remote_port'] and match['local_address'] not in ('0.0.0.0','::'):
+                row['tuple_relation']='same' if (
+                    row['source'],row['sport'],row['destination'],row['dport'])==(
+                    match['local_address'],match['local_port'],match['remote_address'],match['remote_port']) else 'different'
         return dict(source='tcx+inet_diag',flows=observations,stats=engine.stats,
-                    socket_snapshot_truncated=sockets['truncated'])
+                    socket_snapshot_truncated=sockets['truncated'],snapshot=engine.last_snapshot)
 
     def close(self):
         if getattr(self,'flow_engine',None):

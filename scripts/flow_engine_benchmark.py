@@ -66,7 +66,7 @@ def run(output,mode,rep,duration):
             configured_rate_kbit=20000,classification='HTB skb priority' if engine else mode,
             outcome='VALID' if result['offered'] and result['p99_ms'] is not None else 'INVALID EXPERIMENT')
         (output/'result.json').write_text(json.dumps(dict(summary=summary,raw=result,
-            host_before=before,host_after=after,flows=rows,counters=counters),indent=2))
+            host_before=before,host_after=after,flows=rows,snapshot=engine.last_snapshot if engine else None,counters=counters),indent=2))
         return summary
     finally:
         lab.close()
@@ -110,7 +110,7 @@ def main():
     metadata=dict(kernel=os.uname().release,architecture=os.uname().machine,host=host_metadata(),
                   git=subprocess.check_output(['git','-c',f'safe.directory={ROOT}','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
                   source_sha256={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
-                      for name in ('src/flow_engine.cpp','bpf/flow_engine.bpf.c','bpf/flow_engine.h',
+                      for name in ('src/flow_engine.cpp','bpf/flow_engine.bpf.c','bpf/flow_engine.h','bpf/flow_parse.h',
                                    'scripts/flow_engine.py','tests/flow_traffic.py')},
                   dirty=bool(subprocess.check_output(['git','-c',f'safe.directory={ROOT}',
                       'status','--porcelain'],cwd=ROOT,text=True).strip()),boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),configuration=vars(args))

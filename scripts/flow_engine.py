@@ -1,5 +1,6 @@
 """Opt-in TCX engine for a caller-owned ServiceLab; no host auto-attachment."""
 import json
+import ipaddress
 import os
 import select
 import subprocess
@@ -30,6 +31,48 @@ def validate_rules(rules):
     return result
 
 
+def validate_page(row,cursor,snapshot=None):
+    if not isinstance(row,dict) or row.get('type')!='page' or type(row.get('protocol')) is not int or row.get('protocol')!=2:
+        raise ValueError('unsupported flow page')
+    for key,bounds in dict(snapshot=(1,2**64-1),session_ns=(1,2**64-1),
+                           captured_ns=(1,2**64-1),cursor=(0,4096),total=(0,4096)).items():
+        number(row.get(key),*bounds,True)
+    if row['cursor']!=cursor or snapshot is not None and row['snapshot']!=snapshot:
+        raise ValueError('flow page identity mismatch')
+    flows=row.get('flows')
+    if not isinstance(flows,list) or len(flows)>4 or cursor>row['total']:
+        raise ValueError('invalid flow page length')
+    end=cursor+len(flows)
+    expected=min(cursor+4,row['total'])
+    if row.get('next') is not None: number(row['next'],0,4096,True)
+    if end!=expected or row.get('next')!=(end if end<row['total'] else None):
+        raise ValueError('flow page gap or invalid continuation')
+    for flow in flows:
+        if not isinstance(flow,dict) or flow.get('type')!='flow' or flow.get('session_ns')!=row['session_ns']:
+            raise ValueError('invalid flow observation')
+        for key,bounds in dict(netns=(1,2**64-1),ifindex=(0,2**32-1),sport=(0,65535),dport=(0,65535),
+                               first_ns=(1,2**64-1),last_ns=(1,2**64-1),vlan_depth=(0,2)).items():
+            number(flow.get(key),*bounds,True)
+        number(flow.get('family'),2,10,True)
+        number(flow.get('protocol'),6,17,True)
+        if flow.get('family') not in (2,10) or flow.get('protocol') not in (6,17):
+            raise ValueError('invalid flow protocol/family')
+        if flow['first_ns']>flow['last_ns'] or flow['last_ns']>row['captured_ns']:
+            raise ValueError('invalid flow timestamp interval')
+        for field in ('source','destination'):
+            if ipaddress.ip_address(flow.get(field)).version!=(4 if flow['family']==2 else 6):
+                raise ValueError('flow address family mismatch')
+        cookie=flow.get('cookie')
+        if not isinstance(cookie,str) or not cookie.isascii() or not cookie.isdigit() or len(cookie)>20 or int(cookie)>=2**64:
+            raise ValueError('invalid socket cookie')
+        for name,maximum in (('vlan_id',4095),('vlan_proto',65535)):
+            values=flow.get(name)
+            if not isinstance(values,list) or len(values)!=2:
+                raise ValueError('invalid VLAN metadata')
+            for value in values: number(value,0,maximum,True)
+    return flows
+
+
 class FlowEngine:
     def __init__(self):
         self.proc=None
@@ -41,6 +84,8 @@ class FlowEngine:
         self.ready=False
         self.decode_lost=0
         self.lab=None
+        self.last_snapshot=dict(complete=False)
+        self.export_failures=0
 
     @staticmethod
     def validate_htb(lab):
@@ -53,6 +98,8 @@ class FlowEngine:
 
     def start(self,lab,capacity=4096,observe=False):
         self.close()
+        self.last_snapshot=dict(complete=False)
+        self.export_failures=0
         number(capacity,16,4096,True)
         if type(observe) is not bool:
             raise ValueError('observe must be boolean')
@@ -80,6 +127,9 @@ class FlowEngine:
             os.set_blocking(self.proc.stdout.fileno(),False)
             os.set_blocking(self.proc.stdin.fileno(),False)
             self.wait(lambda:any(x.get('type')=='ready' for x in self.records))
+            ready=next(row for row in self.records if row['type']=='ready')
+            if ready.get('protocol')!=2:
+                raise RuntimeError('flow helper protocol mismatch; userspace fallback required')
             self.ready=True
             self.reason='TCX attached only to owned fc0'
             return True
@@ -103,7 +153,7 @@ class FlowEngine:
                 line,self.pending=self.pending.split(b'\n',1)
                 try:
                     row=json.loads(line)
-                    if not isinstance(row,dict) or row.get('type') not in ('ready','policy','flow','stats','error'):
+                    if not isinstance(row,dict) or row.get('type') not in ('ready','policy','flow','stats','page','error'):
                         raise ValueError('invalid engine record')
                     if len(self.records)==self.records.maxlen:
                         self.decode_lost+=1
@@ -126,7 +176,7 @@ class FlowEngine:
             if predicate():
                 return
             if not self.proc or self.proc.poll() is not None:
-                raise RuntimeError('flow engine failed; inspect flow-engine.stderr')
+                raise RuntimeError(f'flow engine failed; inspect {self.log.name if self.log else "collector log"}')
             select.select([self.proc.stdout],[],[],min(.05,max(0,deadline-time.monotonic())))
         raise TimeoutError('flow engine acknowledgement timeout')
 
@@ -158,11 +208,54 @@ class FlowEngine:
         if os.write(self.proc.stdin.fileno(),payload)!=len(payload):
             raise RuntimeError('command pipe backpressure')
 
-    def dump(self):
-        self.records.clear()
-        self.send('dump')
-        self.wait(lambda:any(x['type']=='stats' and x.get('dump') is True for x in self.records))
-        return [row for row in self.records if row['type']=='flow']
+    def dump(self,timeout=8):
+        number(timeout,.1,8)
+        self.last_snapshot=dict(complete=False)
+        deadline=time.monotonic()+timeout
+        result=[]
+        identifier=None
+        cursor=0
+        total=None
+        try:
+            while True:
+                command='dump' if identifier is None else f'page {identifier} {cursor}'
+                self.records.clear()
+                self.send(command)
+                self.wait(lambda:any(row['type']=='page' and row.get('cursor')==cursor and
+                                     (identifier is None or row.get('snapshot')==identifier)
+                                     or row['type']=='error' for row in self.records),
+                          min(1,max(.001,deadline-time.monotonic())))
+                page=next((row for row in self.records if row['type']=='page' and
+                           row.get('cursor')==cursor and (identifier is None or row.get('snapshot')==identifier)),None)
+                if page is None:
+                    raise ValueError('snapshot expired or invalid cursor')
+                flows=validate_page(page,cursor,identifier)
+                if identifier is None:
+                    identifier,total=page['snapshot'],page['total']
+                    self.last_snapshot.update(snapshot=identifier,total=total,session_ns=page['session_ns'],
+                                              captured_ns=page['captured_ns'])
+                elif (page['total']!=total or page['captured_ns']!=self.last_snapshot['captured_ns'] or
+                      page['session_ns']!=self.last_snapshot['session_ns']):
+                    raise ValueError('snapshot changed between pages')
+                result.extend(flows)
+                if page['next'] is None:
+                    break
+                cursor=page['next']
+                if time.monotonic()>=deadline:
+                    raise TimeoutError('flow snapshot overall deadline')
+            identities={(row['netns'],row['ifindex'],row['cookie'],row['family'],row['protocol'],
+                         row['source'],row['destination'],row['sport'],row['dport'],
+                         row['vlan_depth'],tuple(row['vlan_id']),tuple(row['vlan_proto'])) for row in result}
+            if len(result)!=total or len(identities)!=total:
+                raise ValueError('incomplete or duplicate flow snapshot')
+            self.last_snapshot.update(complete=True,received=len(result),
+                                      atomic_across_flows=False)
+            return result
+        except (OSError,RuntimeError,TimeoutError,ValueError,KeyError,TypeError):
+            self.export_failures+=1
+            self.last_snapshot.update(received=len(result),complete=False)
+            raise
+
 
     def close(self):
         if self.proc:

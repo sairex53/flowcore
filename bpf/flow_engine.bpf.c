@@ -3,6 +3,7 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
 #include "flow_engine.h"
+#include "flow_parse.h"
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
@@ -14,7 +15,7 @@ struct {
     __uint(max_entries, 4096);
     __type(key, struct fc_flow_key);
     __type(value, struct fc_flow_value);
-} flows SEC(".maps");
+} flows_v2 SEC(".maps");
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, FC_STAT_COUNT);
@@ -34,40 +35,9 @@ int flow_egress(struct __sk_buff *skb) {
     add(FC_BYTES,skb->len);
     if (bpf_core_field_exists(skb->gso_segs)) add(FC_GSO_SEGMENTS,skb->gso_segs);
     struct fc_flow_key key={};
-    __u16 ethernet=0;
-    __u32 offset=14;
     __u8 flags=0;
-    if (bpf_skb_load_bytes(skb,12,&ethernet,2)) goto unsupported;
-    if (ethernet==bpf_htons(0x0800)) {
-        struct iphdr ip;
-        if (bpf_skb_load_bytes(skb,offset,&ip,sizeof(ip)) || ip.version!=4 || ip.ihl<5 ||
-            (ip.frag_off & bpf_htons(0x3fff))) goto unsupported;
-        if (bpf_ntohs(ip.tot_len)<ip.ihl*4+8 || 14+bpf_ntohs(ip.tot_len)>skb->len) goto unsupported;
-        key.family=2;
-        key.protocol=ip.protocol;
-        __builtin_memcpy(key.source,&ip.saddr,4);
-        __builtin_memcpy(key.destination,&ip.daddr,4);
-        offset+=ip.ihl*4;
-    } else if (ethernet==bpf_htons(0x86dd)) {
-        struct ipv6hdr ip;
-        if (bpf_skb_load_bytes(skb,offset,&ip,sizeof(ip)) || ip.version!=6) goto unsupported;
-        key.family=10;
-        key.protocol=ip.nexthdr;
-        __builtin_memcpy(key.source,&ip.saddr,16);
-        __builtin_memcpy(key.destination,&ip.daddr,16);
-        offset+=40;
-        /* Extension headers deliberately stay unknown; no unsafe partial parsing. */
-    } else goto unsupported;
-    if (key.protocol==6) {
-        struct tcphdr tcp;
-        if (bpf_skb_load_bytes(skb,offset,&tcp,sizeof(tcp)) || tcp.doff<5 || offset+tcp.doff*4>skb->len) goto unsupported;
-        key.sport=bpf_ntohs(tcp.source); key.dport=bpf_ntohs(tcp.dest);
-        flags=(tcp.fin?1:0)|(tcp.rst?2:0)|(tcp.syn?4:0)|((tcp.syn && !tcp.ack)?8:0);
-    } else if (key.protocol==17) {
-        struct udphdr udp;
-        if (bpf_skb_load_bytes(skb,offset,&udp,sizeof(udp)) || bpf_ntohs(udp.len)<8) goto unsupported;
-        key.sport=bpf_ntohs(udp.source); key.dport=bpf_ntohs(udp.dest);
-    } else goto unsupported;
+    int result=fc_parse(skb,&key,&flags);
+    if (result) { add(FC_UNSUPPORTED,1);add(result,1);return -1; }
     key.cookie=bpf_get_socket_cookie(skb);
     key.ifindex=skb->ifindex;
     __u64 cgroup=bpf_skb_cgroup_id(skb);
@@ -87,13 +57,13 @@ int flow_egress(struct __sk_buff *skb) {
         if (policy->enforce) { skb->priority=classid; add(FC_APPLIED,1); }
     }
     __u64 now=bpf_ktime_get_ns();
-    struct fc_flow_value *value=bpf_map_lookup_elem(&flows,&key);
+    struct fc_flow_value *value=bpf_map_lookup_elem(&flows_v2,&key);
     if (!value) {
         struct fc_flow_value initial={.first_ns=now,.last_ns=now,.cgroup=cgroup,
             .generation=policy->generation,.service=service,.classid=classid};
-        long result=bpf_map_update_elem(&flows,&key,&initial,BPF_NOEXIST);
+        long result=bpf_map_update_elem(&flows_v2,&key,&initial,BPF_NOEXIST);
         if (!result) add(FC_CREATED,1);
-        value=bpf_map_lookup_elem(&flows,&key);
+        value=bpf_map_lookup_elem(&flows_v2,&key);
         if (!value) { add(FC_MAP_FULL,1); return -1; }
     }
     __u64 generation=policy->generation;
@@ -111,9 +81,6 @@ int flow_egress(struct __sk_buff *skb) {
     }
     value->flags|=flags;
     bpf_spin_unlock(&value->lock);
-    return -1;
-unsupported:
-    add(FC_UNSUPPORTED,1);
     return -1;
 }
 char LICENSE[] SEC("license")="GPL";
