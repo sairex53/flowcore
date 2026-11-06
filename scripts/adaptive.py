@@ -225,7 +225,8 @@ class Controller:
         allocation = tuple((cls,*self.current[cls]) for cls in sorted(self.current))
         try:
             self.predictor.observe(stamp,self.service.telemetry,self.capacity(),
-                {cls:rate for cls,(rate,_) in self.current.items()},application,window.get('rtt'),allocation)
+                {cls:rate for cls,(rate,_) in self.current.items()},application,window.get('rtt'),allocation,
+                rtt_variation=window.get('tcp_distributions',{}).get('rttvar_us'))
         except (OSError,ValueError,RuntimeError,AttributeError,TypeError,OverflowError) as error:
             self.predictor.invalidate(str(error))
 

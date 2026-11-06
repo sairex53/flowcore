@@ -4,7 +4,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Internal versioned ABI. Caller retains chronological samples; no allocation/kernel access. */
+/* All *_bps values are bytes/second, not bits/second.
+   lead_seconds=-1 means no crossing estimate within the bounded horizon.
+   Internal versioned ABI. Caller retains chronological samples; no allocation/kernel access. */
 struct fc_predict_sample { uint64_t time_ns; double backlog_bytes, departure_bps, capacity_bps; };
 struct fc_prediction {
     double ema_bytes, trend_bps, arrival_proxy_bps, forecast_bytes;

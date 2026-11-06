@@ -63,7 +63,7 @@ class Predictor:
         for rows in self.history.values(): rows.clear()
         self.previous.clear();self.latest.clear();self.error=reason
 
-    def observe(self,stamp,tc,capacity,rates,application,rtt,allocation):
+    def observe(self,stamp,tc,capacity,rates,application,rtt,allocation,rtt_variation=None):
         if stamp<=self.last_ns: raise ValueError('non-monotonic predictive observation')
         elapsed=(stamp-self.last_ns)/1e9 if self.last_ns else None
         if elapsed is not None and elapsed<.75: return # verified actuator refresh != new observation
@@ -75,6 +75,9 @@ class Predictor:
         classes=tc.get('traffic_classes',{})
         leaves={row.get('parent'):row for row in tc.get('qdisc',[]) if row.get('parent')}
         root=next((row for row in tc.get('qdisc',[]) if row.get('root')), {})
+        if type(root.get('bytes')) is not int or root['bytes']<0:
+            self.invalidate('root departure counter unavailable')
+            return
         prior=self.previous.get('root')
         utilization=None
         if prior and root.get('bytes',0)>=prior['bytes']:
@@ -99,7 +102,8 @@ class Predictor:
             row=dict(time_ns=stamp,backlog_bytes=leaf['backlog'],departure_bps=departures,
                      capacity_bps=capacity*125,configured_capacity_kbit=capacity,
                      drops_per_second=drops,utilization=utilization,application=application,
-                     rtt=rtt,allocation=allocation,threshold_bytes=threshold,
+                     local_shaper_headroom_proxy_bytes_per_second=max(0,(1-utilization)*capacity*125),
+                     rtt=rtt,rtt_variation=rtt_variation,allocation=allocation,threshold_bytes=threshold,
                      event=leaf['backlog']>=threshold and utilization>=.85)
             services=[value for value in application.values() if value.get('traffic_class')==name]
             row['risk_context']=dict(queue_serialization_threshold_bytes=threshold,

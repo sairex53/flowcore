@@ -131,3 +131,7 @@ V2 provides process-bound cooperative request telemetry and FD-attested socket c
 Opt-in [eBPF flow engine](EBPF_FLOW_ENGINE.md): owned-namespace TCP/UDP classification and [measured performance](EBPF_PERFORMANCE.md). Read-only fallback: `flowcore flows --json`.
 
 Intent V2 now supports persistent authenticated sessions, renewable process leases, UDP socket bindings and explicit dissociation. See [application integration](APPLICATION_INTEGRATION.md) for the shared-connection multiplex demo.
+
+Experimental congestion prediction: [architecture and shadow activation](PREDICTIVE_ENGINE.md)
+and [measured results and limitations](PREDICTIVE_RESULTS.md). Predictive operation
+is off by default; no advantage over reactive control or tuned static QoS is established.

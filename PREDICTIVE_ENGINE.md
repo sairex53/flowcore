@@ -22,7 +22,7 @@ Every regular telemetry poll (nominally one second), the daemon supplies observe
 HTB class departure-byte deltas, leaf fq_codel backlog/drop counters and root
 qdisc throughput. It also snapshots complete application windows: successful tail
 latency, failed requests, deadlines, throughput and SLO state, plus independently
-sampled TCP RTT. These application/RTT signals are context, not packet deadlines
+sampled TCP RTT and RTT variation where INET_DIAG exposes them (unknown otherwise). These application/RTT signals are context, not packet deadlines
 or an assumption that every slow request is caused by this queue. Reports retain
 current allocations, action journals and configured shaping capacity.
 
@@ -33,10 +33,13 @@ counters and five reliability bins per model. Actuator-triggered refreshes withi
 750 ms are skipped. Gaps over 2.5 seconds and capacity changes invalidate history.
 Counter resets or missing backlog/throughput invalidate that class's samples.
 
+All native fields suffixed `_bps` use bytes/second, not bits/second.
 An arrival **proxy** is departures plus smoothed backlog derivative. It excludes
 unknown dropped-byte volume, GSO discrepancies and arrivals between samples that
 leave no backlog. It is not a measured offered load. Root capacity is the configured
-local shaper bound, not measured remote available bandwidth. No prediction of a
+local shaper bound, not measured remote available bandwidth. A local-shaper headroom proxy is
+max(0, configured byte capacity minus observed root departure rate), not a guaranteed
+throughput opportunity. No prediction of a
 previously unobservable capacity step or remote failure is claimed.
 
 ## Deterministic native models
@@ -82,7 +85,9 @@ independent calibration evidence, a value .8 must never be called 80% likelihood
 
 The explanation includes source observations, root utilization, application P99 /
 SLO ratio, deadline misses, forecast bytes, slope, residual, quality, horizon and
-threshold-crossing lead estimate. Application degradation alone cannot arm a probe.
+threshold-crossing lead estimate within the horizon; outside-horizon/unknown lead
+is -1. Missing root departure counters invalidate prediction rather than imply
+zero load. Non-finite crossing estimates are rejected. Application degradation alone cannot arm a probe.
 
 ## Causal shadow evaluation and false positives
 
@@ -147,6 +152,7 @@ cmake -S . -B build -G Ninja -DFLOWCORE_BPF=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 sudo python3 -B tests/adaptive_integration.py
+sudo python3 -B scripts/predictive_suite.py --repetitions 10
 sudo ./build/flowcore bench run scenarios/predictive-shadow.json
 sudo ./build/flowcore bench run scenarios/predictive-buildup.json
 sudo ./build/flowcore bench run scenarios/predictive-stable.json

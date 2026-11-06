@@ -63,6 +63,9 @@ extern "C" int flowcore_predict_v1(const fc_predict_sample* samples, unsigned co
     out->forecast_bytes=forecast;
     out->risk=std::clamp(forecast/threshold,0.0,1.0)*std::clamp(utilization/.85,0.0,1.0);
     out->quality=quality;out->residual_bytes=residual;
-    if (slope>0 && anchor<threshold) out->lead_seconds=(threshold-anchor)/slope;
+    if (slope>0 && anchor<threshold) {
+        const double lead=(threshold-anchor)/slope;
+        if (std::isfinite(lead) && lead<=horizon) out->lead_seconds=lead;
+    }
     return 0;
 }

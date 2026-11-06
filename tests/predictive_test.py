@@ -70,6 +70,32 @@ class Predictive(unittest.TestCase):
         self.assertGreaterEqual(first['risk'],.8)
         self.assertGreaterEqual(second['risk'],.8)
 
+    def test_subnormal_slope_never_exports_infinity(self):
+        data=rows([i*1e-320 for i in range(8)])
+        forecast=Native().forecast(data,'trend',1514,.95)
+        self.assertTrue(all(math.isfinite(value) for value in forecast.values()))
+        self.assertEqual(forecast['lead_seconds'],-1)
+
+    def test_missing_root_is_unknown_and_linear_growth_is_causal(self):
+        predictor=Predictor()
+        tc=dict(qdisc=[dict(root=True),dict(parent='1:10',backlog=0,drops=0)],
+                traffic_classes=dict(critical=dict(handle='1:10',stats=dict(bytes=100))))
+        predictor.observe(10**9,tc,10000,dict(critical=3000),{},None,())
+        predictor.observe(2*10**9,tc,10000,dict(critical=3000),{},None,())
+        self.assertEqual(predictor.status()['state'],'insufficient_data')
+        self.assertEqual(predictor.error,'root departure counter unavailable')
+        predictor=Predictor()
+        for i in range(30):
+            tc['qdisc'][0]['bytes']=i*1125000
+            tc['qdisc'][1]['backlog']=i*500
+            tc['traffic_classes']['critical']['stats']['bytes']=i*375000
+            predictor.observe((i+1)*10**9,tc,10000,dict(critical=3000),{},None,(),
+                              rtt_variation=dict(samples=1,p99_us=10))
+        self.assertGreater(predictor.counts['hybrid']['tp'],0)
+        self.assertGreater(predictor.counts['hybrid']['early_hits'],0)
+        self.assertEqual(predictor.counts['hybrid']['onsets'],1)
+        self.assertEqual(predictor.counts['hybrid']['missed_onsets'],0)
+
     def test_missing_discontinuous_and_malformed(self):
         native=Native()
         self.assertIsNone(native.forecast(rows([0]*3),'hybrid',2000,.95))
@@ -136,7 +162,7 @@ class Predictive(unittest.TestCase):
         self.assertEqual(controller.plan(window,controller.current)['action'],'hold')
         controller.mode='active'
         observer.queue_time=time.monotonic_ns()
-        service.telemetry={'qdisc':[],'traffic_classes':{}}
+        service.telemetry={'qdisc':[dict(root=True,bytes=0)],'traffic_classes':{}}
         with patch('predictive.Native',side_effect=OSError('native unavailable')):
             controller.sample_prediction()
         self.assertEqual(controller.predictor.error,'native unavailable')
@@ -167,11 +193,13 @@ class Predictive(unittest.TestCase):
         for i in range(500):
             tc={'qdisc':[dict(root=True,bytes=i*100000),dict(parent='1:10',backlog=0,drops=0)],
                 'traffic_classes':{'critical':dict(handle='1:10',stats=dict(bytes=i*50000))}}
-            predictor.observe((i+1)*10**9,tc,10000,dict(critical=3000),{},None,())
+            predictor.observe((i+1)*10**9,tc,10000,dict(critical=3000),{},None,(),
+                              rtt_variation=dict(samples=1,p99_us=10))
         self.assertLessEqual(len(predictor.history['critical']),64)
         self.assertLessEqual(len(predictor.pending),128)
         self.assertLessEqual(len(predictor.outcomes),128)
         self.assertEqual(predictor.counts['hybrid']['fp'],0)
+        self.assertEqual(predictor.history['critical'][-1]['rtt_variation']['p99_us'],10)
         predictor.observe(510*10**9,tc,10000,dict(critical=3000),{},None,())
         self.assertFalse(predictor.latest)
         self.assertFalse(predictor.history['critical'])
