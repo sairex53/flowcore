@@ -47,7 +47,10 @@ class Service:
         self.observer = Observer(config['observability'])
         self.controller = Controller(self)
         self.container_attachment = None
+        self.container_attachments = {}
         self.monitor_only = False
+        from workloads import Workloads
+        self.workloads = Workloads()
         self.platform_policies = PolicyStore()
         self.inventory = Inventory(self.platform_policies, config['observability']['max_sockets'])
         from intent_v2 import IntentAPI
@@ -63,6 +66,7 @@ class Service:
 
     def close_lab(self):
         self.container_attachment = None
+        self.container_attachments = {}
         self.controller.detach()
         self.observer.close()
         for watcher in self.watches:
@@ -128,7 +132,7 @@ class Service:
             self.telemetry_timing = dict(time_ns=begin, counters_ns=collected-begin,
                                          observer_ns=observed-collected,
                                          prediction_ns=time.monotonic_ns()-observed)
-            if self.container_attachment and self.container_attachment['active']:
+            if any(row['active'] for row in self.container_attachments.values()):
                 from containers import attachment_sample
                 attachment_sample(self)
             self.error = None
@@ -156,13 +160,42 @@ class Service:
             return self.intent_api.revoke(request.get('name'),uid,pid)
         if op == 'intent_v2':
             return self.intent_api.call(request,uid,pid,passed_fd)
+        if op == 'workload_list':
+            return self.workloads.view(uid)
+        if op == 'workload_register':
+            keys(request,('op','pid','service','container','unit'))
+            return self.workloads.register(uid,**{key:request[key] for key in ('pid','service','container','unit')})
+        if op == 'workload_forget':
+            keys(request,('op','id'))
+            return self.workloads.forget(uid,request['id'])
+        if op == 'platform_workload_attach':
+            keys(request,('op','id'))
+            if os.geteuid()!=0:
+                raise PermissionError('workload classification requires privileged owned laboratory')
+            self.workloads.refresh()
+            row=self.workloads.rows.get(request['id'])
+            if not row or row['owner_uid']!=uid or row['state']!='active':
+                raise ValueError('workload is not an active owned registration')
+            from containers import attach, cgroup
+            if cgroup(row['pid'])!=row['identity']:
+                raise ValueError('workload identity changed')
+            resolved=merged(self.platform_policies.state['policy'],'veth','fc0',row['service'],
+                            row['metadata'].get('container_name'),row['identity']['path'])
+            if any(resolved['fields'][field] for field in ('min_kbit','max_kbit','desired_kbit')):
+                raise ValueError('individual bandwidth contracts require dedicated classes; only class assignment supported')
+            result=attach(self,row['pid'],resolved['fields']['priority'])
+            result['workload_id']=row['id']
+            result['resolved_policy']=resolved
+            return result
+        if op == 'platform_workload_classifiers':
+            return list(self.container_attachments.values())
         if op == 'platform_interfaces':
             return self.inventory.status()
         if op == 'platform_policies':
             return self.platform_policies.state
         if op == 'platform_resolve':
             return merged(self.platform_policies.state['policy'],
-                          *(request.get(key) for key in ('device','interface','service','container')))
+                          *(request.get(key) for key in ('device','interface','service','container','cgroup')))
         if op == 'platform_container_status':
             return self.container_attachment
         if op == 'platform_container_attach':
@@ -452,6 +485,7 @@ def main():
             service.controller.restore(STATE)
             service.platform_policies.restore(STATE)
             service.inventory.refresh()
+            service.workloads.refresh()
             service.observer.sample_host(service.inventory)
             if SOCKET.is_socket():
                 SOCKET.unlink()
@@ -488,6 +522,7 @@ def main():
                         service.controller.safe_tick()
                         if time.monotonic()-inventory_tick>=2:
                             service.inventory.refresh()
+                            service.workloads.refresh()
                             if not service.lab:
                                 service.observer.sample_host(service.inventory)
                             inventory_tick = time.monotonic()

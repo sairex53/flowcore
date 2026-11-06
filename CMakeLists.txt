@@ -182,3 +182,7 @@ target_compile_options(intent_parser_test PRIVATE -Wall -Wextra -Wpedantic -Werr
 add_test(NAME intent_parser COMMAND intent_parser_test)
 
 add_test(NAME predictive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/predictive_test.py")
+
+add_test(NAME workload_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/workload_test.py")
+
+install(FILES WORKLOAD_NETWORKING.md CONTAINER_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

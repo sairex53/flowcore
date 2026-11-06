@@ -9,6 +9,17 @@ def add_commands(commands):
     sub = group.add_subparsers(dest='action',required=True)
     for name in ('interfaces','policies','mptcp','container-lab','container-status'):
         sub.add_parser(name)
+    sub.add_parser('workloads')
+    sub.add_parser('workload-classifiers')
+    register = sub.add_parser('workload-register')
+    register.add_argument('--pid',type=int)
+    register.add_argument('--service')
+    register.add_argument('--container')
+    register.add_argument('--unit')
+    attach = sub.add_parser('workload-attach')
+    attach.add_argument('id')
+    forget = sub.add_parser('workload-forget')
+    forget.add_argument('id')
     from multipath_engine import STRATEGIES
     multipath=sub.add_parser('multipath-lab',help='run an owned multi-path MPTCP experiment')
     multipath.add_argument('--strategy',choices=(*STRATEGIES,'single-path-tcp'),default='linux-default')
@@ -25,7 +36,7 @@ def add_commands(commands):
     commit.add_argument('--revision',type=int,required=True)
     for name in ('resolve','apply-intent'):
         cmd = sub.add_parser(name)
-        selectors = ('service','container') if name=='apply-intent' else ('device','interface','service','container')
+        selectors = ('service','container') if name=='apply-intent' else ('device','interface','service','container','cgroup')
         for selector in selectors:
             cmd.add_argument('--'+selector,required=name=='apply-intent' and selector=='service')
     for name in ('containers','container-inspect'):
@@ -37,12 +48,22 @@ def add_commands(commands):
 
 def dispatch(args):
     action = args.action
+    if action=='workloads':
+        return request('workload_list')
+    if action=='workload-classifiers':
+        return request('platform_workload_classifiers')
+    if action=='workload-register':
+        return request('workload_register',**{key:getattr(args,key) for key in ('pid','service','container','unit')})
+    if action=='workload-attach':
+        return request('platform_workload_attach',id=args.id)
+    if action=='workload-forget':
+        return request('workload_forget',id=args.id)
     if action in ('interfaces','policies','container-status'):
         return request('platform_'+action.replace('-','_'))
     if action=='commit':
         return request('platform_commit',policy=load_json(args.file),revision=args.revision)
     if action in ('resolve','apply-intent'):
-        fields = {key:getattr(args,key) for key in ('device','interface','service','container')
+        fields = {key:getattr(args,key) for key in ('device','interface','service','container','cgroup')
                   if getattr(args,key,None) is not None}
         return request('platform_'+action.replace('-','_'),**fields)
     if action=='mptcp':

@@ -27,6 +27,7 @@ def cgroup(pid):
         # A single proc directory anchors all reads to the same task identity.
         task = Path(f'/proc/self/fd/{proc}')
         started = (task/'stat').read_text().rsplit(')', 1)[1].split()[19]
+        uid = (task/'status').read_text().split('Uid:',1)[1].split()[0]
         with (task/'cgroup').open() as stream:
             path = next((line.rstrip().split(':',2)[2] for line in stream if line.startswith('0::')),None)
         netns = (task/'ns/net').stat().st_ino
@@ -37,7 +38,8 @@ def cgroup(pid):
     directory = (CGROUP/path.lstrip('/')).resolve()
     if not directory.is_relative_to(CGROUP):
         raise ValueError('cgroup path escaped mount')
-    return dict(path=path,id=directory.stat().st_ino,network_namespace=netns,process_start_ticks=started)
+    return dict(path=path,id=directory.stat().st_ino,network_namespace=netns,process_start_ticks=started,
+                uid=int(uid),boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip())
 
 
 def podman(store=None):
@@ -82,22 +84,32 @@ def attach(service, pid, traffic_class):
         raise ValueError('cgroup classification requires HTB')
     path = identity['path'].strip('/')
     level = len(path.split('/'))
-    rules = lab.output/'container.nft'
-    if rules.exists():
-        raise ValueError('one cgroup classifier per dedicated lab')
-    rule = (f'add table inet flowcore_container\n'
-            'add chain inet flowcore_container output { type filter hook output priority -150; policy accept; }\n'
-            f'add rule inet flowcore_container output socket cgroupv2 level {level} {json.dumps(path)} '
+    import secrets
+    table = 'fcw_'+secrets.token_hex(8)
+    rules = lab.output/(table+'.nft')
+    for old_table in list(service.container_attachments):
+        if not service.container_attachments[old_table]['active']:
+            del service.container_attachments[old_table]
+    if len(service.container_attachments)>=32:
+        raise ValueError('workload classifier limit reached')
+    if any(row['active'] and (row['cgroup']['path']==identity['path'] or
+            row['cgroup']['path'].startswith(identity['path']+'/') or
+            identity['path'].startswith(row['cgroup']['path']+'/'))
+            for row in service.container_attachments.values()):
+        raise ValueError('cgroup already classified; shared cgroups cannot have conflicting policies')
+    rule = (f'add table inet {table}\n'
+            f'add chain inet {table} output {{ type filter hook output priority -150; policy accept; }}\n'
+            f'add rule inet {table} output socket cgroupv2 level {level} {json.dumps(path)} '
             f'counter meta priority set 1:{CLASSES[traffic_class]}\n')
     tables = json.loads(lab.command(0,['nft','-j','list','tables']))
-    if any(row.get('table',{}).get('name')=='flowcore_container' for row in tables['nftables']):
+    if any(row.get('table',{}).get('name')==table for row in tables['nftables']):
         raise ValueError('existing table is not owned by this classifier')
     rules.write_text(rule)
     committed = False
     try:
         lab.command(0,['nft','-f',rules])
         committed = True
-        installed = json.loads(lab.command(0,['nft','-j','list','table','inet','flowcore_container']))
+        installed = json.loads(lab.command(0,['nft','-j','list','table','inet',table]))
         if not any('rule' in row for row in installed['nftables']):
             raise RuntimeError('cgroup classifier readback missing')
         if cgroup(pid)!=identity:
@@ -105,19 +117,25 @@ def attach(service, pid, traffic_class):
     except BaseException:
         try:
             if committed:
-                lab.command(0,['nft','delete','table','inet','flowcore_container'])
+                lab.command(0,['nft','delete','table','inet',table])
         except subprocess.SubprocessError:
             pass
         rules.unlink(missing_ok=True)
         raise
-    result = dict(pid=pid,cgroup=identity,traffic_class=traffic_class,active=True,
+    result = dict(table=table,pid=pid,cgroup=identity,traffic_class=traffic_class,active=True,
                 ceiling_kbit=service.profile['bandwidth_kbit']*policy['classes'][traffic_class]['max_pct']//100)
+    service.container_attachments[table] = result
     service.container_attachment = result
     return result
 
 
 def attachment_sample(service):
-    state = service.container_attachment
+    for state in service.container_attachments.values():
+        if state['active']:
+            _attachment_sample(service,state)
+
+def _attachment_sample(service,state):
+    table = state['table']
     if not state or not state['active']:
         return
     lab = service.lab
@@ -125,13 +143,13 @@ def attachment_sample(service):
         actual = cgroup(state['pid'])
     except (OSError,ValueError):
         actual = None
-    nft = json.loads(lab.command(0,['nft','-j','list','table','inet','flowcore_container']))
+    nft = json.loads(lab.command(0,['nft','-j','list','table','inet',table]))
     counts = [expr['counter'] for row in nft['nftables'] for expr in row.get('rule',{}).get('expr',[])
               if 'counter' in expr]
     state['matched_egress'] = counts[0] if counts else None
     if actual!=state['cgroup']:
-        lab.command(0,['nft','delete','table','inet','flowcore_container'])
-        (lab.output/'container.nft').unlink(missing_ok=True)
+        lab.command(0,['nft','delete','table','inet',table])
+        (lab.output/(table+'.nft')).unlink(missing_ok=True)
         state['active'] = False
         state['event'] = 'container_exit_or_identity_change'
         service.log('container_classifier_removed',pid=state['pid'])

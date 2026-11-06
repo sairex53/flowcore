@@ -8,7 +8,7 @@ from intents import DEFAULT
 from service_config import keys, number, unique
 
 LABEL = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}')
-SCOPES = ('global','device','interface','service','container')
+SCOPES = ('global','device','interface','service','container','cgroup')
 FIELDS = {'priority','target_p99_ms','desired_kbit','min_kbit','max_kbit','background_min_pct','reliability','deadline_ms'}
 EMPTY = {'version':1,**{key:{} for key in SCOPES}}
 
@@ -30,14 +30,14 @@ def overlay(row):
         raise ValueError('unsupported reliability preference')
 
 
-def merged(policy, device=None, interface=None, service=None, container=None):
+def merged(policy, device=None, interface=None, service=None, container=None, cgroup=None):
     fields = {key:DEFAULT[key] for key in FIELDS}
     sources = {key:'built-in' for key in fields}
     levels = [('global',policy['global'])]
-    for scope,selector in zip(SCOPES[1:],(device,interface,service,container)):
+    for scope,selector in zip(SCOPES[1:],(device,interface,service,container,cgroup)):
         if selector is not None and not isinstance(selector,str):
             raise ValueError('policy selectors must be strings')
-        if selector in policy[scope]:
+        if selector in policy.get(scope,{}):
             levels.append((scope,policy[scope][selector]))
     for scope,row in levels:
         fields.update(row)
@@ -48,20 +48,23 @@ def merged(policy, device=None, interface=None, service=None, container=None):
 
 
 def validate(policy):
-    keys(policy, {'version',*SCOPES})
+    keys(policy, {'version',*(scope for scope in SCOPES if scope!='cgroup' or 'cgroup' in policy)})
     number(policy['version'],1,1,True)
     overlay(policy['global'])
     for scope in SCOPES[1:]:
-        rows = policy[scope]
+        rows = policy.get(scope,{})
         if not isinstance(rows,dict) or len(rows)>12:
             raise ValueError(f'{scope} supports at most 12 policy selectors')
         for selector,row in rows.items():
-            if not LABEL.fullmatch(selector):
+            if (not isinstance(selector,str) or
+                (scope=='cgroup' and (not selector.startswith('/') or len(selector)>4096 or
+                 any(part in ('','.','..') for part in selector[1:].split('/')))) or
+                (scope!='cgroup' and not LABEL.fullmatch(selector))):
                 raise ValueError('invalid policy selector')
             overlay(row)
     bandwidth = ('min_kbit','desired_kbit','max_kbit')
     triples = {tuple(DEFAULT[key] for key in bandwidth)}
-    for rows in ([policy['global']], *([{},*policy[scope].values()] for scope in SCOPES[1:])):
+    for rows in ([policy['global']], *([{},*policy.get(scope,{}).values()] for scope in SCOPES[1:])):
         triples = {tuple(row.get(key,old[i]) for i,key in enumerate(bandwidth)) for row in rows for old in triples}
     if any(ceil and max(floor,wanted)>ceil for floor,wanted,ceil in triples):
         raise ValueError('some inherited bandwidth policies conflict')
