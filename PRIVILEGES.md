@@ -61,3 +61,7 @@ unchanged. Staged installation verifies unit syntax. Actual activation under
 PID 1, SELinux policy integration and the complete systemd seccomp/mount
 sandbox require deployment testing. See [systemd.socket](https://www.freedesktop.org/software/systemd/man/latest/systemd.socket.html)
 and [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#OpenFile=).
+
+## Controlled deployment review
+
+The read-only monitoring boundary is retained. Deployment operations do not add host network authority. Configuration reload is limited to log and sampling timing; checkpoint recovery never replays kernel object IDs or reactivates controllers. Private state uses validated regular files and fsync/rename with explicit post-commit uncertainty. Live transient systemd validation of the extracted RPM showed zero effective capabilities and recovery after SIGKILL. See RELEASE_VALIDATION.md for exact evidence and unresolved package-transaction, reboot and installed-active-helper validation limits.

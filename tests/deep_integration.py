@@ -22,6 +22,7 @@ def main():
     output=ROOT/'results'/f'deep-host-{time.time_ns()}'
     output.mkdir()
     with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='deep-host-') as work:
+        work=os.path.relpath(work)
         runtime=Path(work)/'runtime'
         env=dict(os.environ,FLOWCORE_RUNTIME=str(runtime))
         def rpc(op,**fields):

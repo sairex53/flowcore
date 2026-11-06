@@ -83,11 +83,8 @@ class Controller:
         self.path = runtime / 'decisions.json'
         if self.path.exists():
             try:
-                with self.path.open() as stream:
-                    payload = stream.read(524289)
-                if len(payload)>524288:
-                    raise ValueError('journal size bound')
-                rows = json.loads(payload)
+                from durable_state import read_json
+                rows = read_json(self.path)
                 if not isinstance(rows,list) or len(rows)>128 or any(not isinstance(row,dict) for row in rows):
                     raise ValueError('journal shape bound')
                 self.history.extend(rows)
@@ -104,9 +101,8 @@ class Controller:
             payload = json.dumps(list(self.history))
         if self.path:
             try:
-                tmp = self.path.with_suffix('.tmp')
-                tmp.write_text(payload)
-                tmp.replace(self.path)
+                from durable_state import atomic_json
+                atomic_json(self.path,list(self.history))
             except OSError as error:
                 self.service.log('error', detail=f'adaptive journal: {error}')
 

@@ -65,3 +65,7 @@ failure semantics. See [PRIVILEGES.md](PRIVILEGES.md) for deployment and
 reproduction. The version 1 API is an isolated actuator surface. The
 historical adaptive, research, container and MPTCP lab implementations are
 still explicitly privileged test runners.
+
+## Controlled deployment review
+
+The read-only monitoring boundary is retained. Deployment operations do not add host network authority. Configuration reload is limited to log and sampling timing; checkpoint recovery never replays kernel object IDs or reactivates controllers. Private state uses validated regular files and fsync/rename with explicit post-commit uncertainty. Live transient systemd validation of the extracted RPM showed zero effective capabilities and recovery after SIGKILL. See RELEASE_VALIDATION.md for exact evidence and unresolved package-transaction, reboot and installed-active-helper validation limits.

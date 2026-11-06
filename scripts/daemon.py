@@ -33,6 +33,7 @@ from paths import RUNTIME, SOCKET, STATE, VERSION
 class Service:
     def __init__(self, config):
         self.config = config
+        self.operations = None
         self.lab = None
         self.active = 'default'
         self.profile = config['lab']
@@ -143,6 +144,10 @@ class Service:
 
     def status(self):
         return dict(healthy=self.error is None and self.inventory.error is None,
+                    configuration_generation=self.operations.checkpoint['generation'] if self.operations else 0,
+                    reload_errors=self.operations.reload_errors if self.operations else 0,
+                    previous_unclean=self.operations.previous_unclean if self.operations else False,
+                    host_mutations_enabled=False,
                     monitor_only=self.monitor_only, inventory_error=self.inventory.error, uptime_seconds=round(time.monotonic()-self.started, 2),
                     lab_up=self.lab is not None, policy=self.active, profile=self.profile,
                     controlled_interfaces=[self.config['interface']] if self.lab else [],
@@ -160,6 +165,19 @@ class Service:
             return self.intent_api.revoke(request.get('name'),uid,pid)
         if op == 'intent_v2':
             return self.intent_api.call(request,uid,pid,passed_fd)
+        if op.startswith('ops_'):
+            keys(request,('op',))
+            if self.operations is None:raise RuntimeError('deployment operations not initialized')
+            if op=='ops_status':return self.operations.status()
+            if op=='ops_validate':return self.operations.reload(dry_run=True)
+            if op=='ops_reload':return self.operations.reload()
+            if op=='ops_emergency':
+                self.close_lab()
+                return dict(stopped=True,host_network_modified=False)
+            if op=='ops_diagnostics':
+                return dict(version=1,state=self.status(),operations=self.operations.status(),
+                            inventory=self.inventory.status(),bpf=self.observer.bpf.status())
+            raise ValueError('unsupported operational command')
         if op == 'workload_list':
             return self.workloads.view(uid)
         if op == 'workload_register':
@@ -464,10 +482,15 @@ def main():
     parser.add_argument('--config', type=Path, default=ROOT / 'config/service.json')
     parser.add_argument('--research', action='store_true', help='enable owned lab fault controls')
     parser.add_argument('--monitor-only',action='store_true',help='disable all mutations')
+    parser.add_argument('--check-config',action='store_true',help='validate configuration without opening sockets')
     parser.add_argument('--version',action='version',version=VERSION)
     args = parser.parse_args()
     try:
-        service = Service(load(args.config))
+        config=load(args.config)
+        if args.check_config:
+            print(json.dumps(dict(valid=True,host_mutations_enabled=False)))
+            return 0
+        service = Service(config)
         if args.monitor_only and args.research:
             raise ValueError('research and monitor-only modes are exclusive')
         service.research = args.research
@@ -482,16 +505,24 @@ def main():
             for stale in RUNTIME.glob('lab-*'):
                 if stale.is_dir() and not stale.is_symlink():
                     shutil.rmtree(stale)
+            from operations import Operations
+            service.operations=Operations(service,STATE/'recovery.json',args.config)
+            service.operations.start()
             service.controller.restore(STATE)
             service.platform_policies.restore(STATE)
             service.inventory.refresh()
             service.workloads.refresh()
             service.observer.sample_host(service.inventory)
-            if SOCKET.is_socket():
+            if SOCKET.exists() or SOCKET.is_symlink():
+                import stat
+                info=SOCKET.lstat()
+                if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.geteuid():
+                    raise PermissionError('refusing non-owned socket path')
                 SOCKET.unlink()
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host, Sessions(service,RUNTIME/'intent.sock') as sessions:
                 server.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
                 server.bind(str(SOCKET))
+                socket_inode=SOCKET.lstat().st_ino
                 try:
                     server.listen(16)
                     stopped = False
@@ -500,10 +531,19 @@ def main():
                         stopped = True
                     signal.signal(signal.SIGTERM, stop)
                     signal.signal(signal.SIGINT, stop)
+                    reload_pending=False
+                    def reload_signal(*_):
+                        nonlocal reload_pending
+                        reload_pending=True
+                    signal.signal(signal.SIGHUP,reload_signal)
                     service.log('ready', socket=str(SOCKET), lab_privileged=os.geteuid() == 0)
                     notify('READY=1')
                     inventory_tick = time.monotonic()
                     while not stopped:
+                        if reload_pending:
+                            reload_pending=False
+                            try:service.operations.reload()
+                            except (OSError,ValueError,RuntimeError) as error:service.log('error',detail='reload rejected: '+str(error))
                         watchers = [host, *service.watches]
                         observer_fd = service.observer.bpf.fd()
                         inputs = [server, *watchers, *sessions.inputs()] + ([observer_fd] if observer_fd is not None else [])
@@ -530,7 +570,9 @@ def main():
                 finally:
                     notify('STOPPING=1')
                     service.close_lab()
-                    SOCKET.unlink(missing_ok=True)
+                    if SOCKET.exists() and SOCKET.lstat().st_ino==socket_inode:
+                        SOCKET.unlink()
+                    service.operations.finish()
                     service.log('stopped')
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps(dict(event='fatal', detail=str(error))), file=sys.stderr)

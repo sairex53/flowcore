@@ -159,7 +159,7 @@ class Multiplex(socketserver.BaseRequestHandler):
 
 def live():
     with tempfile.TemporaryDirectory(dir=BUILD,prefix='v2-live-') as directory:
-        directory=Path(directory)
+        directory=Path(os.path.relpath(directory))
         cfg=load(ROOT/'config/service.json')
         cfg['intent_api']['priorities']=['standard','interactive','critical']
         config=directory/'config.json'

@@ -75,3 +75,7 @@ behavior are outside this boundary.
 The kernel audit/journal storage and retention policy are administrative.
 The service does not provide tamper-proof audit retention or a complete
 sandbox against a compromised kernel or host root.
+
+## Controlled deployment review
+
+The read-only monitoring boundary is retained. Deployment operations do not add host network authority. Configuration reload is limited to log and sampling timing; checkpoint recovery never replays kernel object IDs or reactivates controllers. Private state uses validated regular files and fsync/rename with explicit post-commit uncertainty. Live transient systemd validation of the extracted RPM showed zero effective capabilities and recovery after SIGKILL. See RELEASE_VALIDATION.md for exact evidence and unresolved package-transaction, reboot and installed-active-helper validation limits.

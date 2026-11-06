@@ -36,11 +36,8 @@ def unique(pairs):
 
 
 def load(path):
-    with Path(path).open('rb') as stream:
-        data = stream.read(65537)
-    if len(data) > 65536:
-        raise ValueError('configuration exceeds 64 KiB')
-    cfg = json.loads(data, object_pairs_hook=unique)
+    from durable_state import read_json
+    cfg = read_json(Path(path),65536)
     from observability_config import DEFAULT, validate
     from adaptive import DEFAULT as ADAPTIVE_DEFAULT
     if isinstance(cfg, dict):

@@ -224,3 +224,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/intent-library" "${FLOWCORE_INTENT_FROM_
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/intent-library" DESTINATION "${FLOWCORE_DATA}")
 install(FILES config/quic-requirements.txt DESTINATION "${FLOWCORE_DATA}/config")
 install(FILES examples/python/flowcore_intent.py examples/python/quic_adapter.py DESTINATION "${FLOWCORE_DATA}/examples/python")
+
+install(FILES packaging/flowcore-monitor.service DESTINATION lib/systemd/system)
+add_test(NAME deployment_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deployment_test.py")
+install(FILES DEPLOYMENT.md OPERATIONS.md RECOVERY.md RELEASE_VALIDATION.md DESTINATION "${FLOWCORE_DATA}/docs")

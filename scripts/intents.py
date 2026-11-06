@@ -54,21 +54,27 @@ class Registry:
     def persist(self, rows):
         if not self.path:
             return
-        tmp = self.path.with_suffix('.tmp')
-        tmp.write_text(json.dumps({name: {'intent': row['intent'], 'owner_uid': row['owner_uid'],
-                                          'expires': row['expires']}
-                                  for name, row in rows.items() if row['intent']['persistent']}))
-        tmp.replace(self.path)
+        from durable_state import atomic_json
+        atomic_json(self.path,{name: {'intent': row['intent'], 'owner_uid': row['owner_uid'],
+                                     'expires': row['expires']}
+                              for name,row in rows.items() if row['intent']['persistent']})
 
     def restore(self, runtime):
         self.path = Path(runtime) / 'intents.json'
         if not self.path.exists():
             return
-        with self.path.open() as stream:
-            data = json.loads(stream.read(65536))
+        from durable_state import read_json
+        data = read_json(self.path,65536)
+        if not isinstance(data,dict) or len(data)>16:raise ValueError('invalid persisted registry')
         for name, row in data.items():
+            from service_config import keys
+            keys(row,('intent','owner_uid','expires'))
+            number(row['owner_uid'],0,2**32-1,True)
+            number(row['expires'],0,time.time()+86400)
+            intent=self.validate(row['intent'])
+            if intent['name']!=name or not intent['persistent']:raise ValueError('invalid persisted intent identity')
             if row['expires'] > time.time():
-                self.admit(self.validate(row['intent']))
+                self.admit(intent)
                 self.rows[name] = dict(row, instances={}, monotonic_expiry=time.monotonic()+row['expires']-time.time())
         self.sync()
 

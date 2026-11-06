@@ -87,7 +87,8 @@ class PolicyStore:
     def restore(self, directory):
         self.path = directory/'platform-policy.json'
         if self.path.exists():
-            state = load_json(self.path,524288)
+            from durable_state import read_json
+            state = read_json(self.path)
             keys(state, ('revision','policy','audit'))
             number(state['revision'],0,2**63-1,True)
             validate(state['policy'])
@@ -107,16 +108,6 @@ class PolicyStore:
         state = dict(revision=revision,policy=policy,audit=(
             self.state['audit']+[dict(revision=revision,time_unix=time.time(),owner_uid=uid,
                                        operation='replace_profiles')])[-128:])
-        name = None
-        try:
-            with tempfile.NamedTemporaryFile(mode='w',dir=self.path.parent,prefix='.policy-',delete=False) as stream:
-                name = stream.name
-                json.dump(state,stream,allow_nan=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name,self.path)
-            self.state = state
-        finally:
-            if name and os.path.exists(name):
-                os.unlink(name)
+        from durable_state import atomic_json
+        atomic_json(self.path,state,on_commit=lambda:setattr(self,'state',state))
         return dict(changed=True,revision=revision)

@@ -1,0 +1,49 @@
+[Unit]
+Description=FLOWCORE separate read-only monitoring profile
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/flowcored --check-config --config /etc/flowcore/service.json
+ExecReload=/usr/bin/kill -HUP $MAINPID
+ExecStart=/usr/bin/flowcored --monitor-only --config /etc/flowcore/service.json
+DynamicUser=yes
+RuntimeDirectory=flowcore-monitor
+Environment=FLOWCORE_RUNTIME=/run/flowcore-monitor
+RuntimeDirectoryMode=0700
+StateDirectory=flowcore-monitor
+StateDirectoryMode=0700
+Environment=FLOWCORE_STATE=/var/lib/flowcore-monitor/state
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=128M
+TasksMax=32
+CPUQuota=30%
+LimitNOFILE=512
+WatchdogSec=15
+TimeoutStartSec=15
+TimeoutStopSec=10
+KillMode=control-group
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

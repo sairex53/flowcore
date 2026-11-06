@@ -1,9 +1,13 @@
 [Unit]
 Description=FLOWCORE read-only network inventory and health
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=notify
+ExecStartPre=/usr/bin/flowcored --check-config --config /etc/flowcore/service.json
+ExecReload=/usr/bin/kill -HUP $MAINPID
 ExecStart=/usr/bin/flowcored --monitor-only --config /etc/flowcore/service.json
 DynamicUser=yes
 RuntimeDirectory=flowcore
@@ -32,6 +36,9 @@ TasksMax=32
 CPUQuota=30%
 LimitNOFILE=512
 WatchdogSec=15
+TimeoutStartSec=15
+TimeoutStopSec=10
+KillMode=control-group
 Restart=on-failure
 RestartSec=2
 StandardOutput=journal

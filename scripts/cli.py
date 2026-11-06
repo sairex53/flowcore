@@ -47,6 +47,8 @@ def main():
             command.add_argument('--jsonl', action='store_true')
         if name == 'metrics':
             command.add_argument('--prometheus', action='store_true')
+    operational=commands.add_parser('ops',help='deployment health and conservative control')
+    operational.add_argument('action',choices=('status','validate','reload','emergency','diagnostics'))
     flows=commands.add_parser('flows',help='read-only current-namespace TCP/UDP fallback; never attaches BPF')
     flows.add_argument('--limit',type=int,default=128)
     flows.add_argument('--json',action='store_true')
@@ -147,6 +149,9 @@ def main():
                 if watch is None:
                     return 0
                 time.sleep(watch)
+        if args.command=='ops':
+            print(json.dumps(request('ops_'+args.action),indent=2))
+            return 0
         if args.command == 'report':
             fields = {key: getattr(args, key) for key in ('service', 'outcome', 'duration_us', 'deadline_ms', 'token', 'failure_reason')
                       if hasattr(args, key) and getattr(args, key) is not None}

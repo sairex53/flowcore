@@ -12,6 +12,11 @@ parser.add_argument('rpm',type=Path)
 rpm=parser.parse_args().rpm.resolve()
 (root/'build').mkdir(exist_ok=True)
 subprocess.run(['rpm','-K','--nosignature',rpm],check=True)
+requires=subprocess.check_output(['rpm','-qp','--requires',rpm],text=True)
+assert 'libstdc++.so.6' in requires and 'libc.so.6' in requires and 'GLIBCXX_' in requires, 'ELF runtime dependencies missing'
+provides=subprocess.check_output(['rpm','-qp','--provides',rpm],text=True)
+assert 'libflowcore_telemetry.so.1' in provides, 'native telemetry SONAME missing'
+
 with tempfile.TemporaryDirectory(dir=root/'build',prefix='rpm-stage-') as temp:
     temp=Path(temp)
     stage=temp/'payload'
@@ -51,4 +56,6 @@ with tempfile.TemporaryDirectory(dir=root/'build',prefix='rpm-stage-') as temp:
             proc.terminate()
             proc.wait(timeout=8)
     assert not (temp/'runtime/control.sock').exists()
+    subprocess.run(['/usr/bin/python3','-B',root/'tests/deployment_lifecycle.py',
+                    '--prefix',stage/'usr','--config',stage/'etc/flowcore/service.json'],check=True)
 print('PASS: RPM digest, payload layout, extracted monitor and cleanup')

@@ -24,7 +24,7 @@ class Protocol(unittest.TestCase):
     def setUp(self):
         self.directory=tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='session-')
         self.service=Service(load(ROOT/'config/service.json'))
-        self.server=Sessions(self.service,Path(self.directory.name)/'intent.sock')
+        self.server=Sessions(self.service,Path(os.path.relpath(self.directory.name))/'intent.sock')
         self.sockets=[]
 
     def tearDown(self):
