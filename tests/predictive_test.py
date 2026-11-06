@@ -50,13 +50,25 @@ class Predictive(unittest.TestCase):
             self.assertGreaterEqual(forecast['forecast_bytes'],0)
             self.assertLessEqual(forecast['forecast_bytes'],5000000)
         self.assertLess(native.forecast(data,'ema',2000,.95)['forecast_bytes'],1400)
-        self.assertAlmostEqual(native.forecast(data,'trend',2000,.95)['forecast_bytes'],1800)
+        self.assertAlmostEqual(native.forecast(data,'trend',2000,.95)['forecast_bytes'],2200)
         self.assertGreater(native.forecast(data,'hybrid',2000,.95)['trend_bps'],0)
         stable=native.forecast(rows([0]*8),'hybrid',2000,.95)
         self.assertEqual(stable['risk'],0)
         self.assertEqual(stable['lead_seconds'],-1)
         oscillating=native.forecast(rows([0,20000]*4),'hybrid',2000,.95)
         self.assertLess(oscillating['quality'],.45)
+
+    def test_horizon_allows_two_existing_control_ticks(self):
+        from predictive import HORIZON
+        self.assertGreaterEqual(HORIZON,2*2) # two-second cadence plus sampling slack
+        native=Native()
+        first=native.forecast(rows([0,100,200,300,400,500,600,700]),'trend',1050,.95)
+        second=native.forecast(rows([200,300,400,500,600,700,800,900]),'trend',1050,.95)
+        self.assertGreater(first['lead_seconds'],2)
+        self.assertLessEqual(first['lead_seconds'],HORIZON)
+        self.assertGreater(second['lead_seconds'],.1)
+        self.assertGreaterEqual(first['risk'],.8)
+        self.assertGreaterEqual(second['risk'],.8)
 
     def test_missing_discontinuous_and_malformed(self):
         native=Native()
@@ -100,6 +112,7 @@ class Predictive(unittest.TestCase):
             config={'adaptive':copy.deepcopy(DEFAULT),'policies':{'default':{'classes':{
                     'critical':{'priority':0}}}}})
         controller=Controller(service);controller.strategy='predictive'
+        controller.cfg['window_seconds']=2
         controller.registry.register(dict(name='a',priority='critical',target_p99_ms=25),0)
         controller.base=dict(critical=(3000,10000),interactive=(2000,10000),
                              standard=(2000,10000),background=(3000,10000))
@@ -113,6 +126,10 @@ class Predictive(unittest.TestCase):
         plan=controller.plan(window,controller.current)
         self.assertEqual(plan['action'],'transfer_reservation')
         self.assertTrue(plan['estimator']['a']['proactive'])
+        controller.cfg['window_seconds']=4
+        self.assertFalse(controller.prediction_timing()['proactive_feasible'])
+        self.assertEqual(controller.plan(window,controller.current)['action'],'hold')
+        controller.cfg['window_seconds']=2
         self.assertEqual(sum(rate for rate,_ in plan['proposed'].values()),10000)
         self.assertGreaterEqual(plan['proposed']['background'][0],2000)
         controller.predictor.latest['critical']['hybrid']['time_ns']-=3*10**9

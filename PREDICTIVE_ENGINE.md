@@ -46,13 +46,18 @@ no memory, performs no system calls and rejects non-finite, excessive, out-of-or
 discontinuous or inconsistent-capacity input. Python owns bounded histories and
 orchestration; the C++23 core computes the forecasts.
 
-All models use a fixed two-second horizon and the same histories:
+All models use a fixed four-second horizon and the same histories:
 
 - EMA: queue persistence, time-aware alpha = 1 - exp(-dt / 2 s).
 - Trend: least-squares queue slope, extrapolated from the latest backlog.
 - Queue growth: smoothed per-interval backlog derivative.
 - Rate change: positive departure-rate acceleration as a deliberately simple ablation.
 - Hybrid: equally weighted trend and smoothed queue growth; the selected strategy.
+
+The horizon spans the existing two-second decision cadence and two confirming
+windows; the initial two-second prototype could not confirm an accurate rising
+forecast before expiry. The horizon was corrected before final evaluation, based
+on this timing contract, without changing the established hysteresis.
 
 Slopes are bounded by parent bytes/s; queue forecasts are bounded to four seconds
 of parent capacity. Negative forecasts clamp to zero. No coefficients or thresholds
@@ -100,10 +105,16 @@ thousands of independent validation runs.
 ## Intervention and fallback
 
 A proactive candidate must have a fresh hybrid warning, no current target event,
-positive predicted crossing time within two seconds, and at least 100 ms of remaining
+positive predicted crossing time within four seconds, and at least 100 ms of remaining
 lead after sample age. Existing evidence must independently show local network
 pressure, two target-leaf backlog samples, class departures >= 90% of its guarantee,
 at least 100 successful application samples, and no reported failures.
+
+The configured confirmation delay plus effective sample interval must fit strictly
+inside the horizon, or proactive proposals are disabled with an explicit timing
+constraint. The measured configuration uses two-second control windows and
+one-second samples. Default four-second control windows fall back to reactive
+operation because they do not fit this experimental horizon.
 
 The original allocator and verified incremental HTB actuator remain authoritative:
 5-point reservation steps, total capacity, ceilings, per-service admission bounds,

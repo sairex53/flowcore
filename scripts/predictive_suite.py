@@ -1,13 +1,16 @@
 """Frozen predictive evaluation: separate static pilot, shadow, paired trials, unseen stress."""
 import argparse
+import hashlib
 import json
 import os
 import random
 import time
+from pathlib import Path
 from benchmark import ROOT, RESULTS, owned_directory
 from research_manifest import load_manifest
 from research_runner import exclusive, execute, save
 from research_report import report
+from research_stats import load_summary
 from predictive_report import analyze
 
 
@@ -43,6 +46,7 @@ def select_static(data,evaluation):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repetitions',type=int,default=10)
+    parser.add_argument('--pilot',type=Path,help='reuse a complete, separately seeded local static-only pilot directory')
     args=parser.parse_args()
     if os.geteuid()!=0 or not 1<=args.repetitions<=30: parser.error('isolated root runner; 1..30 repetitions')
     with exclusive():
@@ -58,7 +62,14 @@ def main():
             return path,data
         # Model coefficients and warning thresholds never depend on any of these results.
         experiment('shadow',load_manifest(ROOT/'scenarios/predictive-shadow.json'))
-        _,pilot=experiment('pilot',load_manifest(ROOT/'scenarios/predictive-static-pilot.json'))
+        if args.pilot:
+            if not args.pilot.resolve().is_relative_to(RESULTS.resolve()):
+                raise ValueError('pilot must be in the local results tree')
+            pilot=load_summary(args.pilot/'summary.json')
+            index['reused_pilot']=dict(directory=str(args.pilot),
+                sha256=hashlib.sha256((args.pilot/'summary.json').read_bytes()).hexdigest())
+        else:
+            _,pilot=experiment('pilot',load_manifest(ROOT/'scenarios/predictive-static-pilot.json'))
         dynamic=load_manifest(ROOT/'scenarios/predictive-buildup.json');dynamic['repetitions']=args.repetitions
         selected=select_static(pilot,dynamic);save(output/'static-selection.json',selected)
         for label,manifest in [('buildup',dynamic),

@@ -6,7 +6,7 @@ from collections import deque
 
 import adaptive_tc
 from intents import Registry
-from predictive import Predictor
+from predictive import Predictor, HORIZON
 from intelligence import Allocator, State, estimate, score
 
 NANO = 10**9
@@ -202,6 +202,13 @@ class Controller:
                 raise ValueError('aggregate service minimums exceed the class reservation')
         return self.registry.register(intent, uid, pid)
 
+    def prediction_timing(self):
+        confirmation = self.cfg['window_seconds']*(self.cfg['enter_windows']-1)
+        sample_delay = max(.75,self.service.config.get('telemetry_seconds',1))
+        return dict(horizon_seconds=HORIZON,confirmation_seconds=confirmation,
+                    sample_interval_seconds=sample_delay,
+                    proactive_feasible=confirmation+sample_delay<HORIZON)
+
     def sample_prediction(self):
         if self.mode == 'off' or self.strategy != 'predictive':
             return
@@ -250,7 +257,7 @@ class Controller:
                                      and (measured['throughput_kbit'] or 0) >= .9*rate
                                      and not measured['failures']
                                      and measured['samples'] >= max(LATENCY_MIN_SAMPLES, cfg['minimum_samples']))
-        predictive = (dict(experimental=True,error=self.predictor.error,
+        predictive = (dict(experimental=True,error=self.predictor.error,timing=self.prediction_timing(),
             forecasts={cls:{k:v for k,v in methods.get('hybrid',{}).items() if k!='input'}
                        for cls,methods in self.predictor.latest.items()})
                       if self.strategy == 'predictive' else None)
@@ -277,7 +284,8 @@ class Controller:
                 if self.strategy == 'predictive':
                     forecast = self.predictor.latest.get(cls,{}).get('hybrid')
                     age = (time.monotonic_ns()-forecast['time_ns'])/NANO if forecast else None
-                    if (forecast and age is not None and 0 <= age < 1.5 and
+                    if (self.prediction_timing()['proactive_feasible'] and
+                            forecast and age is not None and 0 <= age < 1.5 and
                             forecast['actionable'] and forecast['lead_seconds']-age > .1 and
                             observation['eligible']):
                         utility = max(utility,weight*forecast['risk']/(1+max(0,
@@ -560,6 +568,7 @@ class Controller:
                     actions=self.actions, pending=self.pending, error=self.error,
                     allocation_verified=self.error is None and self.mode != 'off',
                     prediction=self.predictor.status() if self.strategy == 'predictive' else None,
+                    predictive_timing=self.prediction_timing() if self.strategy == 'predictive' else None,
                     engine_state=self.state.name, state_reason=self.state.reason,
                     last_decision=self.last_plan, reversals=self.reversals,
                     fairness=self.fairness(window), timing=self.timing)

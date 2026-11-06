@@ -6,7 +6,7 @@ from pathlib import Path
 from paths import BINDIR
 
 METHODS=('ema','trend','queue-growth','rate-change','hybrid')
-HORIZON=2.0
+HORIZON=4.0
 
 
 class Sample(ctypes.Structure):
