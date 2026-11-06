@@ -151,3 +151,7 @@ Decision and audit histories can be exported as JSON.
 See CLI.md for command groups, SECURITY.md for deployment boundaries,
 RELEASE.md for the staged installation and RPM, and PLATFORM_RESULTS.md
 for measured validation and remaining work.
+
+## Experimental multipath engine
+
+The existing MPTCP laboratory now supports 2–4 paths, backup endpoint policies, failure/recovery scenarios and TCP comparisons. See [MULTIPATH_ENGINE.md](MULTIPATH_ENGINE.md) for commands and limitations, and [MULTIPATH_RESULTS.md](MULTIPATH_RESULTS.md) for measured validation.
