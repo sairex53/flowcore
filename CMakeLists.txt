@@ -212,3 +212,15 @@ set_tests_properties(telemetry_python_compat PROPERTIES ENVIRONMENT "FLOWCORE_HI
 add_test(NAME telemetry_native_compat COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_telemetry_test.py")
 set_tests_properties(telemetry_native_compat PROPERTIES ENVIRONMENT "FLOWCORE_HISTOGRAM_BACKEND=native")
 install(FILES NATIVE_CORE.md MIGRATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+add_test(NAME transport_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/transport_test.py")
+add_executable(transport_native_test tests/transport_native.cpp)
+target_link_libraries(transport_native_test PRIVATE flowcore_sdk)
+add_test(NAME transport_native COMMAND transport_native_test)
+install(FILES TRANSPORT_AWARE.md QUIC_INTEGRATION.md TRANSPORT_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+file(RELATIVE_PATH FLOWCORE_INTENT_FROM_DATA "${CMAKE_INSTALL_FULL_DATADIR}/flowcore" "${CMAKE_INSTALL_FULL_LIBDIR}/libflowcore_intent.so")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/intent-library" "${FLOWCORE_INTENT_FROM_DATA}
+")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/intent-library" DESTINATION "${FLOWCORE_DATA}")
+install(FILES config/quic-requirements.txt DESTINATION "${FLOWCORE_DATA}/config")
+install(FILES examples/python/flowcore_intent.py examples/python/quic_adapter.py DESTINATION "${FLOWCORE_DATA}/examples/python")

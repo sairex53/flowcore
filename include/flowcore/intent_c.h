@@ -19,6 +19,7 @@ int fc_v2_wait(fc_v2_service *, uint32_t timeout_ms);
 int fc_v2_flush(fc_v2_service *, uint32_t timeout_ms);
 void fc_v2_close(fc_v2_service *);
 fc_v2_request *fc_v2_begin(fc_v2_service *, uint32_t deadline_us, uint64_t cookie);
+fc_v2_request *fc_v2_begin_stream(fc_v2_service *, uint64_t stream_id, uint32_t priority, uint32_t deadline_us, uint64_t cookie);
 int fc_v2_finish(fc_v2_request *, uint32_t outcome); /* 0 ok,1 timeout,2 failure,3 cancelled; consumes request */
 int fc_v2_stats(fc_v2_service *, fc_v2_statistics *);
 uint32_t fc_v2_notifications(fc_v2_service *);
@@ -31,6 +32,10 @@ uint32_t fc_v2_last_error(fc_v2_service *); /* C++ Error enum: 0 none,1 transpor
 uint64_t fc_v2_generation(fc_v2_service *);
 uint64_t fc_v2_notifications_time(fc_v2_service *);
 uint64_t fc_v2_request_id(const fc_v2_request *);
+/* Additive transport declarations: kind 0 TCP,1 MPTCP,2 UDP,3 QUIC,4 logical. */
+int fc_v2_declare_transport(fc_v2_service *, const char *session, uint32_t kind,
+                            uint32_t multiplexed, uint32_t mobility, uint64_t cookie);
+int fc_v2_transport_state(fc_v2_service *, const char *session, uint32_t degraded, const char *error);
 const char *fc_v2_error(void); /* thread-local, valid until next error on this thread */
 #ifdef __cplusplus
 }

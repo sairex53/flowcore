@@ -17,6 +17,13 @@ struct Intent {
     std::uint32_t deadline_us = 0, lifetime_seconds = 300;
     bool prefer_reliable = false, prefer_isolation = false;
 };
+enum class TransportKind { Tcp, Mptcp, Udp, Quic, Logical };
+struct TransportHints {
+    std::string session;
+    TransportKind kind = TransportKind::Logical;
+    bool multiplexed = false, mobility_preference = false;
+    std::uint64_t cookie = 0;
+};
 struct Statistics {
     std::uint64_t queued, accepted, dropped, rejected, transport_errors;
 };
@@ -31,15 +38,21 @@ public:
     std::uint64_t id() const noexcept { return id_; }
 private:
     friend class Service;
-    Request(std::shared_ptr<detail::Channel>, std::uint32_t, std::uint64_t);
+    Request(std::shared_ptr<detail::Channel>, std::uint32_t, std::uint64_t,
+            std::uint64_t stream = 0, unsigned priority = 0, bool logical = false);
     std::shared_ptr<detail::Channel> channel_;
     std::uint64_t id_=0, start_=0, generation_=0, cookie_=0;
     std::uint32_t deadline_=0;
+    std::uint64_t stream_=0;
+    unsigned priority_=0;
+    bool logical_=false;
 };
 class Service {
 public:
     Service(std::string socket_path, Intent intent);
     Request begin_request(std::uint32_t deadline_us = 0, std::uint64_t cookie = 0) const;
+    Request begin_stream_request(std::uint64_t stream_id, unsigned priority,
+                                 std::uint32_t deadline_us = 0, std::uint64_t cookie = 0) const;
     bool wait_ready(std::chrono::milliseconds timeout) const;
     bool flush(std::chrono::milliseconds timeout) const;
     bool ready() const noexcept;
@@ -50,6 +63,12 @@ public:
     std::uint64_t notifications_time_ns() const noexcept;
     // Blocking setup operation. Returned cookie is attested by a received FD.
     std::uint64_t associate_socket(int fd) const;
+    // Blocking setup/diagnostic operations, never required in a request hot path.
+    void declare_transport(const TransportHints&) const;
+    void report_transport_state(const std::string& session, bool degraded,
+                                const std::string& error = "none") const;
+    // Application-owned socket only; 0..6 are ordinary Linux skb priorities.
+    static void set_socket_priority(int fd, unsigned priority);
     // Blocking teardown; returns count of abandoned telemetry records, not network cancellations.
     std::uint64_t dissociate_socket(std::uint64_t cookie) const;
     // Latest coalesced state bits: SLO, congestion, fallback, interface, capacity.

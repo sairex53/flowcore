@@ -36,6 +36,10 @@ void fc_v2_close(fc_v2_service* s) { delete s; }
 fc_v2_request* fc_v2_begin(fc_v2_service* s,uint32_t us,uint64_t cookie) {
     try { return s ? new fc_v2_request{s->value.begin_request(us,cookie)} : nullptr; } catch (...) { save();return nullptr; }
 }
+fc_v2_request* fc_v2_begin_stream(fc_v2_service* s,uint64_t stream,uint32_t priority,uint32_t deadline,uint64_t cookie) {
+    try { return s ? new fc_v2_request{s->value.begin_stream_request(stream,priority,deadline,cookie)} : nullptr; }
+    catch (...) { save();return nullptr; }
+}
 int fc_v2_finish(fc_v2_request* r,uint32_t outcome) {
     if (!r) return 0;
     if (outcome>3) { delete r;error="invalid request outcome";return 0; }
@@ -71,5 +75,22 @@ uint32_t fc_v2_last_error(fc_v2_service* s) { return s?static_cast<uint32_t>(s->
 uint64_t fc_v2_generation(fc_v2_service* s) { return s?s->value.registration_generation():0; }
 uint64_t fc_v2_notifications_time(fc_v2_service* s) { return s?s->value.notifications_time_ns():0; }
 uint64_t fc_v2_request_id(const fc_v2_request* r) { return r?r->value.id():0; }
+int fc_v2_declare_transport(fc_v2_service* s,const char* session,uint32_t kind,
+                            uint32_t multiplexed,uint32_t mobility,uint64_t cookie) {
+    try {
+        if (!s || !session || kind>4 || multiplexed>1 || mobility>1)
+            throw std::invalid_argument("invalid transport declaration");
+        s->value.declare_transport({session,static_cast<TransportKind>(kind),
+                                   bool(multiplexed),bool(mobility),cookie});
+        return 1;
+    } catch (...) { save();return 0; }
+}
+int fc_v2_transport_state(fc_v2_service* s,const char* session,uint32_t degraded,const char* reason) {
+    try {
+        if (!s || !session || !reason || degraded>1) throw std::invalid_argument("invalid transport state");
+        s->value.report_transport_state(session,bool(degraded),reason);
+        return 1;
+    } catch (...) { save();return 0; }
+}
 const char* fc_v2_error() { return error.c_str(); }
 }

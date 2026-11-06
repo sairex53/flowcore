@@ -10,6 +10,9 @@
 #include <thread>
 #include <utility>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <system_error>
+#include <cerrno>
 
 namespace flowcore::detail {
 std::string exchange(const std::string&, std::string, int);
@@ -43,6 +46,9 @@ struct Event {
     std::uint64_t id, start, end, generation, cookie;
     std::uint32_t deadline;
     unsigned phase;
+    std::uint64_t stream=0;
+    unsigned priority=0;
+    bool logical=false;
 };
 struct Channel {
     const pid_t owner=getpid();
@@ -148,7 +154,9 @@ struct Channel {
                         if (sent++) message+=",";
                         message+="{\"id\":"+std::to_string(e.id)+",\"phase\":\""+phases[e.phase]+
                             "\",\"start_ns\":"+std::to_string(e.start)+",\"end_ns\":"+std::to_string(e.end)+
-                            ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null")+"}";
+                            ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null");
+                        if (e.logical) message+=",\"stream_id\":"+std::to_string(e.stream)+",\"stream_priority\":"+std::to_string(e.priority);
+                        message+="}";
                     }
                     message+="]}";
                     auto reply=transport.exchange(std::move(message));
@@ -221,6 +229,45 @@ std::uint64_t Service::associate_socket(int fd) const {
     auto reply=flowcore::detail::exchange(channel_->path,channel_->envelope("associate",token)+"}",fd);
     return std::stoull(field(reply,"\"cookie\": \""));
 }
+void Service::declare_transport(const TransportHints& hints) const {
+    if (hints.session.empty() || hints.session.size()>64 ||
+        hints.session.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")!=std::string::npos)
+        throw std::invalid_argument("invalid logical session identifier");
+    const auto index=static_cast<unsigned>(hints.kind);
+    constexpr std::array<const char*,5> kinds{"tcp","mptcp","udp","quic","logical"};
+    if (index>=kinds.size()) throw std::invalid_argument("unsupported transport kind");
+    std::string token;
+    { std::lock_guard lock(channel_->mutex);
+      if (!ready()) throw std::runtime_error("daemon unavailable");
+      token=channel_->lease; }
+    static_cast<void>(flowcore::detail::exchange(channel_->path,
+        channel_->envelope("transport_declare",token)+",\"transport\":{\"session\":\""+hints.session+
+        "\",\"kind\":\""+kinds[index]+"\",\"multiplexed\":"+(hints.multiplexed?"true":"false")+
+        ",\"mobility_preference\":"+(hints.mobility_preference?"true":"false")+
+        ",\"cookie\":"+(hints.cookie?std::to_string(hints.cookie):"null")+"}}",-1));
+}
+void Service::report_transport_state(const std::string& session, bool degraded, const std::string& error) const {
+    if (session.empty() || session.size()>64 ||
+        session.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")!=std::string::npos)
+        throw std::invalid_argument("invalid logical session identifier");
+    constexpr std::array<const char*,7> errors{"none","handshake","timeout","reset","path","cancelled","other"};
+    bool valid=false;
+    for (const auto* value : errors) if (error==value) valid=true;
+    if (!valid) throw std::invalid_argument("invalid transport error");
+    std::string token;
+    { std::lock_guard lock(channel_->mutex);
+      if (!ready()) throw std::runtime_error("daemon unavailable");
+      token=channel_->lease; }
+    static_cast<void>(flowcore::detail::exchange(channel_->path,
+        channel_->envelope("transport_state",token)+",\"session\":\""+session+
+        "\",\"degraded\":"+(degraded?"true":"false")+",\"error\":\""+error+"\"}",-1));
+}
+void Service::set_socket_priority(int fd, unsigned priority) {
+    if (priority>6) throw std::invalid_argument("ordinary socket priority must be 0..6");
+    const int value=static_cast<int>(priority);
+    if (setsockopt(fd,SOL_SOCKET,SO_PRIORITY,&value,sizeof(value)))
+        throw std::system_error(errno,std::generic_category(),"SO_PRIORITY");
+}
 std::uint64_t Service::dissociate_socket(std::uint64_t cookie) const {
     if (!cookie) throw std::invalid_argument("socket cookie required");
     std::string token;
@@ -231,21 +278,27 @@ std::uint64_t Service::dissociate_socket(std::uint64_t cookie) const {
         channel_->envelope("dissociate",token)+",\"cookie\":"+std::to_string(cookie)+"}",-1);
     return integer(reply,"\"abandoned\": ");
 }
-Request::Request(std::shared_ptr<detail::Channel> channel, std::uint32_t deadline, std::uint64_t cookie)
+Request Service::begin_stream_request(std::uint64_t stream, unsigned priority,
+                                      std::uint32_t deadline, std::uint64_t cookie) const {
+    return Request(channel_,deadline,cookie,stream,priority,true);
+}
+Request::Request(std::shared_ptr<detail::Channel> channel, std::uint32_t deadline, std::uint64_t cookie,
+                 std::uint64_t stream, unsigned priority, bool logical)
     : channel_(std::move(channel)), start_(now()), generation_(channel_->generation), cookie_(cookie),
-      deadline_(deadline ? deadline : channel_->default_deadline) {
+      deadline_(deadline ? deadline : channel_->default_deadline),stream_(stream),priority_(priority),logical_(logical) {
+    if (priority>7 || stream>=(1ULL<<62)) throw std::invalid_argument("invalid logical stream metadata");
     if (deadline_>600000000) throw std::invalid_argument("deadline outside supported range");
     id_=++channel_->sequence;
-    if (!channel_->push({id_,start_,0,generation_,cookie_,deadline_,0})) channel_.reset();
+    if (!channel_->push({id_,start_,0,generation_,cookie_,deadline_,0,stream_,priority_,logical_})) channel_.reset();
 }
 Request::Request(Request&& other) noexcept
     : channel_(std::move(other.channel_)),id_(other.id_),start_(other.start_),
-      generation_(other.generation_),cookie_(other.cookie_),deadline_(other.deadline_) {}
+      generation_(other.generation_),cookie_(other.cookie_),deadline_(other.deadline_),stream_(other.stream_),priority_(other.priority_),logical_(other.logical_) {}
 Request::~Request() { if (channel_) static_cast<void>(complete(Outcome::Cancelled)); }
 bool Request::complete(Outcome outcome) noexcept {
     auto channel=std::move(channel_);
     if (!channel) return false;
     unsigned phase=outcome==Outcome::Ok?1:outcome==Outcome::Timeout?2:outcome==Outcome::Failure?3:4;
-    return channel->push({id_,start_,now(),generation_,cookie_,deadline_,phase});
+    return channel->push({id_,start_,now(),generation_,cookie_,deadline_,phase,stream_,priority_,logical_});
 }
 }

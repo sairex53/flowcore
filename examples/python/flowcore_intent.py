@@ -69,8 +69,45 @@ class Service:
         if not self.handle:
             raise ValueError(self.lib.fc_v2_error().decode())
 
+    def declare_transport(self,session,kind,multiplexed=False,mobility=False,cookie=0):
+        function=self.lib.fc_v2_declare_transport
+        function.argtypes=[c.c_void_p,c.c_char_p,c.c_uint32,c.c_uint32,c.c_uint32,c.c_uint64]
+        function.restype=c.c_int
+        kinds={'tcp':0,'mptcp':1,'udp':2,'quic':3,'logical':4}
+        if kind not in kinds:
+            raise ValueError('unsupported transport')
+        if not function(self.handle,session.encode(),kinds[kind],int(multiplexed),int(mobility),cookie):
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+
+    def report_transport_state(self,session,degraded,error='none'):
+        function=self.lib.fc_v2_transport_state
+        function.argtypes=[c.c_void_p,c.c_char_p,c.c_uint32,c.c_char_p]
+        function.restype=c.c_int
+        if not function(self.handle,session.encode(),int(degraded),error.encode()):
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+
     def ready(self,timeout_ms=3000):
         return bool(self.lib.fc_v2_wait(self.handle,timeout_ms))
+
+    @contextlib.contextmanager
+    def stream_request(self,stream_id,priority=0,deadline_us=0,cookie=0):
+        function=self.lib.fc_v2_begin_stream
+        function.argtypes=[c.c_void_p,c.c_uint64,c.c_uint32,c.c_uint32,c.c_uint64]
+        function.restype=c.c_void_p
+        handle=function(self.handle,stream_id,priority,deadline_us,cookie)
+        if not handle:
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+        scope=Request(self.lib,handle)
+        try:
+            yield scope
+        except TimeoutError:
+            scope.complete(1)
+            raise
+        except BaseException:
+            scope.complete(3)
+            raise
+        else:
+            scope.complete(0)
 
     @contextlib.contextmanager
     def request(self,deadline_us=0,cookie=0):

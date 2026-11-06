@@ -123,13 +123,21 @@ class IntentAPI:
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='registered',uid=uid,service=intent['name'],pid=pid,process_start=start))
             self.service.log('intent_v2_registered',uid=uid,service=intent['name'],pid=pid,process_start=start)
             return dict(version=2,lease=token,renewable=True,
-                        features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality'],
+                        features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality','transport_sessions_v1'],
                         isolation='preference_only',identity='SO_PEERCRED+process_start',
                         constraints='class contracts require admitted HTB lab',notifications={})
         token=request.get('lease')
         lease=self.leases.get(token) if isinstance(token,str) else None
         if not lease or (lease['uid'],lease['pid'])!=(uid,pid) or identity(pid)[0]!=lease['process_start']:
             raise UnknownLease('unknown, revoked or foreign lease')
+        if action=='transport_declare':
+            keys(request,('op','version','action','lease','transport'))
+            from transport_model import declare
+            return declare(lease,request['transport'])
+        if action=='transport_state':
+            keys(request,('op','version','action','lease','session','degraded','error'))
+            from transport_model import report
+            return report(lease,request['session'],request['degraded'],request['error'])
         if action=='renew':
             keys(request,('op','version','action','lease'))
             lease['expires_ns']=time.monotonic_ns()+lease['ttl_seconds']*10**9
@@ -144,6 +152,9 @@ class IntentAPI:
             return dict(version=2,inflight=len(lease['requests']),outcomes=dict(lease['outcomes']),
                         expired_requests=lease['expired_requests'],abandoned_requests=lease['abandoned_requests'],
                         socket_associations=len(lease['cookies']),pid=lease['pid'],
+                        transport_sessions=list(lease.get('transport_sessions',{}).values()),
+                        stream_reports=list(lease.get('stream_reports',[])),
+                        socket_capabilities=list(lease.get('socket_capabilities',{}).values()),
                         process_start=lease['process_start'],cgroup=lease['cgroup'],
                         expires_ns=lease['expires_ns'])
         if action=='close':
@@ -160,6 +171,7 @@ class IntentAPI:
                 lease['completed'].append(identifier)
             lease['abandoned_requests']+=len(abandoned)
             lease['cookies'].discard(cookie)
+            lease.get('socket_capabilities',{}).pop(cookie,None)
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='dissociated',uid=uid,
                                    pid=pid,service=lease['name'],cookie=cookie,abandoned=len(abandoned)))
             self.service.log('intent_v2_dissociated',uid=uid,pid=pid,service=lease['name'],
@@ -178,13 +190,21 @@ class IntentAPI:
             with received as sock:
                 protocol=sock.getsockopt(socket.SOL_SOCKET,socket.SO_PROTOCOL)
                 if sock.family not in (socket.AF_INET,socket.AF_INET6) or (sock.type,protocol) not in (
-                        (socket.SOCK_STREAM,6),(socket.SOCK_DGRAM,17)):
+                        (socket.SOCK_STREAM,6),(socket.SOCK_STREAM,262),(socket.SOCK_DGRAM,17)):
                     raise ValueError('association requires an Internet TCP or UDP socket')
                 cookie=int.from_bytes(sock.getsockopt(socket.SOL_SOCKET,57,8),os.sys.byteorder)
                 local=sock.getsockname()
+                is_mptcp=None
+                if protocol in (6,262):
+                    try:
+                        is_mptcp=bool(int.from_bytes(sock.getsockopt(socket.IPPROTO_TCP,43,4),os.sys.byteorder))
+                    except OSError:
+                        pass
             if cookie not in lease['cookies'] and len(lease['cookies'])>=64:
                 raise ValueError('socket association quota exhausted')
             lease['cookies'].add(cookie)
+            lease.setdefault('socket_capabilities',{})[cookie]=dict(cookie=str(cookie),protocol=protocol,
+                is_mptcp=is_mptcp,source='received_socket_descriptor',quic_observed=False)
             return dict(version=2,cookie=str(cookie),protocol=protocol,association='received_socket_descriptor',
                         local=local,classification='none')
         if action!='batch':
@@ -225,7 +245,12 @@ class IntentAPI:
                     expired_requests=lease['expired_requests'])
 
     def event(self,lease,event,uid):
-        keys(event,('id','phase','start_ns','end_ns','deadline_us','cookie'))
+        fields={'id','phase','start_ns','end_ns','deadline_us','cookie'}
+        if 'stream_id' in event or 'stream_priority' in event:
+            fields.update(('stream_id','stream_priority'))
+            number(event.get('stream_id'),0,2**62-1,True)
+            number(event.get('stream_priority'),0,7,True)
+        keys(event,fields)
         number(event['id'],1,2**63-1,True)
         number(event['start_ns'],1,time.monotonic_ns(),True)
         number(event['deadline_us'],0,600_000_000,True)
@@ -238,12 +263,12 @@ class IntentAPI:
         if event['phase']=='start':
             if request in lease['requests'] or request in lease['completed'] or len(lease['requests'])>=256 or event['end_ns']!=0:
                 raise ValueError('duplicate request or inflight quota')
-            lease['requests'][request]=(event['start_ns'],event['deadline_us'],event['cookie'])
+            lease['requests'][request]=(event['start_ns'],event['deadline_us'],event['cookie'],event.get('stream_id'),event.get('stream_priority'))
             return
         if event['phase'] not in ('ok','timeout','failure','cancelled'):
             raise ValueError('invalid terminal outcome')
         entry=lease['requests'].get(request)
-        if entry!=(event['start_ns'],event['deadline_us'],event['cookie']):
+        if entry!=(event['start_ns'],event['deadline_us'],event['cookie'],event.get('stream_id'),event.get('stream_priority')):
             raise ValueError('request identity or metadata mismatch')
         number(event['end_ns'],event['start_ns'],time.monotonic_ns(),True)
         duration=(event['end_ns']-event['start_ns'])/1000
@@ -255,3 +280,8 @@ class IntentAPI:
         del lease['requests'][request]
         lease['completed'].append(request)
         lease['outcomes'][event['phase']]+=1
+        if 'stream_id' in event:
+            lease.setdefault('stream_reports',deque(maxlen=64)).append(dict(
+                request_id=request,stream_id=event['stream_id'],priority=event['stream_priority'],
+                duration_us=duration,outcome=event['phase'],source='application_reported',
+                kernel_priority_enforced=False))
