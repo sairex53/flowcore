@@ -61,15 +61,17 @@ def decode(body):
                 tcp_info_bytes=len(attributes.get(2,b'')), tcp_info=tcp_info(attributes.get(2, b'')), source='inet_diag/tcp_info')
 
 
-def connections(limit):
+def connections(limit, protocol=socket.IPPROTO_TCP):
     if type(limit) is not int or not 1 <= limit <= 4096:
         raise ValueError('socket limit must be 1..4096')
+    if type(protocol) is not int or protocol not in (socket.IPPROTO_TCP,socket.IPPROTO_UDP):
+        raise ValueError('only TCP/UDP INET_DIAG supported')
     rows = []
     with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 4) as sock:
         sock.bind((0, 0))
         deadline = time.monotonic() + .7
         for family in (socket.AF_INET, socket.AF_INET6):
-            request = struct.pack('=BBBBI', family, socket.IPPROTO_TCP, 0x42, 0, 0x1ffe) + bytes(40) + b'\xff'*8
+            request = struct.pack('=BBBBI', family, protocol, 0x42 if protocol==socket.IPPROTO_TCP else 0x40, 0, 0x1ffe) + bytes(40) + b'\xff'*8
             sock.sendto(HEADER.pack(16 + len(request), 20, 0x301, family, 0) + request, (0, 0))
             done = False
             for _ in range(128):
@@ -94,7 +96,16 @@ def connections(limit):
                     if kind == 20:
                         if len(rows) == limit:
                             return rows, True
-                        rows.append(decode(body))
+                        row=decode(body)
+                        row['protocol']=protocol
+                        if protocol==socket.IPPROTO_UDP:
+                            row.pop('tcp_info',None)
+                            row.pop('tcp_info_bytes',None)
+                            row.pop('retransmit_timer',None)
+                            row.pop('retransmit_backoff_count',None)
+                            row['source']='inet_diag/udp'
+                            row['state']='connected' if row['state']=='established' else 'unconnected'
+                        rows.append(row)
                 if done:
                     break
             if not done:

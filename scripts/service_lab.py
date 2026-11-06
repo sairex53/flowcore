@@ -7,6 +7,36 @@ from service_config import CLASSES
 
 
 class ServiceLab(Lab):
+    def start_flow_engine(self,capacity=4096,observe=False):
+        from flow_engine import FlowEngine
+        if getattr(self,'flow_engine',None):
+            self.flow_engine.close()
+        self.flow_engine=FlowEngine()
+        return self.flow_engine.start(self,capacity,observe)
+
+    def flow_intelligence(self,limit=4096):
+        from flow_snapshot import snapshot as flow_snapshot
+        from service_config import number
+        number(limit,1,4096,True)
+        with self.enter(0):
+            sockets=flow_snapshot(limit)
+        engine=getattr(self,'flow_engine',None)
+        if not engine or not engine.ready:
+            return sockets
+        observations=engine.dump()
+        by_cookie={int(row['cookie'],16):row for row in sockets['flows'] if row.get('cookie')}
+        for row in observations:
+            match=by_cookie.get(int(row['cookie']))
+            row['socket_snapshot']=match if match and match['protocol']==row['protocol'] else None
+            row['socket_association']='exact_cookie' if row['socket_snapshot'] else 'unavailable'
+        return dict(source='tcx+inet_diag',flows=observations,stats=engine.stats,
+                    socket_snapshot_truncated=sockets['truncated'])
+
+    def close(self):
+        if getattr(self,'flow_engine',None):
+            self.flow_engine.close()
+        super().close()
+
     def command(self, index, argv):
         return run(self.ns(index, argv))
 

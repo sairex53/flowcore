@@ -30,6 +30,8 @@ def main():
         assert command([cli,'--version']).strip()=='FLOWCORE 0.2.0'
         assert ctypes.CDLL(str(prefix/'bin/libflowcore_intelligence.so')).flowcore_allocate
         assert command([daemon,'--version']).strip()=='0.2.0'
+        fallback=json.loads(command([cli,'flows','--limit','32','--json']))
+        assert fallback['source']=='inet_diag' and fallback['degraded']
         libraries=list(prefix.rglob('libflowcore_intent.so'))
         assert len(libraries)==1 and ctypes.CDLL(str(libraries[0])).fc_v2_open
         runtime = work/'runtime'

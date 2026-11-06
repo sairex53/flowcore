@@ -127,3 +127,5 @@ commands are in [ADAPTIVE_ROOT_CAUSE.md](ADAPTIVE_ROOT_CAUSE.md).
 
 Application integration: [Intent API V2](INTENT_API.md) and [C++ / C / Python examples](APPLICATION_INTEGRATION.md).
 V2 provides process-bound cooperative request telemetry and FD-attested socket correlation; it does not promise per-request packet scheduling.
+
+Opt-in [eBPF flow engine](EBPF_FLOW_ENGINE.md): owned-namespace TCP/UDP classification and [measured performance](EBPF_PERFORMANCE.md). Read-only fallback: `flowcore flows --json`.

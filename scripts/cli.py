@@ -47,6 +47,9 @@ def main():
             command.add_argument('--jsonl', action='store_true')
         if name == 'metrics':
             command.add_argument('--prometheus', action='store_true')
+    flows=commands.add_parser('flows',help='read-only current-namespace TCP/UDP fallback; never attaches BPF')
+    flows.add_argument('--limit',type=int,default=128)
+    flows.add_argument('--json',action='store_true')
     report = commands.add_parser('report', help='submit explicit application timings')
     reports = report.add_subparsers(dest='action', required=True)
     for action in ('sample', 'start', 'complete'):
@@ -97,6 +100,10 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command=='flows':
+            from flow_snapshot import snapshot as flow_snapshot
+            print(json.dumps(flow_snapshot(args.limit),indent=None if args.json else 2))
+            return 0
         if args.command == 'network':
             from helper_cli import dispatch
             print(json.dumps(dispatch(args), indent=2))

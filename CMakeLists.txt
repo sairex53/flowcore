@@ -29,7 +29,7 @@ configure_file(scripts/flowcored-installed.in flowcored-installed @ONLY)
 install(TARGETS flowcore RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/flowcored-installed" DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME flowcored)
 install(DIRECTORY scripts config scenarios DESTINATION "${FLOWCORE_DATA}"
-    FILES_MATCHING PATTERN "*.py" PATTERN "*.json" PATTERN "*.conf" PATTERN "__pycache__" EXCLUDE)
+    FILES_MATCHING PATTERN "*.py" PATTERN "*.json" PATTERN "*.conf" PATTERN "__pycache__" EXCLUDE PATTERN "flow_engine_benchmark.py" EXCLUDE)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/installed-layout" "${CMAKE_CURRENT_BINARY_DIR}/VERSION"
               "${CMAKE_CURRENT_BINARY_DIR}/bpf-enabled" DESTINATION "${FLOWCORE_DATA}")
 install(FILES config/service.json config/helper.json DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/flowcore")
@@ -66,6 +66,21 @@ if(FLOWCORE_BPF)
             VERBATIM)
         add_custom_target(flowcore-bpf-object ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bpf/observe.bpf.o")
         add_dependencies(flowcore-bpf flowcore-bpf-object)
+        if(LIBBPF_VERSION VERSION_GREATER_EQUAL "1.3")
+            add_executable(flowcore-flow-engine src/flow_engine.cpp)
+            target_include_directories(flowcore-flow-engine PRIVATE bpf)
+            target_link_libraries(flowcore-flow-engine PRIVATE PkgConfig::LIBBPF)
+            target_compile_options(flowcore-flow-engine PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bpf/flow_engine.bpf.o"
+                COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-flow-bpf.sh"
+                    "${BPF_CLANG}" "${CMAKE_CURRENT_BINARY_DIR}/bpf" "${CMAKE_CURRENT_SOURCE_DIR}"
+                DEPENDS flowcore-bpf-object bpf/flow_engine.bpf.c bpf/flow_engine.h scripts/build-flow-bpf.sh
+                VERBATIM)
+            add_custom_target(flowcore-flow-object ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/bpf/flow_engine.bpf.o")
+            add_dependencies(flowcore-flow-engine flowcore-flow-object)
+            install(TARGETS flowcore-flow-engine RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/bpf/flow_engine.bpf.o" DESTINATION "${FLOWCORE_DATA}/bpf")
+        endif()
     else()
         message(STATUS "CO-RE build prerequisites absent, INET_DIAG fallback available")
     endif()
@@ -102,7 +117,7 @@ endif()
 
 add_test(NAME platform_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_test.py")
 install(FILES monitoring/flowcore-grafana.json DESTINATION "${FLOWCORE_DATA}/monitoring")
-install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md INTENT_API.md APPLICATION_INTEGRATION.md
+install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md INTENT_API.md APPLICATION_INTEGRATION.md EBPF_FLOW_ENGINE.md EBPF_PERFORMANCE.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md
@@ -144,3 +159,5 @@ target_link_libraries(flowcore-intent-c-demo PRIVATE flowcore_intent)
 add_test(NAME intent_v2_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py")
 add_test(NAME intent_v2_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py" --live)
 set_tests_properties(intent_v2_live PROPERTIES TIMEOUT 30 ENVIRONMENT "FLOWCORE_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
+
+add_test(NAME flow_engine_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/flow_engine_test.py")
