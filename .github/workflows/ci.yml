@@ -25,3 +25,10 @@ jobs:
           build/analysis/bin/ruff check --select E9,F63,F7,F82 scripts tests
       - name: Unit and unprivileged loopback integration
         run: ctest --test-dir build --output-on-failure
+
+      - name: Native telemetry sanitizers on x86_64
+        run: |
+          uname -m
+          cmake -S . -B build-sanitize -DFLOWCORE_BPF=OFF -DFLOWCORE_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-sanitize --target telemetry_native_test
+          ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build-sanitize -R '^telemetry_native$' --output-on-failure

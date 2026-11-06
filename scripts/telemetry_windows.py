@@ -1,6 +1,7 @@
 """Bounded rolling telemetry. Timestamps use CLOCK_MONOTONIC."""
 import math
 from collections import Counter
+from native_telemetry import summary as native_summary
 
 
 class Histogram:
@@ -42,7 +43,11 @@ class Histogram:
         return None
 
     def summary(self, unit='us'):
-        return {'samples': self.count, 'overflow_samples': self.overflow, **{f'p{p}_{unit}': self.quantile(p / 100) for p in (50, 95, 99)}}
+        values = native_summary(self)
+        if values is None:
+            values = [self.quantile(p / 100) for p in (50, 95, 99)]
+        return {'samples': self.count, 'overflow_samples': self.overflow,
+                **{f'p{p}_{unit}': value for p,value in zip((50,95,99),values)}}
 
 
 class Bucket:
