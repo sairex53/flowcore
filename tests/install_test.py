@@ -3,6 +3,7 @@ import json
 import ctypes
 import os
 import socket
+import sys
 import subprocess
 import tempfile
 import time
@@ -30,6 +31,11 @@ def main():
         cli,daemon = (prefix/'bin'/name for name in ('flowcore','flowcored'))
         assert command([cli,'--version']).strip()=='FLOWCORE 0.2.0'
         assert ctypes.CDLL(str(prefix/'bin/libflowcore_intelligence.so')).flowcore_allocate
+        command([sys.executable,'-I','-B','-c',
+                 "import sys;sys.path.insert(0,sys.argv[1]);from predictive import Native;"
+                 "rows=[dict(time_ns=(i+1)*10**9,backlog_bytes=0,departure_bps=1,capacity_bps=1000) for i in range(8)];"
+                 "assert Native().forecast(rows,'hybrid',1514,.1)['risk']==0",
+                 prefix/'share/flowcore/scripts'])
         assert command([daemon,'--version']).strip()=='0.2.0'
         fallback=json.loads(command([cli,'flows','--limit','32','--json']))
         assert fallback['source']=='inet_diag' and fallback['degraded']

@@ -123,8 +123,11 @@ class Service:
             self.telemetry = self.lab.counters()
             collected = time.monotonic_ns()
             self.observer.sample(self.lab, self.telemetry, self.profile['bandwidth_kbit'])
+            observed = time.monotonic_ns()
+            self.controller.sample_prediction()
             self.telemetry_timing = dict(time_ns=begin, counters_ns=collected-begin,
-                                         observer_ns=time.monotonic_ns()-collected)
+                                         observer_ns=observed-collected,
+                                         prediction_ns=time.monotonic_ns()-observed)
             if self.container_attachment and self.container_attachment['active']:
                 from containers import attachment_sample
                 attachment_sample(self)

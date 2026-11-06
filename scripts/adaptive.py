@@ -1,10 +1,12 @@
 """Deterministic, single-writer adaptive controller for the owned HTB lab."""
 import json
 import time
+import uuid
 from collections import deque
 
 import adaptive_tc
 from intents import Registry
+from predictive import Predictor
 from intelligence import Allocator, State, estimate, score
 
 NANO = 10**9
@@ -24,7 +26,7 @@ def slo_aware(slo, pressure, _intent):
 
 
 STRATEGIES = {'static': static, 'threshold': threshold, 'slo': slo_aware,
-              'queue-aware': threshold, 'slo-aware': slo_aware, 'hybrid': slo_aware}
+              'queue-aware': threshold, 'slo-aware': slo_aware, 'hybrid': slo_aware, 'predictive': slo_aware}
 DEFAULT = dict(window_seconds=4, minimum_samples=20, enter_windows=2, cooldown_seconds=4,
                background_floor_pct=20, step_pct=5, maximum_boost_pct=15, maximum_actions=8, recovery_windows=3, maximum_reversals=2)
 
@@ -52,10 +54,12 @@ def objective(window, name, intent, minimum):
 class Controller:
     def __init__(self, service):
         self.service = service
+        self.session = uuid.uuid4().hex
         self.registry = Registry(service.observer)
         self.allocator = Allocator()
         self.state = State()
         self.last_plan = None
+        self.predictor = Predictor()
         self.cfg = service.config.get('adaptive', DEFAULT)
         self.history = deque(maxlen=128)
         self.path = None
@@ -78,15 +82,30 @@ class Controller:
         self.registry.restore(runtime)
         self.path = runtime / 'decisions.json'
         if self.path.exists():
-            with self.path.open() as stream:
-                self.history.extend(json.loads(stream.read(524288)))
+            try:
+                with self.path.open() as stream:
+                    payload = stream.read(524289)
+                if len(payload)>524288:
+                    raise ValueError('journal size bound')
+                rows = json.loads(payload)
+                if not isinstance(rows,list) or len(rows)>128 or any(not isinstance(row,dict) for row in rows):
+                    raise ValueError('journal shape bound')
+                self.history.extend(rows)
+            except (OSError,ValueError,UnicodeError):
+                # This audit trail never grants activation or ownership. Empty/corrupt
+                # files after a power loss must not prevent safe read-only startup.
+                self.service.log('error',detail='adaptive journal invalid; history unavailable; controller remains disabled')
 
     def record(self, **fields):
-        self.history.append(dict(time_unix=time.time(), time_ns=time.monotonic_ns(), generation=self.service.observer.generation, **fields))
+        self.history.append(dict(controller_session=self.session,time_unix=time.time(), time_ns=time.monotonic_ns(), generation=self.service.observer.generation, **fields))
+        payload = json.dumps(list(self.history))
+        while len(payload.encode())>262144 and self.history:
+            self.history.popleft()
+            payload = json.dumps(list(self.history))
         if self.path:
             try:
                 tmp = self.path.with_suffix('.tmp')
-                tmp.write_text(json.dumps(list(self.history)))
+                tmp.write_text(payload)
                 tmp.replace(self.path)
             except OSError as error:
                 self.service.log('error', detail=f'adaptive journal: {error}')
@@ -106,12 +125,13 @@ class Controller:
             raise ValueError('controller requires observability')
         if mode == 'shadow' and self.mode == 'active':
             raise ValueError('stop the active controller before entering shadow mode')
-        shared = strategy in ('queue-aware','slo-aware','hybrid')
+        shared = strategy in ('queue-aware','slo-aware','hybrid','predictive')
         classes = [row['intent']['priority'] for row in self.registry.rows.values()]
         if not shared and len(classes) != len(set(classes)):
             raise ValueError('legacy strategy requires exclusive traffic classes')
         self.registry.shared_classes = shared
         self.stop('mode change')
+        self.predictor = Predictor()
         self.state.move('OBSERVING','explicit activation')
         capacity = self.capacity()
         installed = adaptive_tc.read(self.service.lab, capacity, self.policy())
@@ -182,6 +202,26 @@ class Controller:
                 raise ValueError('aggregate service minimums exceed the class reservation')
         return self.registry.register(intent, uid, pid)
 
+    def sample_prediction(self):
+        if self.mode == 'off' or self.strategy != 'predictive':
+            return
+        observer = self.service.observer
+        stamp = observer.queue_time
+        if stamp is None:
+            return
+        window = observer.window(stamp, self.cfg['window_seconds'], complete=True)
+        application = {}
+        for name,row in self.registry.rows.items():
+            cls = row['intent']['priority']
+            measured = objective(window,name,row['intent'],self.cfg['minimum_samples'])
+            application[name] = dict(traffic_class=cls,**measured)
+        allocation = tuple((cls,*self.current[cls]) for cls in sorted(self.current))
+        try:
+            self.predictor.observe(stamp,self.service.telemetry,self.capacity(),
+                {cls:rate for cls,(rate,_) in self.current.items()},application,window.get('rtt'),allocation)
+        except (OSError,ValueError,RuntimeError,AttributeError,TypeError,OverflowError) as error:
+            self.predictor.invalidate(str(error))
+
     def plan(self, window, current):
         cfg, capacity = self.cfg, self.capacity()
         root = window['queue'].get('root', {})
@@ -210,14 +250,18 @@ class Controller:
                                      and (measured['throughput_kbit'] or 0) >= .9*rate
                                      and not measured['failures']
                                      and measured['samples'] >= max(LATENCY_MIN_SAMPLES, cfg['minimum_samples']))
+        predictive = (dict(experimental=True,error=self.predictor.error,
+            forecasts={cls:{k:v for k,v in methods.get('hybrid',{}).items() if k!='input'}
+                       for cls,methods in self.predictor.latest.items()})
+                      if self.strategy == 'predictive' else None)
         detail = dict(previous=current, proposed=bounds, objectives=outcomes, attribution=attribution, pressure=pressure,
-                      background_floor_kbit=bg_floor, background_throughput_kbit=(
+                      background_floor_kbit=bg_floor, predictive=predictive, background_throughput_kbit=(
                           bg['bytes_per_second']/125 if bg.get('bytes_per_second') is not None else None))
         if bounds != current:
             return dict(detail, action='enforce_class_ceiling')
         if current['background'][0] < bg_floor:
             return dict(detail, proposed=self.base, action='restore_background_floor')
-        if self.strategy in ('queue-aware','slo-aware','hybrid'):
+        if self.strategy in ('queue-aware','slo-aware','hybrid','predictive'):
             observations, scores, owners = {}, {}, {}
             maxima = {cls:min(ceil,self.base[cls][0]+capacity*cfg['maximum_boost_pct']//100)
                       for cls,(_,ceil) in current.items()}
@@ -228,8 +272,21 @@ class Controller:
                 observation = estimate(window,name,intent,measured,current[cls][0],cfg['minimum_samples'])
                 observations[name] = observation
                 weight = 4 if cls == 'critical' else 2 if cls == 'interactive' else 1
-                utility = score(self.strategy,observation,measured,weight,
+                utility = score('hybrid' if self.strategy == 'predictive' else self.strategy,observation,measured,weight,
                                 (current[cls][0]-self.base[cls][0])/max(1,capacity*cfg['step_pct']//100))
+                if self.strategy == 'predictive':
+                    forecast = self.predictor.latest.get(cls,{}).get('hybrid')
+                    age = (time.monotonic_ns()-forecast['time_ns'])/NANO if forecast else None
+                    if (forecast and age is not None and 0 <= age < 1.5 and
+                            forecast['actionable'] and forecast['lead_seconds']-age > .1 and
+                            observation['eligible']):
+                        utility = max(utility,weight*forecast['risk']/(1+max(0,
+                            (current[cls][0]-self.base[cls][0])/max(1,capacity*cfg['step_pct']//100))))
+                        observations[name]['proactive'] = True
+                    observations[name]['prediction'] = ({k:v for k,v in forecast.items() if k!='input'}
+                                                         if forecast else None)
+                    observations[name]['effective_strategy'] = ('predictive' if observations[name].get('proactive')
+                                                               else 'hybrid-reactive-fallback')
                 if utility > scores.get(cls,0):
                     scores[cls], owners[cls] = utility, name
             desired = sum(row['intent']['desired_kbit'] for row in self.registry.rows.values())
@@ -331,7 +388,7 @@ class Controller:
         window_end = time.monotonic_ns()
         plan = self.plan(window, self.current)
         self.last_plan = plan
-        if self.strategy in ('queue-aware','slo-aware','hybrid') and plan['action'] == 'hold':
+        if self.strategy in ('queue-aware','slo-aware','hybrid','predictive') and plan['action'] == 'hold':
             self.record(result='hold', **plan)
         self.timing = dict(time_ns=began, aggregation_ns=window_end-began,
                            policy_ns=time.monotonic_ns()-window_end,
@@ -398,7 +455,8 @@ class Controller:
                         time_to_evaluate_ns=began-old['verified_ns'],
                         verdict_lag_ns=max(0,began-old['end_ns']-NANO//4),
                         post_aggregation_ns=aggregated-evaluation_start,
-                        post_policy_ns=assessed-aggregated, rollback=rollback)
+                        post_policy_ns=assessed-aggregated, rollback=rollback,
+                        prediction=old.get('prediction'))
             self.pending = None
             observer.probe_start_ns = None
             self.streak.clear()
@@ -456,7 +514,7 @@ class Controller:
             observer.probe_start_ns = verified
             self.pending = dict(service=name, allocation=previous, before=plan['objectives'][name],
                                 start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified,
-                                peer_before=plan['objectives'])
+                                peer_before=plan['objectives'], prediction=plan.get('predictive'))
 
     def safe_tick(self):
         try:
@@ -498,9 +556,10 @@ class Controller:
 
     def status(self):
         window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'])
-        return dict(mode=self.mode, strategy=self.strategy, allocation=self.current,
+        return dict(controller_session=self.session,mode=self.mode, strategy=self.strategy, allocation=self.current,
                     actions=self.actions, pending=self.pending, error=self.error,
                     allocation_verified=self.error is None and self.mode != 'off',
+                    prediction=self.predictor.status() if self.strategy == 'predictive' else None,
                     engine_state=self.state.name, state_reason=self.state.reason,
                     last_decision=self.last_plan, reversals=self.reversals,
                     fairness=self.fairness(window), timing=self.timing)

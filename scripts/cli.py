@@ -78,7 +78,7 @@ def main():
             if (name == 'intent' and action in ('inspect', 'remove', 'revoke')):
                 command.add_argument('name')
             if (name == 'controller' and action in ('start', 'shadow', 'observe')):
-                command.add_argument('--strategy', choices=('static', 'threshold', 'slo', 'queue-aware', 'slo-aware', 'hybrid'), default='slo')
+                command.add_argument('--strategy', choices=('static', 'threshold', 'slo', 'queue-aware', 'slo-aware', 'hybrid', 'predictive'), default='slo')
             if (name, action) == ('policy', 'evaluate'):
                 command.add_argument('--dry-run', action='store_true', help='evaluation never writes tc')
             if (name, action) == ('policy', 'apply'):

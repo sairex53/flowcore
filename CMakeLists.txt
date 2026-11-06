@@ -122,7 +122,7 @@ endif()
 
 add_test(NAME platform_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_test.py")
 install(FILES monitoring/flowcore-grafana.json DESTINATION "${FLOWCORE_DATA}/monitoring")
-install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md INTENT_API.md APPLICATION_INTEGRATION.md EBPF_FLOW_ENGINE.md EBPF_PERFORMANCE.md
+install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md INTENT_API.md APPLICATION_INTEGRATION.md EBPF_FLOW_ENGINE.md EBPF_PERFORMANCE.md PREDICTIVE_ENGINE.md PREDICTIVE_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES PLATFORM_RESULTS.md AUDIT.md AUDIT_FIXES.md REMAINING_RISKS.md
@@ -137,7 +137,8 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp)
+target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
 add_test(NAME intelligence_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intelligence_test.py")
@@ -177,3 +178,5 @@ target_include_directories(intent_parser_test PRIVATE src)
 target_link_libraries(intent_parser_test PRIVATE flowcore_sdk)
 target_compile_options(intent_parser_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME intent_parser COMMAND intent_parser_test)
+
+add_test(NAME predictive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/predictive_test.py")

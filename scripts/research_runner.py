@@ -121,7 +121,7 @@ def metadata():
     git = subprocess.run(['git','rev-parse','HEAD'], cwd=ROOT, capture_output=True, text=True)
     dirty = subprocess.run(['git','status','--porcelain'], cwd=ROOT, capture_output=True, text=True)
     sources = sorted([*ROOT.glob('scripts/*.py'), *ROOT.glob('src/*.cpp'), *ROOT.glob('bpf/*'),
-                      *ROOT.glob('include/flowcore/*.hpp'), ROOT/'config/service.json', ROOT/'CMakeLists.txt'])
+                      *ROOT.glob('include/flowcore/*.hpp'), *ROOT.glob('include/flowcore/*.h'), ROOT/'config/service.json', ROOT/'CMakeLists.txt'])
     return dict(kernel=os.uname().release, architecture=os.uname().machine, cpus=os.cpu_count(),
                 git_commit=git.stdout.strip() if git.returncode==0 else None,
                 git_dirty=bool(dirty.stdout) if dirty.returncode==0 else None,
@@ -245,6 +245,12 @@ def summarize(directory, m, rep, mode, samples, history, start, end, host_ticks)
     return data
 
 
+def session_history(rows,session,start_ns):
+    """Monotonic clocks are not comparable across daemon boots/sessions."""
+    return [row for row in rows if row.get('controller_session')==session and
+            row.get('time_ns',0)>=start_ns]
+
+
 def trial(directory, m, rep, mode, seed=None):
     owned_directory(directory)
     cfg = load(ROOT/'config/service.json')
@@ -276,6 +282,7 @@ def trial(directory, m, rep, mode, seed=None):
         try:
             daemon = child([BINDIR/'flowcored','--research','--config',config],stdout=dl,stderr=dl)
             await_service(daemon)
+            controller_session = request('controller_status')['controller_session']
             request('lab_up')
             sender, receiver = request('inspect')['namespaces']
             workload = m['workload']
@@ -318,10 +325,12 @@ def trial(directory, m, rep, mode, seed=None):
                 return child(['nsenter', f'--net=/proc/self/fd/{fd}', '--', *argv[4:]],
                              pass_fds=(fd,), stdout=log, stderr=log)
 
-            if mode == 'slo-shadow':
+            if mode == 'predictive-shadow':
+                request('controller_shadow',strategy='predictive')
+            elif mode == 'slo-shadow':
                 request('controller_shadow',strategy='slo')
-            elif mode in ('threshold','queue-aware','slo-aware','hybrid') or mode.startswith('slo'):
-                request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid') else 'slo')
+            elif mode in ('threshold','queue-aware','slo-aware','hybrid','predictive') or mode.startswith('slo'):
+                request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive') else 'slo')
             plan = directory/'workload.json'
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services)
@@ -392,7 +401,7 @@ def trial(directory, m, rep, mode, seed=None):
             if code not in (0,2) or server.poll() is not None:
                 raise RuntimeError(f'workload infrastructure failed, exit={code}')
             time.sleep(.15)
-            history = [row for row in request('policy_history') if row.get('time_ns',0)>=round(start*NANO)]
+            history = session_history(request('policy_history'),controller_session,round(start*NANO))
             save(directory/'decisions.json',history)
             save(directory/'network.json',request('inspect'))
             if request('inspect')['namespaces'] != [sender,receiver]:
