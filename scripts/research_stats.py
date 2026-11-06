@@ -10,7 +10,7 @@ METRICS = ('p50_ms','p95_ms','p99_ms','total_mbps','background_mbps','jain_index
            'peak_daemon_rss_bytes','adjustments_per_minute','event_loss','response_seconds',
            'first_verdict_seconds','convergence_seconds','failure_ratio','sampled_retransmit_segments',
            'qdisc_drop_delta','netem_drop_delta','peak_backlog_bytes','oscillation_guard',
-           'offered_rps','completion_ratio','deadline_attainment','deadline_misses','timeout_requests',
+           'offered_rps','completion_ratio','deadline_attainment','deadline_misses','timeout_requests','udp_mbps',
            'request_payload_mbps','dispatch_lag_p99_ms')
 RULES = dict(p99_ms=('higher','relative'), total_mbps=('lower','relative'),
              jain_index=('lower','absolute'), cpu_seconds=('higher','relative'),
@@ -24,12 +24,12 @@ def load_summary(path):
     if len(payload)>16*1024*1024:
         raise ValueError('summary exceeds 16 MiB')
     data = json.loads(payload)
-    if not isinstance(data,dict) or data.get('version') not in (1,2) or not isinstance(data.get('environment'),dict):
+    if not isinstance(data,dict) or data.get('version') not in (1,2,3) or not isinstance(data.get('environment'),dict):
         raise ValueError('invalid research summary header')
     data['manifest'] = validate(data.get('manifest'))
     if data['manifest']['version'] != data['version']:
         raise ValueError('summary and manifest versions disagree')
-    if data['version'] == 2:
+    if data['version'] >= 2:
         seeds = data.get('block_seeds')
         if (not isinstance(data.get('experiment_id'), str) or not isinstance(seeds, list)
                 or len(seeds) != data['manifest']['repetitions']
@@ -48,7 +48,7 @@ def load_summary(path):
                 or not 0<=rep<data['manifest']['repetitions'] or type(row.get('valid')) is not bool
                 or row.get('artifact')!=f'r{rep}-{mode}' or (rep,mode) in seen):
             raise ValueError('invalid or repeated research run identity')
-        if data['version'] == 2:
+        if data['version'] >= 2:
             if row.get('workload_seed') != seeds[rep]:
                 raise ValueError('run seed differs from its block')
             if row['valid']:
@@ -116,7 +116,7 @@ GATE_DIRECTIONS = dict(p99_ms=('higher', 'relative'), total_mbps=('lower', 'rela
 def compare_v2(base, candidate, baseline, contender):
     gates = candidate['manifest']['gates']
     margins = gates['margins']
-    equal = (base.get('version') == candidate.get('version') == 2
+    equal = (base.get('version') == candidate.get('version') and candidate.get('version') >= 2
              and base.get('experiment_id') == candidate.get('experiment_id')
              and base.get('block_seeds') == candidate.get('block_seeds')
              and gates['baseline'] == baseline and comparable(base, candidate))
@@ -167,7 +167,7 @@ def compare_v2(base, candidate, baseline, contender):
 
 
 def compare(base,candidate,base_mode=None,candidate_mode=None):
-    if candidate.get('version') == 2:
+    if candidate.get('version') in (2,3):
         if (base_mode is None) != (candidate_mode is None):
             raise ValueError('specify both baseline and candidate mode')
         if not base_mode or base_mode == candidate_mode:

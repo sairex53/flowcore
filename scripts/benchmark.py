@@ -178,25 +178,39 @@ def receiver_metrics(path, start, end):
         for line in stream:
             row = json.loads(line)
             when, counters = row['time'], row['bytes']
+            udp = row.get('udp_bytes', [])
             if (not math.isfinite(when) or not isinstance(counters, list)
-                    or any(type(count) is not int or count < 0 for count in counters)):
+                    or any(type(count) is not int or count < 0 for count in counters)
+                    or not isinstance(udp,list)
+                    or any(type(count) is not int or count < 0 for count in udp)):
                 raise ValueError('invalid receiver sample')
+            row['udp_bytes'] = udp
             if records:
                 previous = records[-1]
                 if (when <= previous['time'] or len(counters) != len(previous['bytes'])
-                        or any(right < left for left, right in zip(previous['bytes'], counters))):
+                        or len(udp) != len(previous['udp_bytes'])
+                        or any(right < left for left, right in zip(previous['bytes'], counters))
+                        or any(right < left for left, right in zip(previous['udp_bytes'], udp))):
                     raise ValueError('receiver samples are not monotonic or flow count changed')
             records.append(row)
-    def interpolate(when):
+
+    def interpolate(when, field='bytes'):
         for a, b in zip(records, records[1:]):
             if a['time'] <= when <= b['time']:
                 fraction = (when - a['time']) / (b['time'] - a['time'])
-                return [left + fraction * (right - left) for left, right in zip(a['bytes'], b['bytes'])]
+                return [left + fraction * (right - left)
+                        for left, right in zip(a[field], b[field])]
         raise RuntimeError('receiver sampling does not bracket measurement interval')
+
     a, b = interpolate(start), interpolate(end)
-    rates = [(right - left) * 8 / (end - start) / 1e6 for left, right in zip(a, b)]
+    rates = [(right - left) * 8 / (end - start) / 1e6
+             for left, right in zip(a, b)]
+    udp_a = sum(interpolate(start,'udp_bytes'))
+    udp_b = sum(interpolate(end,'udp_bytes'))
+    udp_mbps = (udp_b-udp_a)*8/(end-start)/1e6
     denominator = len(rates) * sum(value * value for value in rates)
     return {'background_mbps': sum(rates), 'flow_mbps': rates,
+            'udp_mbps': udp_mbps,
             'jain_index': sum(rates) ** 2 / denominator if denominator else 0}
 
 

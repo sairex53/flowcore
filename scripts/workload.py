@@ -18,8 +18,10 @@ def percentile(values, fraction):
     return sorted(values)[max(0, math.ceil(len(values) * fraction) - 1)] if values else None
 
 
-async def server(output, payload, request_port, background_port, streams, research=None):
+async def server(output, payload, request_port, background_port, streams, udp_port=9002, research=None):
     counters = [0] * streams
+    udp_count = max((phase.get('udp_streams',0) for phase in research['phases']),default=0) if research else 0
+    udp_counters = [0] * udp_count
 
     async def critical(reader, writer):
         try:
@@ -52,18 +54,33 @@ async def server(output, payload, request_port, background_port, streams, resear
                 pass
 
     ports = research['ports'].values() if research else [request_port]
-    listeners = [await asyncio.start_server(critical, '10.203.0.2', port) for port in ports]
-    listeners.append(await asyncio.start_server(background, '10.203.0.2', background_port))
+    host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
+    listeners = [await asyncio.start_server(critical, host, port) for port in ports]
+    listeners.append(await asyncio.start_server(background, host, background_port))
+    udp_transport = None
+    if udp_count:
+        class DatagramCounters(asyncio.DatagramProtocol):
+            def datagram_received(self, data, _address):
+                if len(data) < 4:
+                    return
+                flow = struct.unpack('!I',data[:4])[0]
+                if flow < len(udp_counters):
+                    udp_counters[flow] += len(data)
+        loop = asyncio.get_running_loop()
+        family = socket.AF_INET6 if ':' in host else socket.AF_INET
+        udp_transport, _ = await loop.create_datagram_endpoint(
+            DatagramCounters, local_addr=(host,udp_port), family=family)
     print('ready', flush=True)
     with output.open('w') as stream:
         while True:
-            stream.write(json.dumps({'time': time.monotonic(), 'bytes': counters.copy()}) + '\n')
+            stream.write(json.dumps({'time': time.monotonic(), 'bytes': counters.copy(),
+                                     'udp_bytes': udp_counters.copy()}) + '\n')
             stream.flush()
             await asyncio.sleep(0.1)
 
 
 async def client(output, duration, rate, payload, request_port, background_port, streams,
-                 service=None, deadline_ms=None, rates=None, research=None):
+                 service=None, deadline_ms=None, rates=None, udp_port=9002, research=None):
     request_data = b'Q' * payload
     services = research.get('services', {}) if research else {}
     if research:
@@ -77,6 +94,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
     rows = []
     window = []
     background_errors = []
+    udp_send_errors = []
     stopping = False
     paced_kbit = research.get('background_kbit_per_stream', 0) if research else 0
 
@@ -86,7 +104,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
         while True:
             writer = None
             try:
-                _, writer = await asyncio.open_connection('10.203.0.2', background_port)
+                host = research.get('server_address','10.203.0.2')
+                _, writer = await asyncio.open_connection(host, background_port)
                 writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
                 writer.write(struct.pack('!I', flow))
@@ -128,7 +147,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
             if remaining <= 0:
                 raise TimeoutError('late request')
             async with asyncio.timeout(remaining):
-                reader, writer = await asyncio.open_connection('10.203.0.2', port)
+                host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
+                reader, writer = await asyncio.open_connection(host, port)
                 direct_socket = writer.get_extra_info('socket')
                 direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 writer.write(request_data)
@@ -167,6 +187,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
 
     backgrounds = {}
     retired = []
+    udp_backgrounds = {}
+    retired_udp = []
     def set_backgrounds(count):
         for flow in list(backgrounds):
             if flow >= count:
@@ -177,16 +199,51 @@ async def client(output, duration, rate, payload, request_port, background_port,
             if flow not in backgrounds:
                 backgrounds[flow] = asyncio.create_task(background(flow))
 
+    async def udp_background(flow):
+        host = research.get('server_address','10.203.0.2')
+        family = socket.AF_INET6 if ':' in host else socket.AF_INET
+        address = (host,udp_port)
+        rate_kbit = research['udp_kbit_per_stream']
+        packet = struct.pack('!I',flow)+b'U'*1196
+        interval = len(packet)*8/(rate_kbit*1000)
+        sock = socket.socket(family,socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        loop = asyncio.get_running_loop()
+        try:
+            while not stopping:
+                try:
+                    await loop.sock_sendto(sock,packet,address)
+                except OSError as error:
+                    if len(udp_send_errors)<256:
+                        udp_send_errors.append(type(error).__name__)
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        finally:
+            sock.close()
+
+    def set_udp_backgrounds(count):
+        for flow in list(udp_backgrounds):
+            if flow >= count:
+                task=udp_backgrounds.pop(flow)
+                task.cancel()
+                retired_udp.append(task)
+        for flow in range(count):
+            if flow not in udp_backgrounds:
+                udp_backgrounds[flow]=asyncio.create_task(udp_background(flow))
+
     phase_plan = research['phases'] if research else [
         dict(seconds=duration/len(rates or [rate]), requests_per_second=value, background_streams=streams)
         for value in (rates or [rate])]
     set_backgrounds(0 if research else phase_plan[0]['background_streams'])
+    set_udp_backgrounds(0 if research else 0)
     if research:
         started = research['start_monotonic']
         warmup = research.get('warmup_seconds', 0)
         if warmup:
             await asyncio.sleep(max(0, started-warmup-time.monotonic()))
             set_backgrounds(phase_plan[0]['background_streams'])
+            set_udp_backgrounds(phase_plan[0].get('udp_streams',0))
         await asyncio.sleep(max(0, started-time.monotonic()))
     else:
         await asyncio.sleep(3)
@@ -198,6 +255,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
         for phase in phase_plan:
             await asyncio.sleep(max(0, started+offset-time.monotonic()))
             set_backgrounds(phase['background_streams'])
+            set_udp_backgrounds(phase.get('udp_streams',0))
             offset += phase['seconds']
     changes = asyncio.create_task(background_schedule())
     offered = sum(round(phase['seconds']*phase['requests_per_second']) for phase in phase_plan)
@@ -237,7 +295,10 @@ async def client(output, duration, rate, payload, request_port, background_port,
     changes.cancel()
     for task in backgrounds.values():
         task.cancel()
-    await asyncio.gather(report, changes, *backgrounds.values(), *retired, return_exceptions=True)
+    for task in udp_backgrounds.values():
+        task.cancel()
+    await asyncio.gather(report, changes, *backgrounds.values(), *retired,
+                         *udp_backgrounds.values(), *retired_udp, return_exceptions=True)
     with (output / 'requests.csv').open('w') as stream:
         writer = csv.writer(stream)
         writer.writerow(['id', 'scheduled', 'completed', 'latency_ms', 'outcome', 'traffic_class', 'service', 'dispatch_lag_ms'])
@@ -247,7 +308,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
                'completed': len(successes), 'failed': len(rows) - len(successes),
                'p50_ms': percentile(successes, .50), 'p95_ms': percentile(successes, .95),
                'p99_ms': percentile(successes, .99), 'max_ms': max(successes, default=None),
-               'background_errors': background_errors}
+               'background_errors': background_errors,'udp_send_errors':len(udp_send_errors)}
     if reporters:
         per_class = {name: await reporter.close() for name, reporter in reporters.items()}
         summary['application_reports'] = {key: sum(row[key] for row in per_class.values())
@@ -272,6 +333,7 @@ if __name__ == '__main__':
     parser.add_argument('--payload', type=int, default=4096)
     parser.add_argument('--request-port', type=int, default=9000)
     parser.add_argument('--background-port', type=int, default=9001)
+    parser.add_argument('--udp-port', type=int, default=9002)
     parser.add_argument('--streams', type=int, default=4)
     parser.add_argument('--rates', type=int, nargs='+', help='equal-duration phases in requests per second')
     parser.add_argument('--report-service', help='submit timings as a registered service to flowcored')
@@ -287,9 +349,10 @@ if __name__ == '__main__':
         parser.error('up to 16 phases with rates in 0..1000')
     if not 1 <= args.payload <= 65536 or not 0 <= args.streams <= 32:
         parser.error('payload must be 1..65536 and streams 0..32')
-    if not all(1 <= port <= 65535 for port in (args.request_port, args.background_port)) or args.request_port == args.background_port:
+    if not all(1 <= port <= 65535 for port in (args.request_port, args.background_port,args.udp_port)) or len({args.request_port,args.background_port,args.udp_port}) != 3:
         parser.error('request and background ports must be distinct and in 1..65535')
     workload = (args.payload, args.request_port, args.background_port, args.streams)
-    asyncio.run(server(args.output, *workload, research=research) if args.mode == 'server'
+    asyncio.run(server(args.output, *workload, udp_port=args.udp_port,research=research) if args.mode == 'server'
                 else client(args.output, args.duration, args.rate, *workload,
-                            service=args.report_service, deadline_ms=args.deadline_ms, rates=args.rates, research=research))
+                            service=args.report_service, deadline_ms=args.deadline_ms, rates=args.rates,
+                            udp_port=args.udp_port,research=research))

@@ -111,6 +111,7 @@ install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp DESTINA
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
 add_test(NAME research_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/research_test.py")
+add_test(NAME research_properties COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/research_properties.py")
 add_executable(flowcore-container-request examples/container_request.cpp)
 target_link_libraries(flowcore-container-request PRIVATE flowcore_sdk)
 

@@ -1,6 +1,12 @@
 name: Trusted Fedora networking lab
 on:
   workflow_dispatch:
+    inputs:
+      run_soak:
+        description: Run five isolated long-running chaos cycles
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -24,7 +30,11 @@ jobs:
           sudo -n python3 -B tests/service_integration.py
           sudo -n python3 -B tests/adaptive_integration.py
           sudo -n python3 -B tests/research_integration.py
+          sudo -n python3 -B tests/research_controller_chaos.py
           sudo -n ./build/flowcore bench suite --quick
+      - name: Optional isolated namespace soak
+        if: ${{ inputs.run_soak }}
+        run: sudo -n ./build/flowcore bench soak scenarios/chaos-overlap-v3.json --cycles 5 --max-minutes 60 --mode fq_codel
       - uses: actions/upload-artifact@v4
         if: always()
         with:

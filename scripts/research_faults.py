@@ -64,10 +64,12 @@ def root(rows, kind):
 
 def apply_conditions(service, settings, mode, seed, link_up):
     """Operate only on interfaces owned by the daemon's ephemeral veth lab."""
-    from research_manifest import FAULTS, MODES, net_profile
+    from research_manifest import FAULTS, MODES, OPTIONAL_NETWORK_FIELDS, net_profile
     if not service.lab:
         raise ValueError('research requires an owned lab')
-    keys(settings, FAULTS[:-1])
+    if (not isinstance(settings, dict) or set(settings)-set((*FAULTS[:-1], *OPTIONAL_NETWORK_FIELDS))
+            or not set(FAULTS[:-1]) <= set(settings)):
+        raise ValueError('invalid research network settings')
     if mode not in MODES:
         raise ValueError('unknown research mode')
     profile = net_profile(settings)
@@ -80,7 +82,7 @@ def apply_conditions(service, settings, mode, seed, link_up):
     if service.research_mode is not None and mode != service.research_mode:
         raise ValueError('research mode cannot change within a trial')
     try:
-        return update_conditions(service, lab, profile, mode, seed, link_up)
+        return update_conditions(service, lab, profile, mode, seed, link_up, settings)
     except (OSError, ValueError, RuntimeError, KeyError, struct.error, subprocess.SubprocessError) as error:
         # qdisc, class and netem updates are separate kernel operations. An
         # uncertain partial update invalidates the trial and its disposable lab.
@@ -89,9 +91,10 @@ def apply_conditions(service, settings, mode, seed, link_up):
         raise RuntimeError(service.error) from error
 
 
-def update_conditions(service, lab, profile, mode, seed, link_up):
+def update_conditions(service, lab, profile, mode, seed, link_up, settings=None):
     from benchmark import TC
     from research_manifest import CLASSIFIED
+    settings = settings or {}
     cap = profile['bandwidth_kbit']
     if service.research_mode is None:
         if mode in ('linux', 'linux-default', 'fifo', 'fq_codel'):
@@ -116,7 +119,8 @@ def update_conditions(service, lab, profile, mode, seed, link_up):
         receiver = json.loads(lab.command(1, [TC, '-j', 'qdisc', 'show', 'dev', 'fc1']))
         for rows in (qdiscs, receiver):
             root(rows, 'noqueue')
-        return dict(applied_ns=time.monotonic_ns(), capacity_kbit=None, netem=None, link_up=True)
+        return dict(applied_ns=time.monotonic_ns(), kernel_confirmed_ns=time.monotonic_ns(),
+                    capacity_kbit=None, netem=None, link_up=True)
     if mode == 'cake':
         root(qdiscs, 'cake')
         if cap != service.profile['bandwidth_kbit']:
@@ -142,28 +146,52 @@ def update_conditions(service, lab, profile, mode, seed, link_up):
         raise ValueError('unknown research mode')
     receiver = [TC, '-j', 'qdisc', 'show', 'dev', 'fc1']
     root(json.loads(lab.command(1, receiver)), 'netem')
-    lab.command(1, [TC, 'qdisc','change','dev','fc1','root','netem','limit','1000',
-                    'delay', f"{profile['delay_ms']}ms", f"{profile['jitter_ms']}ms",
-                    'loss', f"{profile['loss_pct']}%",
-                    'reorder', f"{profile['reorder_pct']}%", 'seed', seed])
+    correlation = settings.get('loss_correlation_pct', 0)
+    loss = ['loss', 'random', f"{profile['loss_pct']}%"]
+    if correlation:
+        loss.append(f'{correlation}%')
+    reverse = settings.get('reverse_bandwidth_kbit')
+    netem_command = [TC, 'qdisc','change','dev','fc1','root','netem','limit','1000']
+    if reverse is not None:
+        netem_command.extend(['rate',f'{reverse}kbit'])
+    netem_command.extend(['delay', f"{profile['delay_ms']}ms", f"{profile['jitter_ms']}ms",
+                          *loss, 'duplicate', f"{settings.get('duplicate_pct', 0)}%",
+                          'reorder', f"{profile['reorder_pct']}%", 'seed', seed])
+    lab.command(1, netem_command)
     observed = root(json.loads(lab.command(1, receiver)), 'netem')['options']
     delay = observed.get('delay', {})
     pairs = [(delay.get('delay',0),profile['delay_ms']/1000),
              (delay.get('jitter',0),profile['jitter_ms']/1000),
              (observed.get('loss-random',{}).get('loss',0),profile['loss_pct']/100),
+             (observed.get('loss-random',{}).get('correlation',0),correlation/100),
+             (observed.get('duplicate',{}).get('duplicate',0),settings.get('duplicate_pct',0)/100),
              (observed.get('reorder',{}).get('reorder',0),profile['reorder_pct']/100)]
+    if reverse is not None:
+        rate_options = observed.get('rate',0)
+        actual_rate = rate_options.get('rate',0) if isinstance(rate_options,dict) else rate_options
+        pairs.append((actual_rate,reverse*125))
     if observed.get('seed') != seed or any(abs(actual-wanted)>1e-6 for actual,wanted in pairs):
-        raise RuntimeError('netem readback differs from requested conditions')
+        raise RuntimeError(f'netem readback differs from requested conditions: {observed}')
     if link_up != service.research_link_up:
         lab.command(0, ['ip','link','set','dev','fc0','up' if link_up else 'down'])
     link = next(row for row in lab.network(0)['interfaces'] if row['name']=='fc0')
-    if link['up'] != link_up:
-        raise RuntimeError('link state readback failed')
-    service.profile = profile
+    if link_up and 'fd42:203::1' not in {item['address'] for item in link['addresses']}:
+        # Linux may remove global IPv6 addresses when a device is brought down.
+        # Recreate only the fixed address owned by this disposable veth.
+        lab.command(0, ['ip','-6','addr','add','fd42:203::1/64','dev','fc0','nodad'])
+        link = next(row for row in lab.network(0)['interfaces'] if row['name']=='fc0')
+    addresses = {item['address'] for item in link['addresses']}
+    if (link['up'] != link_up or link_up and
+            not {'10.203.0.1','fd42:203::1'} <= addresses):
+        raise RuntimeError('link state/address readback failed')
+    service.profile = dict(profile, bandwidth_kbit=cap)
     service.research_link_up = link_up
-    return dict(applied_ns=time.monotonic_ns(), capacity_kbit=cap, netem=observed, link_up=link_up)
-
-
+    confirmed = time.monotonic_ns()
+    result = dict(applied_ns=confirmed, kernel_confirmed_ns=confirmed, capacity_kbit=cap,
+                  netem=observed, link_up=link_up)
+    if reverse is not None:
+        result['reverse_capacity_kbit'] = reverse
+    return result
 
 def reservation_step(service):
     """Single fixed 5-point intervention for a research counterfactual."""

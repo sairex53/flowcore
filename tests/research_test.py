@@ -16,7 +16,8 @@ from benchmark_v2 import account, observed
 from research_faults import apply_conditions
 from research_manifest import load_manifest, validate
 from research_report import report
-from research_runner import convergence
+from research_runner import compose_scenario_network, convergence
+from research_minimize import candidates, minimize as run_minimizer, reduce_duration
 from research_stats import aggregate, compare, median_ci
 
 
@@ -32,6 +33,9 @@ class Research(unittest.TestCase):
                 return receiver_metrics(path, start, end)
             self.assertEqual(measure([(0,[0,0]),(1,[125000,125000])])['background_mbps'], 2)
             self.assertEqual(measure([(0,[]),(1,[])])['background_mbps'], 0)
+            path.write_text(''.join(json.dumps(dict(time=t,bytes=[0,0],udp_bytes=values))+'\n'
+                                         for t,values in ((0,[0]),(1,[1250]))))
+            self.assertAlmostEqual(receiver_metrics(path,0,1)['udp_mbps'],.01)
             for invalid in ([(0,[0]),(0,[2])], [(0,[1]),(1,[0])],
                             [(0,[0,0]),(1,[1])], [(0,[0]),(float('nan'),[1])]):
                 with self.assertRaises(ValueError):
@@ -49,6 +53,75 @@ class Research(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'lab removed'):
                 apply_conditions(service, network, 'fq_codel', 1, True)
         service.close_lab.assert_called_once()
+
+    def test_v3_overlapping_events_and_duration_bounds(self):
+        manifest = load_manifest(ROOT/'scenarios/chaos-overlap-v3.json')
+        composed = compose_scenario_network(manifest['network'], manifest['events'][:5])
+        self.assertEqual(composed['bandwidth_kbit'], 3000)
+        self.assertEqual(composed['reverse_bandwidth_kbit'], 2000)
+        self.assertAlmostEqual(composed['loss_pct'], 8)
+        self.assertEqual(composed['loss_correlation_pct'], 55)
+        self.assertEqual(composed['base_rtt_ms'], 80)
+        shorter = reduce_duration(manifest)
+        self.assertIsNotNone(shorter)
+        self.assertEqual(sum(stage['seconds'] for stage in shorter['stages']),
+                         shorter['duration_seconds'])
+        self.assertEqual(sum(phase['seconds'] for phase in shorter['workload']['phases']),
+                         shorter['duration_seconds'])
+        reductions=list(candidates(manifest))
+        operations={operation for _,operation in reductions}
+        self.assertTrue({'remove_event','shorten_event','remove_effect','weaken_rate_change',
+                         'weaken_impairment','reduce_workload','shorten_scenario'} <= operations)
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
+            trials=[]
+            def reproduced(candidate,label,parent):
+                path=Path(parent)/f'attempt-{len(trials)}'
+                path.mkdir()
+                trials.append(candidate)
+                return path,dict(runs=[dict(valid=True,failed=2,offered=10),
+                                       dict(valid=True,failed=2,offered=10)])
+            with patch('research_minimize.RESULTS',Path(work)), \
+                 patch('research_minimize.owned_directory',side_effect=lambda path:path.mkdir()), \
+                 patch('research_minimize.execute',side_effect=reproduced):
+                minimized=run_minimizer(manifest,'fq_codel',.1,2)
+            self.assertEqual(len(trials),2)
+            self.assertLess(minimized['events'],len(manifest['events']))
+        conflict = copy.deepcopy(manifest)
+        conflict['events'][1].update(at_seconds=6.5,duration_seconds=2,
+                                     effects={'loss_pct':2})
+        with self.assertRaisesRegex(ValueError,'correlated-loss'):
+            validate(conflict)
+
+    def test_v3_report_records_transition_timing(self):
+        manifest = load_manifest(ROOT/'scenarios/chaos-overlap-v3.json')
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
+            root = Path(work)
+            run = root/'r0-fq_codel'
+            run.mkdir()
+            (run/'timeline.jsonl').write_text(json.dumps(dict(time_ns=10**9,
+                tc=dict(qdisc=[],receiver_qdisc=[])))+'\n')
+            (run/'transitions.jsonl').write_text(json.dumps(dict(
+                scheduled_ns=10**9,actual_application_ns=1001000000,
+                kernel_confirmed_ns=1003000000,application_latency_ns=2000000,
+                operations=[dict(kind='event_start',id='x')],active_event_ids=['x'],
+                status='applied'))+'\n')
+            (run/'decisions.json').write_text('[]')
+            (run/'requests.csv').write_text('id,scheduled,completed,latency_ms,outcome,traffic_class,service,dispatch_lag_ms\n')
+            (run/'receiver.jsonl').write_text('')
+            summary = dict(version=3,status='complete',experiment_id='fixture',
+                block_seeds=[1,2],manifest=manifest,
+                environment=self.dataset(1,10)['environment'],
+                runs=[dict(mode='fq_codel',repetition=0,artifact='r0-fq_codel',
+                    valid=True,workload_seed=1,offered=10,completed=10,failed=0,
+                    p99_ms=10,total_mbps=1,background_mbps=1,jain_index=1,
+                    cpu_seconds=0,adjustments_per_minute=0,event_loss=0,
+                    start=1,end=2)])
+            path=root/'summary.json'
+            path.write_text(json.dumps(summary))
+            page=report(path)
+            self.assertIn('Fault update application latency',page.read_text())
+            self.assertIn('transitions.csv',page.read_text())
+            self.assertIn('2000000',(run/'transitions.csv').read_text())
 
     def test_validation_and_replay(self):
         m = self.manifest()

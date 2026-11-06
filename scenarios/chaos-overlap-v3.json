@@ -1,0 +1,182 @@
+{
+  "version": 3,
+  "topology": "veth-pair",
+  "network": {
+    "bandwidth_kbit": 10000,
+    "base_rtt_ms": 4,
+    "jitter_ms": 0,
+    "loss_pct": 0,
+    "reorder_pct": 0,
+    "reverse_bandwidth_kbit": 16000,
+    "loss_correlation_pct": 0,
+    "duplicate_pct": 0
+  },
+  "workload": {
+    "phases": [
+      {
+        "seconds": 3,
+        "requests_per_second": 45,
+        "background_streams": 1,
+        "udp_streams": 0
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 60,
+        "background_streams": 2,
+        "udp_streams": 0
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 95,
+        "background_streams": 4,
+        "udp_streams": 1
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 120,
+        "background_streams": 6,
+        "udp_streams": 2
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 60,
+        "background_streams": 3,
+        "udp_streams": 1
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 45,
+        "background_streams": 2,
+        "udp_streams": 0
+      }
+    ],
+    "payload_bytes": 4096,
+    "max_inflight": 256,
+    "priority_weights": {
+      "critical": 80,
+      "interactive": 15,
+      "standard": 5
+    },
+    "bulk_bytes_per_stream": 0,
+    "warmup_seconds": 1,
+    "deadline_ms": 25,
+    "critical_services": 2,
+    "connection_reuse": "none",
+    "address_family": "ipv6",
+    "background_kbit_per_stream": 0,
+    "udp_kbit_per_stream": 256
+  },
+  "duration_seconds": 18,
+  "repetitions": 2,
+  "seed": 20261105,
+  "modes": [
+    "fq_codel"
+  ],
+  "static_critical_pct": 40,
+  "controller": {
+    "target_p99_ms": 22,
+    "window_seconds": 2,
+    "minimum_samples": 20,
+    "bpf": "off"
+  },
+  "faults": [],
+  "regression": {
+    "p99_ms": 0.1,
+    "total_mbps": 0.1,
+    "jain_index": 0.02,
+    "cpu_seconds": 0.15,
+    "adjustments_per_minute": 2,
+    "event_loss": 5
+  },
+  "gates": {
+    "baseline": null,
+    "min_pairs": 10,
+    "margins": {
+      "p99_ms": 0.1,
+      "total_mbps": 0.1,
+      "failure_ratio": 0.01,
+      "deadline_attainment": 0.05
+    }
+  },
+  "stages": [
+    {
+      "name": "warmup",
+      "seconds": 3
+    },
+    {
+      "name": "baseline",
+      "seconds": 3
+    },
+    {
+      "name": "congestion",
+      "seconds": 3
+    },
+    {
+      "name": "fault_injection",
+      "seconds": 3
+    },
+    {
+      "name": "recovery",
+      "seconds": 3
+    },
+    {
+      "name": "post_recovery_validation",
+      "seconds": 3
+    }
+  ],
+  "events": [
+    {
+      "id": "capacity-reduction-1",
+      "at_seconds": 3,
+      "duration_seconds": 6,
+      "effects": {
+        "bandwidth_kbit": 12000
+      }
+    },
+    {
+      "id": "capacity-reduction-2",
+      "at_seconds": 4,
+      "duration_seconds": 5,
+      "effects": {
+        "bandwidth_kbit": 6000
+      }
+    },
+    {
+      "id": "capacity-collapse",
+      "at_seconds": 5,
+      "duration_seconds": 4,
+      "effects": {
+        "bandwidth_kbit": 3000
+      }
+    },
+    {
+      "id": "reverse-path-collapse",
+      "at_seconds": 4,
+      "duration_seconds": 5,
+      "effects": {
+        "reverse_bandwidth_kbit": 2000
+      }
+    },
+    {
+      "id": "correlated-loss-jitter",
+      "at_seconds": 6,
+      "duration_seconds": 4,
+      "effects": {
+        "base_rtt_ms": 80,
+        "jitter_ms": 30,
+        "loss_pct": 8,
+        "loss_correlation_pct": 55,
+        "reorder_pct": 4,
+        "duplicate_pct": 1
+      }
+    },
+    {
+      "id": "interface-flap",
+      "at_seconds": 8.4,
+      "duration_seconds": 0.5,
+      "effects": {
+        "link_up": false
+      }
+    }
+  ]
+}

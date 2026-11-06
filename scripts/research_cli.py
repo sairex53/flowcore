@@ -16,6 +16,14 @@ def add_commands(commands):
     for action in ('run','replay'):
         bench.add_parser(action).add_argument('manifest',type=Path)
     bench.add_parser('suite').add_argument('--quick',action='store_true',help='one repetition per scenario')
+    soak = bench.add_parser('soak',help='repeat isolated trials with bounded resource monitoring')
+    soak.add_argument('manifest',type=Path)
+    soak.add_argument('--cycles',type=int,default=10)
+    soak.add_argument('--mode')
+    soak.add_argument('--max-minutes',type=float,default=60)
+    soak.add_argument('--max-rss-growth-mb',type=float,default=256)
+    soak.add_argument('--max-fd-growth',type=int,default=32)
+    soak.add_argument('--max-bpf-growth',type=int,default=8)
     compare_cmd = bench.add_parser('compare')
     compare_cmd.add_argument('baseline',type=Path)
     compare_cmd.add_argument('candidate',type=Path)
@@ -41,6 +49,13 @@ def dispatch(args):
     action = args.action
     if args.command=='chaos' and action=='stop':
         return cancel(),0
+    if action=='soak':
+        manifest = load_manifest(args.manifest)
+        mode = args.mode or manifest['modes'][0]
+        with exclusive():
+            from research_soak import run_soak
+            return run_soak(manifest,args.cycles,mode,args.max_minutes,
+                            args.max_rss_growth_mb,args.max_fd_growth,args.max_bpf_growth),0
     if action=='compare':
         baseline = load_summary(args.baseline)
         candidate = load_summary(args.candidate)
@@ -64,7 +79,7 @@ def dispatch(args):
     with exclusive():
         for path in paths:
             manifest = load_manifest(path)
-            if args.command=='chaos' and not manifest['faults']:
+            if args.command=='chaos' and not (manifest.get('events') or manifest['faults']):
                 raise ValueError('chaos run requires at least one scheduled transition')
             if getattr(args,'quick',False):
                 manifest['repetitions'] = 1

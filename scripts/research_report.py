@@ -16,7 +16,7 @@ def read_lines(path):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def chart(title, series, start, end, faults=(), actions=(), unit='s'):
+def chart(title, series, start, end, faults=(), actions=(), unit='s', stages=()):
     width,height = 760,185
     horizon = max(end-start,.01)
     limit = max((v for _,rows in series for _,v in rows),default=0) or 1
@@ -26,7 +26,9 @@ def chart(title, series, start, end, faults=(), actions=(), unit='s'):
             f'<text x="8" y="31">{limit:.3g}</text>',
             '<text x="30" y="155">0</text>',
             f'<text x="690" y="174">{horizon:.1f} {unit}</text>']
-    for marks,color,label in ((faults,'#d97706','network transition'),(actions,'#a21caf','controller action')):
+    for marks,color,label in ((stages,'#0891b2','scenario stage'),
+                              (faults,'#d97706','network transition'),
+                              (actions,'#a21caf','controller action')):
         for t in marks:
             x,_ = xy(t,0)
             body.append(f'<path d="M{x:.1f} 26 V152" stroke="{color}" stroke-dasharray="4 3">'
@@ -45,19 +47,26 @@ def chart(title, series, start, end, faults=(), actions=(), unit='s'):
         labels.append(f'<span style="color:{color}">{html.escape(name)}</span>')
     return (f'<figure><figcaption>{html.escape(title)}</figcaption><svg viewBox="0 0 {width} {height}" '
             f'role="img" aria-label="{html.escape(title,quote=True)}">{"".join(body)}</svg>'
-            f'<div class="legend">{" · ".join(labels)} · <b>orange</b> fault · <b>purple</b> controller</div></figure>')
+            f'<div class="legend">{" · ".join(labels)} · <b>blue</b> stage · <b>orange</b> fault · <b>purple</b> controller</div></figure>')
 
 
 def run_charts(path, row):
     directory = (path/row['artifact']).resolve()
     if directory.parent != path.resolve() or any(
             (directory/name).resolve().parent != directory for name in
-            ('timeline.jsonl','transitions.jsonl','decisions.json','requests.csv','receiver.jsonl')):
+            ('timeline.jsonl','transitions.jsonl','transitions.csv','decisions.json','requests.csv','receiver.jsonl')):
         raise ValueError('raw artifact path escapes its experiment')
     start,end = row['start'],row['end']
     trace = read_lines(directory/'timeline.jsonl')
     fault_rows = read_lines(directory/'transitions.jsonl')
-    faults = [item['applied_ns']/1e9 for item in fault_rows if not item.get('initial')]
+    faults = [item.get('kernel_confirmed_ns',item.get('applied_ns',item.get('actual_application_ns')))/1e9
+              for item in fault_rows if not item.get('initial')
+              and item.get('kernel_confirmed_ns',item.get('applied_ns',item.get('actual_application_ns'))) is not None]
+    apply_latency = [(item['scheduled_ns']/1e9,
+                      (item.get('kernel_confirmed_ns',item.get('applied_ns',item.get('actual_application_ns')))
+                       -item.get('actual_application_ns',item.get('begun_ns',item['scheduled_ns'])))/1e6)
+                     for item in fault_rows if item.get('scheduled_ns') is not None
+                     and item.get('kernel_confirmed_ns',item.get('applied_ns')) is not None]
     decisions = json.loads((directory/'decisions.json').read_text())
     actions = [item['time_ns']/1e9 for item in decisions if item['result'] in ('pending','rolled_back','inconclusive','released','verified')]
     seconds = {}
@@ -72,13 +81,15 @@ def run_charts(path, row):
     latency = [(start+i+.5,percentile(sorted(bucket['ok']),.99)) for i,bucket in sorted(seconds.items()) if bucket['ok']]
     failures = [(start+i+.5,bucket['failed']) for i,bucket in sorted(seconds.items())]
     rx = read_lines(directory/'receiver.jsonl')
-    goodput,fairness = [],[]
+    goodput,udp_goodput,fairness = [],[],[]
     first = next((i for i,item in enumerate(rx) if item['time']>=start),len(rx))
     for a,b in zip(rx[first::10],rx[first+10::10]):
         if b['time']>end:
             break
         rates = [(y-x)*8/(b['time']-a['time'])/1e6 for x,y in zip(a['bytes'],b['bytes'])]
         goodput.append((b['time'],sum(rates)))
+        udp_bytes_a,udp_bytes_b = sum(a.get('udp_bytes',[])),sum(b.get('udp_bytes',[]))
+        udp_goodput.append((b['time'],max(0,(udp_bytes_b-udp_bytes_a)*8/(b['time']-a['time'])/1e6)))
         active = [rate for rate in rates if rate>0]
         if active:
             fairness.append((b['time'],sum(active)**2/(len(active)*sum(rate*rate for rate in active))))
@@ -94,22 +105,43 @@ def run_charts(path, row):
             loss.append((stamp,*(max(0,y-x) for x,y in zip(previous,drops))))
         previous = drops
     graphs = [('Application P99 by issue second (ms)', [('P99',latency)]),
-              ('Background goodput (Mbit/s)', [('receiver payload',goodput)]),
+              ('Background goodput (Mbit/s)', [('TCP receiver payload',goodput),('UDP received payload',udp_goodput)]),
               ('Sender root backlog (bytes)', [('backlog',backlog)]),
               ('Observed drops between samples (packets)',
                [('sender qdisc',[(t,q) for t,q,_ in loss]), ('receiver netem',[(t,n) for t,_,n in loss])]),
               ('Request failures by issue second', [('failed',failures)]),
-              ('Background Jain index across positive-rate flows', [('Jain',fairness)])]
+              ('Background Jain index across positive-rate flows', [('Jain',fairness)]),
+              ('Fault update application latency (ms)', [('apply',apply_latency)])]
     rendered = ''.join(chart(title,series,start,end,faults,actions) for title,series in graphs)
-    rows = ''.join(f'<li>{item["applied_ns"]/1e9-start:.3f} s · '
-                   f'{html.escape(json.dumps(item["requested"]))}</li>' for item in fault_rows if not item.get('initial'))
+    rows = ''.join(f'<li>{(item.get("kernel_confirmed_ns",item.get("applied_ns",item.get("actual_application_ns")))/1e9-start):.3f} s · '
+                   f'{html.escape(json.dumps({key:item.get(key) for key in ("operations","requested","active_event_ids","status","recovery_lag_ns","failed_operation")}))}</li>'
+                   for item in fault_rows if not item.get('initial')
+                   and item.get('kernel_confirmed_ns',item.get('applied_ns',item.get('actual_application_ns'))) is not None)
     policy_rows = ''.join(f'<li>{item["time_ns"]/1e9-start:.3f} s · {html.escape(item["result"])}</li>' for item in decisions)
+    write_transition_csv(directory, fault_rows)
     return (f'<details><summary>{html.escape(row["artifact"])} · P99 {row["p99_ms"]!s} ms · '
             f'{row["failed"]} failed</summary><div class="charts">{rendered}</div>'
             f'<p>Applied network conditions</p><ul>{rows}</ul><p>Policy decisions</p><ul>{policy_rows}</ul>'
             f'<p><a href="{row["artifact"]}/requests.csv">Requests CSV</a> · '
             f'<a href="{row["artifact"]}/timeline.jsonl">Kernel timeline</a> · '
-            f'<a href="{row["artifact"]}/transitions.jsonl">Transition readbacks</a></p></details>')
+            f'<a href="{row["artifact"]}/transitions.jsonl">Transition readbacks</a> · '
+            f'<a href="{row["artifact"]}/transitions.csv">Transition CSV</a></p></details>')
+
+
+def write_transition_csv(directory, rows):
+    stream = io.StringIO()
+    writer = csv.writer(stream)
+    writer.writerow(('scheduled_ns','actual_application_ns','kernel_confirmed_ns','application_latency_ns',
+                     'schedule_lag_ns','operations','active_event_ids','status','failed_operation','error_type','error'))
+    for row in rows:
+        if row.get('initial'):
+            continue
+        writer.writerow((row.get('scheduled_ns'),row.get('actual_application_ns',row.get('begun_ns')),
+                         row.get('kernel_confirmed_ns',row.get('applied_ns')),row.get('application_latency_ns'),
+                         row.get('schedule_lag_ns'),json.dumps(row.get('operations',row.get('requested')),sort_keys=True),
+                         json.dumps(row.get('active_event_ids',[])),row.get('status','applied'),
+                         row.get('failed_operation'),row.get('error_type'),row.get('error')))
+    write_artifact(directory/'transitions.csv',stream.getvalue())
 
 
 def write_artifact(path, content):
@@ -133,7 +165,7 @@ def report(summary_path, baseline=None):
     path = summary_path.parent
     stats = aggregate(data)
     comparisons = []
-    if data['version'] == 2:
+    if data['version'] >= 2:
         baseline_mode = data['manifest']['gates']['baseline']
         if baseline_mode:
             base = load_summary(baseline) if baseline else data
@@ -149,7 +181,7 @@ def report(summary_path, baseline=None):
     outcome = ('INVALID EXPERIMENT' if any(not row['valid'] for row in data['runs']) or
                'INVALID EXPERIMENT' in outcomes else 'REGRESSION' if 'REGRESSION' in outcomes
                else 'PASS' if outcomes == {'PASS'} else 'INCONCLUSIVE')
-    flags = investigations(data) if data['version']==2 else {}
+    flags = investigations(data) if data['version']>=2 else {}
     artifact = dict(version=data['version'], outcome=outcome, investigations=flags, environment=data['environment'],manifest=data['manifest'],
                     aggregate=stats,regression=comparisons,runs=data['runs'],raw_summary=summary_path.name)
     write_artifact(path/'report.json',json.dumps(artifact,indent=2,allow_nan=False)+'\n')
@@ -160,7 +192,7 @@ def report(summary_path, baseline=None):
         writer.writerow([*(row.get(key) for key in ('mode','repetition','valid','offered','completed','failed')),
                          *(value(row,key) for key in METRICS),row['artifact']])
     write_artifact(path/'report.csv',stream.getvalue())
-    if data['version'] == 2:
+    if data['version'] >= 2:
         stream = io.StringIO()
         writer = csv.writer(stream)
         writer.writerow(['mode','metric','runs','median','mean','variance','median_ci_low','median_ci_high'])
@@ -174,7 +206,7 @@ def report(summary_path, baseline=None):
         return '—' if value is None else f'{value:.3g}' if isinstance(value,float) else html.escape(str(value))
     table = ''.join(f'<tr><th>{html.escape(mode)}</th><td>{row["valid"]}/{row["valid"]+row["invalid"]}</td>'+
                     ''.join(f'<td>{text(row["metrics"][key]["median"])}</td>' for key in
-                            ('p99_ms','total_mbps','jain_index','cpu_seconds','adjustments_per_minute','failure_ratio','deadline_attainment'))+'</tr>'
+                            ('p99_ms','total_mbps','udp_mbps','jain_index','cpu_seconds','adjustments_per_minute','failure_ratio','deadline_attainment'))+'</tr>'
                     for mode,row in stats.items())
     tails = [(mode,[(i+1,value(row,'p99_ms')) for i,row in enumerate(data['runs'])
                     if row['mode']==mode and row['valid'] and value(row,'p99_ms') is not None])
@@ -189,7 +221,7 @@ def report(summary_path, baseline=None):
     flags_html = ''.join(f'<li>{html.escape(name)} · {html.escape("; ".join(notes))}</li>'
                          for name, notes in flags.items())
     extra_links = (' · <a href="aggregate.csv">Aggregate CSV</a> · <a href="reproduce.sh">Reproduction command</a>'
-                   if data['version'] == 2 else '')
+                   if data['version'] >= 2 else '')
     page = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>FLOWCORE Research Lab</title><style>
 body{{font:15px system-ui;color:#0f172a;background:#f8fafc;max-width:1150px;margin:32px auto;padding:0 18px}}
@@ -201,7 +233,7 @@ pre{{white-space:pre-wrap}}a{{color:#1d4ed8}}</style><h1>FLOWCORE Research Lab</
 <p>{text(data['environment']['kernel'])} · {text(data['environment']['architecture'])} · Git {text(data['environment']['git_commit'])}</p>
 <p>Outcome {outcome}. Per-run medians below. Request P99 is conditional on success. Confidence intervals and variance are in JSON.</p>
 <p><a href="report.json">JSON</a> · <a href="report.csv">CSV</a> · <a href="experiment.json">Replay manifest</a>{extra_links}</p>
-<table><thead><tr><th>Mode</th><th>Valid</th><th>P99 ms</th><th>Total Mbit/s</th><th>Jain</th><th>CPU s</th><th>Adjustments/min</th><th>Failure ratio</th><th>Deadline attainment</th></tr></thead><tbody>{table}</tbody></table>
+<table><thead><tr><th>Mode</th><th>Valid</th><th>P99 ms</th><th>Total Mbit/s</th><th>UDP Mbit/s</th><th>Jain</th><th>CPU s</th><th>Adjustments/min</th><th>Failure ratio</th><th>Deadline attainment</th></tr></thead><tbody>{table}</tbody></table>
 {comparison_chart}<h2>Run-level regression checks</h2><table><tr><th>Pair</th><th>Metric</th><th>Runs</th><th>Median change</th><th>Interval or adjusted p</th><th>Result</th></tr>{reg}</table>
 <h2>Investigation flags</h2><ul>{flags_html}</ul>
 <h2>Timelines and raw artifacts</h2>{details}

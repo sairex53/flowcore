@@ -211,7 +211,7 @@ def summarize(directory, m, rep, mode, samples, history, start, end, host_ticks)
     ticks, idle = host_ticks
     successes = data['completed']
     payload = successes*m['workload']['payload_bytes']*8/duration/1e6
-    data.update(mode=mode, repetition=rep, valid=True, total_mbps=payload+data['background_mbps'],
+    data.update(mode=mode, repetition=rep, valid=True, total_mbps=payload+data['background_mbps']+data['udp_mbps'],
                 request_payload_mbps=payload, cpu_seconds=cpu,
                 host_cpu_busy_ratio=1-idle/ticks if ticks else None,
                 peak_daemon_rss_bytes=max(row['overhead']['daemon_rss_bytes'] or 0 for row in samples),
@@ -251,6 +251,38 @@ def session_history(rows,session,start_ns):
             row.get('time_ns',0)>=start_ns]
 
 
+def compose_scenario_network(base, active_events):
+    """Compose overlapping faults with explicit conservative semantics."""
+    result = dict(base)
+    bandwidths = [base['bandwidth_kbit']]
+    reverse = [base.get('reverse_bandwidth_kbit', base['bandwidth_kbit'])]
+    delays = [base['base_rtt_ms']]
+    jitters = [base['jitter_ms']]
+    losses = [base['loss_pct']/100]
+    reorder = [base['reorder_pct']/100]
+    duplicate = [base.get('duplicate_pct',0)/100]
+    correlations = [base.get('loss_correlation_pct',0)]
+    for event in active_events:
+        effects = event['effects']
+        bandwidths.append(effects.get('bandwidth_kbit', base['bandwidth_kbit']))
+        reverse.append(effects.get('reverse_bandwidth_kbit', base.get('reverse_bandwidth_kbit', base['bandwidth_kbit'])))
+        delays.append(effects.get('base_rtt_ms', base['base_rtt_ms']))
+        jitters.append(effects.get('jitter_ms', base['jitter_ms']))
+        losses.append(effects.get('loss_pct',0)/100)
+        reorder.append(effects.get('reorder_pct',0)/100)
+        duplicate.append(effects.get('duplicate_pct',0)/100)
+        correlations.append(effects.get('loss_correlation_pct',0))
+    result['bandwidth_kbit'] = min(bandwidths)
+    result['reverse_bandwidth_kbit'] = min(reverse)
+    result['base_rtt_ms'] = max(delays)
+    result['jitter_ms'] = max(jitters)
+    result['loss_pct'] = (1-__import__('math').prod(1-item for item in losses))*100
+    result['reorder_pct'] = (1-__import__('math').prod(1-item for item in reorder))*100
+    result['duplicate_pct'] = (1-__import__('math').prod(1-item for item in duplicate))*100
+    result['loss_correlation_pct'] = max(correlations)
+    return result
+
+
 def trial(directory, m, rep, mode, seed=None):
     owned_directory(directory)
     cfg = load(ROOT/'config/service.json')
@@ -275,10 +307,11 @@ def trial(directory, m, rep, mode, seed=None):
     save(config,cfg)
     daemon = server = client = None
     seed = seed if seed is not None else (m['seed']+rep) % (2**32-1)+1
-    version2 = m['version'] == 2
+    version2 = m['version'] >= 2
     with (directory/'daemon.log').open('w') as dl, (directory/'server.log').open('w') as sl, \
          (directory/'client.log').open('w') as cl, (directory/'timeline.jsonl').open('w') as timeline, \
-         (directory/'transitions.jsonl').open('w') as transitions, contextlib.ExitStack() as resources:
+         (directory/'transitions.jsonl').open('w') as transitions, \
+         (directory/'stages.jsonl').open('w') as stage_log, contextlib.ExitStack() as resources:
         try:
             daemon = child([BINDIR/'flowcored','--research','--config',config],stdout=dl,stderr=dl)
             await_service(daemon)
@@ -299,11 +332,17 @@ def trial(directory, m, rep, mode, seed=None):
             expected_capacity = applied['capacity_kbit']
             ports = {name: cls['port'] for name, cls in load(ROOT/'config/service.json')['policies']['default']['classes'].items()}
             snapshots = []
+            initial_namespace_ids = None
             def snapshot(label, setup=False):
+                nonlocal initial_namespace_ids
                 value = request('research_snapshot', setup=setup)
                 value['label'] = label
                 value['configured_kbit'] = expected_capacity
                 value['readback'] = v2.verify(value, mode, expected_capacity, ports)
+                if initial_namespace_ids is None:
+                    initial_namespace_ids = value['namespaces']
+                elif value['namespaces'] != initial_namespace_ids:
+                    raise RuntimeError('owned namespace inode changed during experiment')
                 snapshots.append(value)
                 save(directory/'topology.json', snapshots)
                 return value
@@ -311,6 +350,11 @@ def trial(directory, m, rep, mode, seed=None):
             handles = []
             if version2:
                 initial = snapshot('setup', setup=True)
+                if m['version'] == 3 and workload['address_family']=='ipv6':
+                    addresses = [{address['address'] for link in links for address in link['addresses']}
+                                 for links in initial['links']]
+                    if not {'fd42:203::1','fd42:203::2'} <= addresses[0] | addresses[1]:
+                        raise RuntimeError('IPv6 veth addresses are not configured')
                 for index, pid in enumerate((sender, receiver)):
                     fd = resources.enter_context(open(f'/proc/{pid}/ns/net', 'rb'))
                     if os.fstat(fd.fileno()).st_ino != initial['namespaces'][index]:
@@ -333,7 +377,8 @@ def trial(directory, m, rep, mode, seed=None):
                 request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive') else 'slo')
             plan = directory/'workload.json'
             settings = dict(**workload, seed=seed, start_monotonic=0,
-                            ports={cls: ports[cls] for cls in services}, services=services)
+                            ports={cls: ports[cls] for cls in services}, services=services,
+                            server_address=('fd42:203::2' if workload.get('address_family')=='ipv6' else '10.203.0.2'))
             save(plan,settings)
             options = ['--duration',str(m['duration_seconds']), '--payload',str(workload['payload_bytes']),
                        '--streams',str(max(p['background_streams'] for p in workload['phases'])),
@@ -361,38 +406,145 @@ def trial(directory, m, rep, mode, seed=None):
             sample()
             next_sample = start+1
             link_up = True
-            events = m['faults'] if mode != 'static-step' else [dict(at_seconds=4, reservation_step=True)]
-            for index,fault in enumerate([*events,{'at_seconds':m['duration_seconds']}],1):
-                deadline = start+fault['at_seconds']
-                while next_sample < deadline:
-                    time.sleep(max(0,next_sample-time.monotonic()))
+            if m['version'] == 3:
+                stage_boundaries = []
+                cursor = 0
+                for stage in m['stages']:
+                    stage_boundaries.append((cursor, stage['name']))
+                    cursor += stage['seconds']
+                stage_log.write(json.dumps(dict(kind='stage', stage=stage_boundaries[0][1],
+                    scheduled_ns=round(start*NANO), actual_ns=time.monotonic_ns()))+'\n')
+                stage_log.flush()
+                points = {}
+                for offset, name in stage_boundaries[1:]:
+                    points.setdefault(float(offset), []).append(dict(kind='stage', name=name))
+                for event in m['events']:
+                    points.setdefault(float(event['at_seconds']), []).append(
+                        dict(kind='event_start', event=event))
+                    points.setdefault(float(event['at_seconds']+event['duration_seconds']), []).append(
+                        dict(kind='event_end', event=event))
+                points.setdefault(float(m['duration_seconds']), []).append(dict(kind='finish'))
+                active = {}
+                lifecycle = {}
+                for index, (offset, operations) in enumerate(sorted(points.items()), 1):
+                    scheduled_ns = round(start*NANO)+round(offset*NANO)
+                    deadline = scheduled_ns/NANO
+                    while next_sample < deadline:
+                        time.sleep(max(0,next_sample-time.monotonic()))
+                        sample()
+                        next_sample += 1
+                    time.sleep(max(0,deadline-time.monotonic()))
                     sample()
-                    next_sample += 1
-                time.sleep(max(0,deadline-time.monotonic()))
-                sample()
-                if version2:
-                    snapshot('measurement_end' if len(fault)==1 else 'pre_transition')
-                if len(fault)==1:
-                    break
-                if fault.get('reservation_step'):
-                    step = request('research_reservation_step')
-                    transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),
-                                                      requested=fault, **step))+'\n')
+                    if any(operation['kind'] == 'finish' for operation in operations):
+                        if version2:
+                            snapshot('measurement_end')
+                        stage_log.write(json.dumps(dict(kind='stage_end', stage=m['stages'][-1]['name'],
+                            scheduled_ns=round(deadline*NANO), actual_ns=time.monotonic_ns()))+'\n')
+                        stage_log.flush()
+                        break
+                    stage_ops = [item for item in operations if item['kind']=='stage']
+                    for operation in stage_ops:
+                        actual_stage = time.monotonic_ns()
+                        record = dict(kind='stage', stage=operation['name'],
+                                      scheduled_ns=round(deadline*NANO), actual_ns=actual_stage,
+                                      schedule_lag_ns=max(0,actual_stage-round(deadline*NANO)))
+                        stage_log.write(json.dumps(record)+'\n')
+                    if stage_ops:
+                        stage_log.flush()
+                    event_ops = [item for item in operations if item['kind'].startswith('event_')]
+                    if not event_ops:
+                        continue
+                    if version2:
+                        snapshot('pre_transition')
+                    for operation in event_ops:
+                        event = operation['event']
+                        if operation['kind']=='event_start':
+                            active[event['id']] = event
+                            lifecycle[event['id']] = dict(scheduled_start_ns=round(deadline*NANO))
+                        else:
+                            active.pop(event['id'], None)
+                    target = compose_scenario_network(m['network'], list(active.values()))
+                    target_link = all(item['effects'].get('link_up', True) for item in active.values())
+                    begun = time.monotonic_ns()
+                    try:
+                        applied = request('research_conditions', network=target, mode=mode,
+                                          seed=(seed+index-1)%(2**32-1)+1, link_up=target_link)
+                    except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
+                        failed = dict(scheduled_ns=round(deadline*NANO), actual_application_ns=begun,
+                                      operations=[dict(kind=item['kind'], id=item['event']['id']) for item in event_ops],
+                                      active_event_ids=sorted(active), requested=target,
+                                      status='failed', failed_operation='research_conditions',
+                                      error_type=type(error).__name__, error=str(error))
+                        transitions.write(json.dumps(failed)+'\n')
+                        transitions.flush()
+                        raise
+                    confirmed = applied.get('kernel_confirmed_ns', applied['applied_ns'])
+                    expected_capacity = applied['capacity_kbit']
+                    readback = snapshot('post_transition') if version2 else applied
+                    completed = []
+                    for operation in event_ops:
+                        event = operation['event']
+                        state = lifecycle.setdefault(event['id'], {})
+                        if operation['kind']=='event_start':
+                            state.update(actual_application_start_ns=begun,
+                                         kernel_confirmed_start_ns=confirmed)
+                        else:
+                            state.update(scheduled_end_ns=round(deadline*NANO),
+                                         actual_application_end_ns=begun,
+                                         kernel_confirmed_end_ns=confirmed,
+                                         scheduled_duration_ns=round(event['duration_seconds']*NANO),
+                                         applied_duration_ns=max(0,confirmed-state.get('kernel_confirmed_start_ns',confirmed)),
+                                         recovery_lag_ns=max(0,confirmed-round(deadline*NANO)))
+                            completed.append(dict(id=event['id'], **state))
+                    sender_addresses = []
+                    if readback.get('links'):
+                        sender_link = next(row for row in readback['links'][0] if row['name']=='fc0')
+                        sender_addresses = sorted(row['address'] for row in sender_link['addresses'])
+                    record = dict(scheduled_ns=round(deadline*NANO), actual_application_ns=begun,
+                                  schedule_lag_ns=max(0,begun-round(deadline*NANO)),
+                                  kernel_confirmed_ns=confirmed, application_latency_ns=max(0,confirmed-begun),
+                                  operations=[dict(kind=item['kind'], id=item['event']['id']) for item in event_ops],
+                                  active_event_ids=sorted(active), requested=target,
+                                  kernel_readback=dict(topology=readback.get('readback'),
+                                      netem=applied.get('netem'), capacity_kbit=applied.get('capacity_kbit'),
+                                      reverse_capacity_kbit=applied.get('reverse_capacity_kbit'),
+                                      link_up=applied.get('link_up'), sender_addresses=sender_addresses),
+                                  link_up=applied.get('link_up'), status='applied', completed_events=completed)
+                    transitions.write(json.dumps(record)+'\n')
+                    transitions.flush()
+            else:
+                events = m['faults'] if mode != 'static-step' else [dict(at_seconds=4, reservation_step=True)]
+                for index,fault in enumerate([*events,{'at_seconds':m['duration_seconds']}],1):
+                    deadline = start+fault['at_seconds']
+                    while next_sample < deadline:
+                        time.sleep(max(0,next_sample-time.monotonic()))
+                        sample()
+                        next_sample += 1
+                    time.sleep(max(0,deadline-time.monotonic()))
+                    sample()
+                    if version2:
+                        snapshot('measurement_end' if len(fault)==1 else 'pre_transition')
+                    if len(fault)==1:
+                        break
+                    if fault.get('reservation_step'):
+                        step = request('research_reservation_step')
+                        transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),
+                                                          requested=fault, **step))+'\n')
+                        transitions.flush()
+                        if version2:
+                            snapshot('post_transition')
+                        continue
+                    network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
+                    link_up = fault.get('link_up',link_up)
+                    begun = time.monotonic_ns()
+                    applied = request('research_conditions',network=network,mode=mode,
+                                      seed=(seed+index-1)%(2**32-1)+1,link_up=link_up)
+                    transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),begun_ns=begun,
+                                                      requested=fault, **applied))+'\n')
                     transitions.flush()
                     if version2:
+                        expected_capacity = applied['capacity_kbit']
                         snapshot('post_transition')
-                    continue
-                network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
-                link_up = fault.get('link_up',link_up)
-                begun = time.monotonic_ns()
-                applied = request('research_conditions',network=network,mode=mode,
-                                  seed=(seed+index-1)%(2**32-1)+1,link_up=link_up)
-                transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),begun_ns=begun,
-                                                  requested=fault, **applied))+'\n')
-                transitions.flush()
-                if version2:
-                    expected_capacity = applied['capacity_kbit']
-                    snapshot('post_transition')
             if version2:
                 host_after = v2.host_sample()
                 save(directory/'host-noise.json', dict(start=host_before, end=host_after))
@@ -403,9 +555,11 @@ def trial(directory, m, rep, mode, seed=None):
             time.sleep(.15)
             history = session_history(request('policy_history'),controller_session,round(start*NANO))
             save(directory/'decisions.json',history)
-            save(directory/'network.json',request('inspect'))
-            if request('inspect')['namespaces'] != [sender,receiver]:
-                raise RuntimeError('namespace identity changed mid-experiment')
+            final_inspect = request('inspect')
+            final_inspect['expected_namespace_holders'] = [sender,receiver]
+            save(directory/'network.json',final_inspect)
+            if final_inspect['namespaces'] != [sender,receiver]:
+                raise RuntimeError(f'namespace holder identity changed: expected {[sender,receiver]}, got {final_inspect["namespaces"]}')
             result = summarize(directory,m,rep,mode,samples,history,start,end,
                                tuple(b-a for a,b in zip(begin_ticks,finish_ticks)))
             if version2:
@@ -414,7 +568,7 @@ def trial(directory, m, rep, mode, seed=None):
                 if metrics['failed_requests'] != result['failed']:
                     raise RuntimeError('workload summary disagrees with raw ledger')
                 result.update(metrics)
-                result['total_mbps'] = result['background_mbps'] + metrics['request_payload_mbps']
+                result['total_mbps'] = result['background_mbps'] + result['udp_mbps'] + metrics['request_payload_mbps']
                 result['workload_seed'] = seed
                 measurement = snapshots[1:]
                 result['observed_rate_windows'] = [v2.observed(a, b, a['configured_kbit'])
@@ -433,7 +587,7 @@ def execute(manifest, label='research', parent=RESULTS):
     path = parent/f'{label}-{time.time_ns()}'
     owned_directory(path)
     rng = random.Random(m['seed'])
-    seeds = rng.sample(range(1,2**32), m['repetitions']) if m['version']==2 else []
+    seeds = rng.sample(range(1,2**32), m['repetitions']) if m['version']>=2 else []
     order = [(rep, mode) for rep in range(m['repetitions'])
              for mode in (rng.sample(m['modes'],len(m['modes'])) if seeds else m['modes'])]
     if not seeds:
