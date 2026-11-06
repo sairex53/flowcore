@@ -30,8 +30,17 @@ All 23 CTest targets passed on ARM64 in 14.86 seconds, including existing SDK/IP
 
 ASan/UBSan plus leak detection passed the native executable on ARM64 with BPF disabled. This is not a complete-runtime memory-safety audit. No runtime event loop or concurrency model was replaced.
 
-Build/install, source/installed loading and x86_64 CI evidence are recorded below after their actual completion. Cross-compilation is not counted as runtime validation.
+Cross-compilation is not counted as runtime validation.
 
 The committed reproduction runner completed another ten pairs: paired native/reference CPU ratio median 0.774980, range 0.711815–0.818742; predeclared maximum regression 10%, local synthetic gate PASS. Artifact: results/native-migration-final.json. The gate is based on a CPU budget, not a confidence interval.
 
 All 23 CTest targets also passed with the daemon histogram backend explicitly set to native (14.34 seconds). Installed-mode native loading and summary computation passed under build/native-install. BPF-enabled ordinary builds and the BPF-disabled sanitizer build both succeeded.
+
+
+## Actual x86_64 runner
+
+[GitHub Actions run 42307099465](https://github.com/sairex53/flowcore/actions/runs/42307099465) completed successfully for code commit c4defba. The Ubuntu 24.04 runner printed x86_64. It built with BPF disabled, ran all 23 CTest targets successfully in 16.57 seconds, passed Python static analysis, and executed the ASan/UBSan native concurrency/error test successfully in 0.33 seconds. These are actual x86_64 executions, not cross-compilation results. Privileged networking and performance on x86_64 were not tested.
+
+An independent installed C++ consumer also passed on ARM64 using find_package(flowcore CONFIG REQUIRED) and linking flowcore::telemetry. Its sources and build log are under build/native-consumer and build/native-consumer.log.
+
+Remaining work: default activation needs aggregation-heavy real-runtime evidence; native event-loop or helper migration is not yet justified; network/application performance and long-duration telemetry soak measurements remain outside this migration.
