@@ -52,3 +52,15 @@ Monitoring still has zero capabilities. New state/configuration controls do not 
 Dependency validation found an additional packaging defect in the first relocated-tool build: RPM 6 had read its startup macro path before _rpmconfigdir was overridden, so the ELF attribute generators were never selected. That RPM was rejected. packaging/build-local-rpm.py now explicitly loads the relocated fileattrs, and packaging/verify-rpm.py rejects missing libc/GLIBCXX dependencies or the telemetry SONAME. The final RPM provides libflowcore_telemetry.so.1 and records versioned ELF runtime requirements. Evidence: build/deploy-rpmbuild-final.log and build/deploy-rpm-requires-final.txt.
 
 All transient validation units were collected after testing: build/deploy-test-units.log lists zero remaining units. The isolated RPM transaction blocker remains unresolved; no SELinux, capability or host package-database restrictions were disabled to force it through.
+
+## Committed release-candidate snapshot
+
+Code snapshot 9f073be was rebuilt from a clean Git tree with packaging/build-local-rpm.py. Its binary RPM and SRPM passed the build checks; the extracted binary passed the updated dependency/digest verifier and installed lifecycle checks again (build/deploy-rpmbuild-committed.log, build/deploy-rpm-verify-committed.log). A second live transient sandbox run using this exact payload passed: results/deployment-systemd-1794008397001537469.json.
+
+SHA256:
+- flowcore-0.2.0-2.fc45.aarch64.rpm: b652dc7f54831680fdae8addc971c40682ac9c8353f3d2589e31ca8cb3f1ca9e
+- flowcore-0.2.0-2.fc45.src.rpm: f65ab226634661105f61fce3c49bfb0eed6e6b35097c2d54b356fe0e070ac0a2
+
+[GitHub Actions 42312841948](https://github.com/sairex53/flowcore/actions/runs/42312841948) passed for this code snapshot on the existing x86_64 unprivileged runner. It does not validate Fedora RPM transactions or privileged networking on x86_64.
+
+The transaction blocker has supporting SELinux audit evidence: rpmdb_t was denied dac_override/dac_read_search during the project-local RPM database attempt (build/deploy-rpm-audit.log). Host SELinux enforcement was retained. This evidence is not a successful upgrade/erase test, and no automatic security-policy relaxation was added.
