@@ -22,7 +22,7 @@ def declare(lease, value):
         expected=17 if value['kind'] in ('udp','quic') else None
         if expected and observed.get('protocol')!=expected:
             raise ValueError('UDP/QUIC declaration requires an associated UDP socket')
-        if value['kind']=='tcp' and observed.get('protocol') not in (6,262):
+        if value['kind']=='tcp' and (observed.get('protocol') not in (6,262) or observed.get('is_mptcp') is True):
             raise ValueError('TCP declaration conflicts with socket protocol')
         if value['kind']=='mptcp' and observed.get('is_mptcp') is not True:
             raise ValueError('MPTCP declaration requires positively observed MPTCP')
@@ -31,7 +31,7 @@ def declare(lease, value):
         raise ValueError('transport session quota exhausted')
     sessions[value['session']]=dict(**value,source='application_reported',
         kernel_packet_stream_priority=False,mobility_enforced=False,
-        reliable_streams_reported=value['kind'] in ('tcp','mptcp','quic'),
+        reliability_preference_source='service_intent_only',
         degraded=False,error='none',updated_ns=time.monotonic_ns())
     return dict(version=2,accepted=True,capabilities=sessions[value['session']])
 

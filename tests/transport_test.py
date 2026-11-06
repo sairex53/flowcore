@@ -27,6 +27,7 @@ class Transport(unittest.TestCase):
             result=self.call(action='transport_declare',lease=self.token,transport=self.hints(cookie=cookie))
             self.assertEqual(result['capabilities']['source'],'application_reported')
             self.assertFalse(result['capabilities']['kernel_packet_stream_priority'])
+            self.assertEqual(result['capabilities']['reliability_preference_source'],'service_intent_only')
             status=self.call(action='status',lease=self.token)
             self.assertFalse(status['socket_capabilities'][0]['quic_observed'])
             with self.assertRaises(ValueError):

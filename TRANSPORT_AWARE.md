@@ -9,7 +9,7 @@ Kinds: tcp, mptcp, udp, quic, logical. Declarations carry a bounded application 
 Capabilities have explicit provenance:
 - SO_PROTOCOL, socket type/family and SO_COOKIE come from a received descriptor.
 - TCP_IS_MPTCP reports negotiation when supported; unknown stays unknown. UDP does not prove QUIC.
-- QUIC negotiation, logical identities, stream IDs, stream priorities, errors and degradation are application reports.
+- QUIC negotiation, logical identities, stream IDs, stream priorities, errors and degradation are application reports. A QUIC declaration alone does not attest stream delivery reliability; QUIC datagram use must not be confused with reliable streams.
 - kernel_packet_stream_priority and mobility_enforced are false. There is no implicit protocol conversion.
 
 A QUIC declaration associated with an FD requires an attested UDP socket. An associated MPTCP declaration requires positive TCP_IS_MPTCP. Without an FD, transport kind remains a claim. Socket associations are snapshots, not retained socket ownership; applications must dissociate when closing a socket. Closing or revoking a lease clears its reports.
