@@ -248,3 +248,6 @@ install(FILES API.md FEATURE_MATRIX.md RELEASE_READINESS.md BENCHMARK_REPORT.md
 
 add_test(NAME workload_legacy COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/workload_legacy_test.py")
 set_tests_properties(workload_legacy PROPERTIES TIMEOUT 15)
+
+add_test(NAME bottleneck_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/bottleneck_test.py")
+install(FILES LICENSE LICENSE.GPL-2.0 DESTINATION "${FLOWCORE_DATA}/docs")

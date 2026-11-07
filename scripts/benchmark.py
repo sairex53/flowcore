@@ -87,10 +87,10 @@ class Lab:
     def holder_command(self):
         return [sys.executable, '-I', '-B', ROOT/'scripts/namespace_holder.py', str(os.getpid())]
 
-    def start(self):
+    def start_holders(self, count):
         host = os.stat('/proc/self/ns/net')
         identities = {(host.st_dev, host.st_ino)}
-        for _ in range(2):
+        for _ in range(count):
             proc = subprocess.Popen(self.holder_command(), start_new_session=True)
             self.holders.append(proc)
             for attempt in range(100):
@@ -116,6 +116,9 @@ class Lab:
             else:
                 raise RuntimeError('network namespace creation timed out')
         (self.output / 'namespace-pids.json').write_text(json.dumps([p.pid for p in self.holders]))
+
+    def start(self):
+        self.start_holders(2)
         self.command(0, ['ip', 'link', 'add', 'fc0', 'type', 'veth', 'peer', 'name', 'fc1',
                          'netns', self.namespace_path(1)])
         for index, interface, address in [(0, 'fc0', '10.203.0.1/30'), (1, 'fc1', '10.203.0.2/30')]:

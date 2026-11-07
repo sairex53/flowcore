@@ -22,6 +22,8 @@ from ipc_security import authorize, decode, notify, private_directory, private_l
 from platform_network import Inventory
 from platform_policy import PolicyStore, merged
 from adaptive import Controller
+from bottleneck_diagnostics import Diagnostics
+from directional_qos import Ingress
 from service_config import keys, load, profile
 from service_lab import ServiceLab
 from intent_session import Sessions
@@ -46,7 +48,8 @@ class Service:
         self.sampled = 0
         self.capabilities = {}
         self.observer = Observer(config['observability'])
-        self.controller = Controller(self)
+        self.diagnostics = Diagnostics(self)
+        self.controller = Controller(self, egress_gate=self.diagnostics.egress_admitted)
         self.container_attachment = None
         self.container_attachments = {}
         self.monitor_only = False
@@ -66,6 +69,7 @@ class Service:
             print(json.dumps(dict(time=time.time(), event=event, **fields)), flush=True)
 
     def close_lab(self):
+        self.diagnostics.lab.reset('lab closed or replaced')
         self.container_attachment = None
         self.container_attachments = {}
         self.controller.detach()
@@ -82,7 +86,7 @@ class Service:
         self.error = None
         self.sampled = 0
 
-    def replace(self, name, settings):
+    def replace(self, name, settings, ingress=None):
         if name not in self.config['policies']:
             raise ValueError('unknown policy')
         profile(settings)
@@ -97,6 +101,10 @@ class Service:
             candidate.start()
             policy = self.config['policies'][name]
             candidate.install_policy(policy, settings)
+            selected_ingress = ingress if ingress is not None else getattr(self.lab, 'ingress', None)
+            if selected_ingress is not None:
+                selected_ingress.install(candidate)
+                candidate.ingress = selected_ingress
             # Admission requires usable telemetry before replacing a working policy.
             candidate.counters()
             self.capabilities[policy['scheduler']] = 'verified'
@@ -131,6 +139,7 @@ class Service:
             collected = time.monotonic_ns()
             self.observer.sample(self.lab, self.telemetry, self.profile['bandwidth_kbit'])
             observed = time.monotonic_ns()
+            self.diagnostics.lab_sample(self.telemetry, collected/1e9)
             self.controller.sample_prediction()
             self.telemetry_timing = dict(time_ns=begin, counters_ns=collected-begin,
                                          observer_ns=observed-collected,
@@ -141,6 +150,7 @@ class Service:
             self.error = None
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             self.telemetry = {}
+            self.diagnostics.lab.reset('lab telemetry unavailable')
             self.error = str(exc)
             self.log('error', detail=self.error)
 
@@ -209,6 +219,8 @@ class Service:
             return result
         if op == 'platform_workload_classifiers':
             return list(self.container_attachments.values())
+        if op in ('bottleneck_inspect', 'capacity_estimate', 'qos_direction', 'path_diagnostics'):
+            return self.diagnostics.query(request)
         if op == 'platform_interfaces':
             return self.inventory.status()
         if op == 'platform_policies':
@@ -373,7 +385,8 @@ class Service:
         if op == 'metrics':
             return dict(state=self.status(), tc=self.telemetry, events=list(self.events),
                         observability=self.observer.snapshot(), platform=self.inventory.status(),
-                        controller=self.controller.status(), policy_revision=self.platform_policies.state['revision'],
+                        controller=self.controller.status(),
+                        bottleneck=self.diagnostics.query(dict(op="bottleneck_inspect")), policy_revision=self.platform_policies.state['revision'],
                         sample_age_seconds=round(time.monotonic()-self.sampled, 2) if self.sampled else None)
         if op == 'interfaces':
             return dict(host=snapshot(), lab=[self.lab.network(i) for i in (0, 1)] if self.lab else [])
@@ -394,7 +407,14 @@ class Service:
                 settings = profile(request.get('profile'))
             if op == 'policy_apply' and not self.lab:
                 raise ValueError('start the lab before applying a policy')
-            changed = self.replace(name, settings)
+            ingress = None
+            if 'ingress_kbit' in request:
+                if op != 'lab_up' or self.lab:
+                    raise ValueError('ingress can only be selected when starting a new lab')
+                if self.research:
+                    raise ValueError('legacy research fixtures require an unmodified directional topology')
+                ingress = Ingress(request['ingress_kbit'])
+            changed = self.replace(name, settings, ingress)
             self.poll_metrics()
             return dict(changed=changed, **self.status())
         raise ValueError('unknown operation')
@@ -406,6 +426,12 @@ class Service:
                 return
             for kind, _, _, body in messages(data):
                 if kind in (16, 17, 20, 21, 24, 25):
+                    if origin in ('sender', 'receiver') and self.lab:
+                        self.lab.topology_dirty = True
+                        self.diagnostics.lab.reset('lab link, address or route changed')
+                    elif origin == 'host':
+                        for monitor in self.diagnostics.host.values():
+                            monitor.reset('host link, address or route changed')
                     row = dict(source=origin, type=kind, time=time.time())
                     if kind in (16, 17) and len(body) >= 16:
                         _, _, _, index, flags, _ = struct.unpack_from('=BBHiII', body)
@@ -513,6 +539,7 @@ def main():
             service.controller.restore(STATE)
             service.platform_policies.restore(STATE)
             service.inventory.refresh()
+            service.diagnostics.host_sample()
             service.workloads.refresh()
             service.observer.sample_host(service.inventory)
             if SOCKET.exists() or SOCKET.is_symlink():
@@ -564,6 +591,7 @@ def main():
                         service.controller.safe_tick()
                         if time.monotonic()-inventory_tick>=2:
                             service.inventory.refresh()
+                            service.diagnostics.host_sample()
                             service.workloads.refresh()
                             if not service.lab:
                                 service.observer.sample_host(service.inventory)

@@ -52,8 +52,9 @@ def objective(window, name, intent, minimum):
 
 
 class Controller:
-    def __init__(self, service):
+    def __init__(self, service, *, egress_gate=None):
         self.service = service
+        self.egress_gate = egress_gate
         self.session = uuid.uuid4().hex
         self.registry = Registry(service.observer)
         self.allocator = Allocator()
@@ -340,6 +341,12 @@ class Controller:
                     utilization=window['queue'].get('root', {}).get('utilization'),
                     protected_kbit={key: val[0] for key, val in (self.current or {}).items()})
 
+    def qualify(self, plan):
+        if plan['action'] == 'transfer_reservation' and self.egress_gate is not None and not self.egress_gate():
+            return dict(plan, action='hold', proposed=None,
+                        bottleneck_gate='fresh controllable egress pressure required')
+        return plan
+
     def evaluate(self):
         if not self.service.lab or self.policy()['scheduler'] != 'htb':
             raise ValueError('evaluation requires an owned HTB lab')
@@ -351,7 +358,7 @@ class Controller:
             self.base = current
         try:
             window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'], complete=True)
-            return dict(self.plan(window, current), dry_run=True, fairness=self.fairness(window))
+            return dict(self.qualify(self.plan(window, current)), dry_run=True, fairness=self.fairness(window))
         finally:
             self.base = original
 
@@ -391,7 +398,7 @@ class Controller:
         began = time.monotonic_ns()
         window = observer.window(began, seconds, complete=True)
         window_end = time.monotonic_ns()
-        plan = self.plan(window, self.current)
+        plan = self.qualify(self.plan(window, self.current))
         self.last_plan = plan
         if self.strategy in ('queue-aware','slo-aware','hybrid','predictive') and plan['action'] == 'hold':
             self.record(result='hold', **plan)

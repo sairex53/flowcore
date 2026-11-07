@@ -70,6 +70,8 @@ def main():
                   intent=('register', 'list', 'inspect', 'remove', 'revoke'),
                   controller=('start', 'stop', 'status', 'shadow', 'observe', 'fallback'),
                   lab=('up', 'down', 'status', 'configure', 'inspect'))
+    groups.update(bottleneck=('inspect', 'watch'), capacity=('estimate',),
+                  qos=('direction',), path=('diagnostics',))
     for name, operations in groups.items():
         sub = commands.add_parser(name, help=f'{name} commands').add_subparsers(dest='action', required=True)
         for action in operations:
@@ -85,6 +87,13 @@ def main():
                 command.add_argument('--dry-run', action='store_true', help='evaluation never writes tc')
             if (name, action) == ('policy', 'apply'):
                 command.add_argument('name')
+            if name in ('bottleneck', 'capacity', 'qos', 'path'):
+                command.add_argument('--interface')
+            if (name, action) == ('bottleneck', 'watch'):
+                command.add_argument('--watch', type=float, default=1, metavar='SECONDS')
+                command.add_argument('--count', type=int, default=0, help='number of JSON lines, zero means continuous')
+            if (name, action) == ('lab', 'up'):
+                command.add_argument('--ingress-kbit', type=int, help='opt in to IFB in a fresh owned lab')
             if (name, action) == ('lab', 'configure'):
                 for field in LAB_FIELDS:
                     command.add_argument('--' + field.replace('_', '-'), required=True,
@@ -102,6 +111,20 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command in ('bottleneck', 'capacity', 'qos', 'path'):
+            fields = {'interface': args.interface} if args.interface is not None else {}
+            operation = 'bottleneck_inspect' if args.command == 'bottleneck' else args.command+'_'+args.action
+            count = getattr(args, 'count', 1)
+            if not 0 <= count <= 10000:
+                raise ValueError('--count must be in [0, 10000]')
+            emitted = 0
+            while not count or emitted < count:
+                result = request(operation, **fields)
+                print(json.dumps(result, indent=None if args.json or watch else 2), flush=True)
+                emitted += 1
+                if watch and (not count or emitted < count):
+                    time.sleep(watch)
+            return 0
         if args.command=='flows':
             from flow_snapshot import snapshot as flow_snapshot
             print(json.dumps(flow_snapshot(args.limit),indent=None if args.json else 2))
@@ -183,6 +206,8 @@ def main():
         elif args.command == 'lab':
             if args.action == 'configure':
                 result = request('lab_configure', profile={name: getattr(args, name) for name in LAB_FIELDS})
+            elif args.action == 'up' and args.ingress_kbit is not None:
+                result = request('lab_up', ingress_kbit=args.ingress_kbit)
             else:
                 result = request('inspect' if args.action == 'inspect' else 'lab_' + args.action)
         else:

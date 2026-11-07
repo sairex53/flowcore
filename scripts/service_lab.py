@@ -1,6 +1,7 @@
 """Traffic control for disposable FLOWCORE-owned namespace interfaces."""
 from paths import BINDIR, RESULTS
 import json
+import os
 from benchmark import Lab, TC, run
 from network_state import snapshot, subscribe
 from service_config import CLASSES
@@ -53,14 +54,29 @@ class ServiceLab(Lab):
         with self.enter(index):
             return subscribe()
 
+    ingress = None
+    topology_dirty = False
+
     def validate(self):
+        self.identity = tuple((os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in self.namespace_fds)
         for index, (name, expected) in enumerate((('fc0', '10.203.0.1'), ('fc1', '10.203.0.2'))):
             links = {link['name']: link for link in self.network(index)['interfaces']}
             link = links.get(name, {})
-            if set(links) != {'lo', name} or not link.get('up') or link.get('mtu') != 1500:
+            expected_links = {'lo', name}
+            if index == 0 and self.ingress is not None:
+                expected_links.add(self.ingress.device)
+                if links.get(self.ingress.device, {}).get('kind') != 'ifb':
+                    raise RuntimeError('owned IFB link is unavailable')
+            if (set(links) != expected_links or link.get('kind') != 'veth'
+                    or not link.get('up') or link.get('mtu') != 1500):
                 raise RuntimeError('lab link validation failed')
-            if expected not in {address['address'] for address in link['addresses']}:
+            addresses = {address['address'] for address in link['addresses']}
+            if expected not in addresses:
                 raise RuntimeError('lab address validation failed')
+            if index == 0:
+                if link['index'] != getattr(self, 'sender_index', link['index']):
+                    raise RuntimeError('owned sender interface was replaced')
+                self.sender_index, self.sender_addresses = link['index'], addresses
 
     def install_policy(self, policy, profile):
         capacity = profile['bandwidth_kbit']
@@ -107,4 +123,6 @@ class ServiceLab(Lab):
         stats['traffic_classes'] = {name: by_handle[f'1:{minor}'] for name, minor in CLASSES.items()
                                     if f'1:{minor}' in by_handle}
         stats['link'] = json.loads(self.command(0, [BINDIR/'flowcore', '--link', 'fc0']))
+        if self.ingress is not None:
+            stats['ingress'] = self.ingress.readback(self)
         return stats
