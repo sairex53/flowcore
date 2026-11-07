@@ -58,6 +58,7 @@ See [APPLICATION_INTEGRATION.md](APPLICATION_INTEGRATION.md), [INTENT_API.md](IN
 |---|---|
 | Verified feature scope | [FEATURE_MATRIX.md](FEATURE_MATRIX.md) |
 | SLO incident investigation | [Causal diagnostics](CAUSAL_DIAGNOSTICS.md), [incident validation](DIAGNOSTIC_VALIDATION.md) |
+| Network allocation | [Policy optimizer](POLICY_OPTIMIZER.md), [optimization results](OPTIMIZATION_RESULTS.md) |
 | Current architecture | [NATIVE_CORE.md](NATIVE_CORE.md), [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
 | Deployment and troubleshooting | [DEPLOYMENT.md](DEPLOYMENT.md), [OPERATIONS.md](OPERATIONS.md), [RECOVERY.md](RECOVERY.md) |

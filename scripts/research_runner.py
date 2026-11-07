@@ -145,7 +145,7 @@ def counter_deltas(samples, field):
 
 def convergence(samples, history, transitions, m, start, mode):
     """Two nonoverlapping healthy critical windows at the same allocation after recovery."""
-    if mode not in ('threshold','slo'):
+    if mode not in ('threshold','slo','queue-aware','optimizer'):
         return None
     anchor = max([start, *(item['applied_ns']/NANO for item in transitions if not item.get('initial'))])
     width = m['controller']['window_seconds']

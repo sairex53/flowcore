@@ -395,9 +395,13 @@ class Controller:
         if algorithm not in policy_optimizer.ALGORITHMS:
             raise ValueError('unknown optimization algorithm')
         lab = self.service.lab
-        if not lab or self.policy()['scheduler'] != 'htb':
+        if not lab:
             return dict(dry_run=True,feasible=False,optimizer=dict(schema=1,stage='REJECTED',
                 conflicts=[dict(code='OWNED_HTB_REQUIRED')]))
+        scheduler = self.policy()['scheduler']
+        if scheduler != 'htb':
+            return dict(dry_run=True,feasible=False,optimizer=dict(schema=1,stage='REJECTED',
+                conflicts=[dict(code='UNSUPPORTED_SCHEDULER',scheduler=scheduler)]))
         try:
             lab.validate()
             current = adaptive_tc.read(lab,self.capacity(),self.policy())
@@ -456,11 +460,14 @@ class Controller:
         window = observer.window(began, seconds, complete=True)
         window_end = time.monotonic_ns()
         plan = self.qualify(self.plan(window, self.current))
+        planned = time.monotonic_ns()
         self.last_plan = plan
         if self.strategy in ('queue-aware','slo-aware','hybrid','predictive','optimizer') and plan['action'] == 'hold':
             self.record(result='hold', **plan)
+        journaled = time.monotonic_ns()
         self.timing = dict(time_ns=began, aggregation_ns=window_end-began,
-                           policy_ns=time.monotonic_ns()-window_end,
+                           policy_ns=journaled-window_end, planner_ns=planned-window_end,
+                           decision_record_ns=journaled-planned,
                            telemetry_age_ns=max(0, began-observer.sampled_ns),
                            attribution=plan['attribution'],feasible=plan.get('feasible',True))
         if self.strategy == 'optimizer' and not plan['feasible']:

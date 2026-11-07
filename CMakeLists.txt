@@ -260,3 +260,5 @@ install(FILES CAUSAL_DIAGNOSTICS.md INCIDENT_ENGINE.md DIAGNOSTIC_VALIDATION.md 
 
 add_test(NAME optimizer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/optimizer_test.py")
 set_tests_properties(optimizer_unit PROPERTIES ENVIRONMENT "FLOWCORE_TEST_OPTIMIZER=$<TARGET_FILE:flowcore_intelligence>")
+
+install(FILES POLICY_OPTIMIZER.md OPTIMIZER_TESTS.md OPTIMIZATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

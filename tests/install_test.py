@@ -29,11 +29,13 @@ def main():
         docs = prefix/'share/flowcore/docs'
         assert (docs/'LICENSE').read_bytes() == (ROOT/'LICENSE').read_bytes()
         assert (docs/'BOTTLENECK_ENGINE.md').is_file()
+        assert (docs/'POLICY_OPTIMIZER.md').is_file()
         manifest = [stage/line.lstrip('/') for line in (build/'install_manifest.txt').read_text().splitlines()]
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)
         cli,daemon = (prefix/'bin'/name for name in ('flowcore','flowcored'))
         assert command([cli,'--version']).strip()=='FLOWCORE 0.2.0'
-        assert ctypes.CDLL(str(prefix/'bin/libflowcore_intelligence.so')).flowcore_allocate
+        native = ctypes.CDLL(str(prefix/'bin/libflowcore_intelligence.so'))
+        assert native.flowcore_allocate and native.flowcore_optimize_v1
         command([sys.executable,'-I','-B','-c',
                  "import sys;sys.path.insert(0,sys.argv[1]);from predictive import Native;"
                  "rows=[dict(time_ns=(i+1)*10**9,backlog_bytes=0,departure_bps=1,capacity_bps=1000) for i in range(8)];"
@@ -68,6 +70,8 @@ def main():
                 bottleneck = json.loads(command([cli, 'bottleneck', 'inspect'], env=env))
                 assert bottleneck['scope'] == 'host_read_only' and bottleneck['schema'] == 1
                 assert json.loads(command([cli, 'diagnose'],env=env))['schema'] == 1
+                preview = json.loads(command([cli,'policy','optimize'],env=env))
+                assert preview['dry_run'] and preview['optimizer']['conflicts'][0]['code']=='OWNED_HTB_REQUIRED'
                 assert json.loads(command([cli, 'incident','list'],env=env))['incidents'] == []
                 denied = subprocess.run([cli,'lab','up'],env=env,capture_output=True,text=True,timeout=5)
                 assert denied.returncode==1 and 'forbidden' in denied.stderr

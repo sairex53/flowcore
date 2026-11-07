@@ -103,7 +103,8 @@ def plan(controller, window, current, objective, algorithm='adaptive', now=None,
                        conflicts=conflicts, excluded_requests=model['excluded'], static_fallback=fallback,
                        admitted_service_count=len(intents), service_minimums_kbit=model['claims'],
                        desired_total_kbit=sum(intent['desired_kbit'] for intent in intents.values()),
-                       alternatives={}, diff=[])
+                       floors_kbit=model['floors'], limits_kbit=model['maxima'],
+                       ceilings_kbit=model['class_ceiling'], alternatives={}, diff=[])
     detail = dict(previous=current, proposed=None, action='hold', feasible=not conflicts, pressure=pressure,
                   background_floor_kbit=model['floors']['background'],
                   background_throughput_kbit=bg/125 if bg is not None else None, objectives={}, attribution={},
@@ -135,6 +136,7 @@ def plan(controller, window, current, objective, algorithm='adaptive', now=None,
         target = {cls:(rate,model['class_ceiling'][cls]) for cls,(rate,_) in current.items()}
     if target != current:
         diagnostics.update(limiting_constraints=['authorized_class_bounds'],
+                           alternatives_deferred='reconcile_authorized_bounds_first',
                            diff=adaptive_tc.diff(current,target))
         return dict(detail, action='enforce_class_ceiling' if algorithm=='adaptive' else 'comparison_only',proposed=target)
 
@@ -173,7 +175,13 @@ def plan(controller, window, current, objective, algorithm='adaptive', now=None,
         return detail
     diagnostics['solver_and_bridge_ns'] = time.perf_counter_ns()-began
 
-    selected = diagnostics['alternatives'][algorithm]['rates_kbit']
+    selected_summary = diagnostics['alternatives'][algorithm]
+    for label, alternative in diagnostics['alternatives'].items():
+        alternative['score_minus_selected'] = alternative['surrogate_score']-selected_summary['surrogate_score']
+        if label != algorithm:
+            alternative['reason'] = ('static_fallback' if label == 'static' else
+                                     'alternative_allocation_outside_selected_strategy')
+    selected = selected_summary['rates_kbit']
     target = {cls:(rate,current[cls][1]) for cls,rate in selected.items()}
     limiting = [f'{cls}:rate_limit' for cls,row in rows.items() if selected[cls]==row['limit']]
     limiting += [f'{cls}:protected_floor' for cls,row in rows.items() if selected[cls]==row['floor']]

@@ -13,6 +13,7 @@ import adaptive_tc
 from adaptive import objective
 from daemon import Service
 from policy_optimizer import ALGORITHMS, CHURN, Solver, plan
+from research_runner import convergence
 from service_config import CLASSES, load
 
 NAMES = tuple(CLASSES)
@@ -122,6 +123,11 @@ class Optimizer(unittest.TestCase):
         control.registry.rows['two']['intent']['min_kbit'] = 1000
         active = plan(control,window,current,objective,now=now)
         self.assertTrue(active['feasible'])
+        with patch.object(self.solver,'solve',side_effect=OSError('unavailable')):
+            fallback = plan(control,window,current,objective,now=now)
+            self.assertEqual(fallback['action'],'hold')
+            self.assertEqual(fallback['optimizer']['stage'],'SOLVER_UNAVAILABLE')
+            self.assertEqual(fallback['optimizer']['static_fallback'],current)
         self.assertEqual(active['action'],'transfer_reservation')
         self.assertEqual(active['optimizer']['soft_target_overcommit_kbit'],12000)
         self.assertLess(active['proposed']['background'][0],6000)
@@ -135,6 +141,20 @@ class Optimizer(unittest.TestCase):
         denied = plan(control,window,current,objective,now=now)
         self.assertEqual(denied['optimizer']['conflicts'],[dict(code='UNAUTHORIZED_POLICY',service='one')])
         self.assertFalse(control.optimization_preview('adaptive')['feasible'])
+        service.lab, service.active = object(),'fair'
+        result = control.optimization_preview('adaptive')
+        self.assertEqual(result['optimizer']['conflicts'],[dict(code='UNSUPPORTED_SCHEDULER',scheduler='cake')])
+
+    def test_convergence_requires_two_healthy_unchanged_windows(self):
+        plan = {'controller':dict(window_seconds=2,minimum_samples=100,target_p99_ms=25)}
+        healthy = dict(application=dict(samples=120,p99_us=15000))
+        def sample(seconds, rate, pending=None):
+            return dict(time_ns=seconds*10**9,control_window={'critical':healthy},
+                        state=dict(mode='active',allocation={'critical':(rate,8000)},pending=pending,error=None))
+        samples = [sample(12,3000),sample(13,3000),sample(14,4000),
+                   sample(16,4000,pending=True),sample(18,4000),sample(20,4000)]
+        self.assertEqual(convergence(samples,[],[],plan,10,'optimizer'),10)
+        self.assertIsNone(convergence(samples[:-1],[],[],plan,10,'optimizer'))
 
     def test_transaction_preflight_compensation_and_drift(self):
         current = {name:(25,100) for name in NAMES}
