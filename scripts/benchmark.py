@@ -68,7 +68,7 @@ class Lab:
     @contextlib.contextmanager
     def enter(self, index):
         self.namespace_path(index)
-        with open('/proc/self/ns/net', 'rb') as previous:
+        with open('/proc/thread-self/ns/net', 'rb') as previous:
             os.setns(self.namespace_fds[index], os.CLONE_NEWNET)
             try:
                 yield
