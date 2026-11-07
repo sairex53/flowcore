@@ -66,3 +66,5 @@ See [APPLICATION_INTEGRATION.md](APPLICATION_INTEGRATION.md), [INTENT_API.md](IN
 | Engineering priorities | [OSS_ROADMAP.md](OSS_ROADMAP.md) |
 
 Historical result documents are retained for traceability. They are not independent reproductions. Complete local raw artifacts stay under results/ and are excluded from Git. No physical Linux machine has been validated in this review.
+
+For directional bottleneck evidence and the opt-in IFB lab, see [Bottleneck Intelligence Engine](BOTTLENECK_ENGINE.md) and [Directional QoS](DIRECTIONAL_QOS.md).

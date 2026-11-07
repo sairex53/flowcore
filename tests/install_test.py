@@ -26,6 +26,9 @@ def main():
         env = dict(os.environ,DESTDIR=str(stage),TMPDIR=str(work))
         command(['cmake','--install',build,'--prefix','/usr'],env=env)
         prefix = stage/'usr'
+        docs = prefix/'share/flowcore/docs'
+        assert (docs/'LICENSE').read_bytes() == (ROOT/'LICENSE').read_bytes()
+        assert (docs/'BOTTLENECK_ENGINE.md').is_file()
         manifest = [stage/line.lstrip('/') for line in (build/'install_manifest.txt').read_text().splitlines()]
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)
         cli,daemon = (prefix/'bin'/name for name in ('flowcore','flowcored'))
@@ -62,6 +65,8 @@ def main():
                            Path(f'/proc/{proc.pid}/status').read_text().splitlines() if line.startswith('CapEff:'))
                 result = json.loads(command([cli,'platform','interfaces'],env=env))
                 assert result['error'] is None and len(result['interfaces'])>=1
+                bottleneck = json.loads(command([cli, 'bottleneck', 'inspect'], env=env))
+                assert bottleneck['scope'] == 'host_read_only' and bottleneck['schema'] == 1
                 denied = subprocess.run([cli,'lab','up'],env=env,capture_output=True,text=True,timeout=5)
                 assert denied.returncode==1 and 'forbidden' in denied.stderr
                 with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as peer:

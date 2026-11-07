@@ -251,3 +251,5 @@ set_tests_properties(workload_legacy PROPERTIES TIMEOUT 15)
 
 add_test(NAME bottleneck_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/bottleneck_test.py")
 install(FILES LICENSE LICENSE.GPL-2.0 DESTINATION "${FLOWCORE_DATA}/docs")
+
+install(FILES BOTTLENECK_ENGINE.md DIRECTIONAL_QOS.md BOTTLENECK_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

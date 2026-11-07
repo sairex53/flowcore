@@ -1,8 +1,9 @@
 """Privileged end-to-end checks for lab admission, IFB and path diagnostics."""
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,39 @@ def call(env, *args, expected=0):
                             env=env, timeout=10)
     assert result.returncode == expected, result.stderr
     return result.stdout if expected == 0 else result.stderr
+
+
+def ipv6_counters(env, snapshot):
+    original = os.stat('/proc/self/ns/net')
+    with ExitStack() as stack:
+        original_ns = stack.enter_context(open('/proc/self/ns/net', 'rb'))
+        sockets = []
+        for holder in snapshot['namespaces']:
+            target = stack.enter_context(open(f'/proc/{holder}/ns/net', 'rb'))
+            private = os.fstat(target.fileno())
+            assert (private.st_dev, private.st_ino) != (original.st_dev, original.st_ino)
+            os.setns(target.fileno(), os.CLONE_NEWNET)
+            try:
+                sock = stack.enter_context(socket.socket(socket.AF_INET6))
+                sock.settimeout(2)
+                sockets.append(sock)
+            finally:
+                os.setns(original_ns.fileno(), os.CLONE_NEWNET)
+        client, server = sockets
+        server.bind(('fd42:203::2', 9000))
+        server.listen(1)
+        client.connect(server.getsockname())
+        peer = stack.enter_context(server.accept()[0])
+        peer.settimeout(2)
+        client.sendall(b'v6')
+        assert peer.recv(2, socket.MSG_WAITALL) == b'v6'
+        peer.sendall(b'ok')
+        assert client.recv(2, socket.MSG_WAITALL) == b'ok'
+        before = snapshot['tc']
+        after = json.loads(call(env, 'lab', 'inspect'))['tc']
+        for prior, current in ((before['traffic_classes'], after['traffic_classes']),
+                               (before['ingress']['classes'], after['ingress']['classes'])):
+            assert current['critical']['stats']['bytes'] > prior['critical']['stats']['bytes']
 
 
 def route_event(env, holder):
@@ -105,12 +139,13 @@ def main():
             assert json.loads(call(env, 'capacity', 'estimate'))['scope'] == 'owned_lab_sender'
             watch = call(env, 'bottleneck', 'watch', '--watch', '.1', '--count', '2')
             assert [json.loads(line)['schema'] for line in watch.splitlines()] == [1, 1]
+            ipv6_counters(env, current)
             route_event(env, current['namespaces'][0])
             call(env, 'lab', 'down')
             for pid in old['namespaces'] + current['namespaces']:
                 assert not Path(f'/proc/{pid}/ns/net').exists()
     assert host_identity() == original
-    print('PASS: monitor ACL, foreign ingress preserved, explicit IFB admission, independent rates, watch, routes and cleanup')
+    print('PASS: monitor ACL, foreign ingress preserved, explicit IFB admission, independent rates, IPv6 counters, watch, routes and cleanup')
 
 
 if __name__ == '__main__':
