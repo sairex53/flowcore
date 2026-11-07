@@ -27,6 +27,9 @@ jobs:
       - name: Unit and unprivileged loopback integration
         run: ctest --test-dir build --output-on-failure
 
+      - name: Staged installation and SDK consumer on x86_64
+        run: python3 -B tests/install_test.py
+
       - name: Native telemetry sanitizers on x86_64
         run: |
           uname -m
