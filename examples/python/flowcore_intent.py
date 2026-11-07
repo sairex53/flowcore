@@ -32,7 +32,9 @@ class Request:
 
 
 class Service:
-    def __init__(self,library,socket_path,name,priority=0):
+    def __init__(self, library, socket_path, name, priority=0, *,
+                 target_latency_us=30000, deadline_us=25000, desired_kbit=0,
+                 minimum_kbit=0, maximum_kbit=0, ttl_seconds=300):
         self.lib=c.CDLL(str(library))
         self.lib.fc_v2_open.argtypes=[c.c_char_p,c.POINTER(Options)]
         self.lib.fc_v2_open.restype=c.c_void_p
@@ -64,7 +66,16 @@ class Service:
         self.lib.fc_v2_last_error.restype=c.c_uint32
         self.lib.fc_v2_close.argtypes=[c.c_void_p]
         self.lib.fc_v2_error.restype=c.c_char_p
-        options=Options(2,c.sizeof(Options),name.encode(),priority,30000,25000,0,0,0,300,0,0)
+        values=(target_latency_us,deadline_us,desired_kbit,minimum_kbit,maximum_kbit,ttl_seconds)
+        if any(type(value) is not int or value<0 or value>600000000 for value in values):
+            raise ValueError('intent numeric field outside supported bounds')
+        if (not 0 < target_latency_us <= 600000000 or not 1 <= ttl_seconds <= 3600
+                or max(desired_kbit, minimum_kbit, maximum_kbit) > 1000000):
+            raise ValueError('intent numeric field outside supported bounds')
+        if maximum_kbit and (minimum_kbit>maximum_kbit or desired_kbit>maximum_kbit):
+            raise ValueError('throughput constraints conflict')
+        options=Options(2,c.sizeof(Options),name.encode(),priority,target_latency_us,deadline_us,
+                        desired_kbit,minimum_kbit,maximum_kbit,ttl_seconds,0,0)
         self.handle=self.lib.fc_v2_open(str(socket_path).encode(),c.byref(options))
         if not self.handle:
             raise ValueError(self.lib.fc_v2_error().decode())

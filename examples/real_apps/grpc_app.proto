@@ -1,0 +1,17 @@
+syntax = "proto3";
+package flowcore.realapps;
+
+service Application {
+  rpc Critical(CriticalRequest) returns (CriticalReply);
+}
+
+message CriticalRequest {
+  uint64 request_id = 1;
+  uint32 work_ms = 2;
+  uint32 response_bytes = 3;
+}
+
+message CriticalReply {
+  uint64 request_id = 1;
+  bytes payload = 2;
+}

@@ -217,6 +217,13 @@ add_executable(transport_native_test tests/transport_native.cpp)
 target_link_libraries(transport_native_test PRIVATE flowcore_sdk)
 add_test(NAME transport_native COMMAND transport_native_test)
 install(FILES TRANSPORT_AWARE.md QUIC_INTEGRATION.md TRANSPORT_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES REAL_APPLICATIONS.md GRPC_INTEGRATION.md DATABASE_INTEGRATION.md APPLICATION_BENCHMARKS.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
+install(DIRECTORY examples/real_apps DESTINATION "${FLOWCORE_DATA}/examples"
+    PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
+install(FILES examples/python/flowcore_intent.py DESTINATION "${FLOWCORE_DATA}/examples/python")
+add_test(NAME real_apps_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_apps_test.py")
+
 
 file(RELATIVE_PATH FLOWCORE_INTENT_FROM_DATA "${CMAKE_INSTALL_FULL_DATADIR}/flowcore" "${CMAKE_INSTALL_FULL_LIBDIR}/libflowcore_intent.so")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/intent-library" "${FLOWCORE_INTENT_FROM_DATA}
