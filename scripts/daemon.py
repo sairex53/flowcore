@@ -642,6 +642,7 @@ def main():
                                                         healthy=not (service.observer.errors or service.observer.truncated
                                                                      or service.inventory.error))
 
+                            service.incident.host_pressure()
                             inventory_tick = time.monotonic()
                             notify('WATCHDOG=1')
                         service.incident.tick()

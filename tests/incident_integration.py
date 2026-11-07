@@ -78,6 +78,8 @@ def main():
                 exported = call(env,'incident','export',incident['id'])
                 bundle_path.write_text(exported)
                 assert live == service
+                if Path('/proc/pressure/cpu').is_file():
+                    assert any(row['data'].get('source')=='system_psi_avg10' for row in live['timeline'])
                 assert 'unknown or expired' in call(env,'incident','inspect','../state',expected=1)
             finally:
                 proc.terminate()

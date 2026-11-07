@@ -160,7 +160,7 @@ class Controller:
         changed = self.current != target
         self.current = dict(target)
         if changed and (incident := getattr(self.service, 'incident', None)):
-            incident.policy_generation += 1
+            incident.policy(self.service.active,self.capacity(),self.current,timing['verified_ns'])
             incident.recorder.record('controller', timing['verified_ns'], result='kernel_verified',
                                      generation=incident.policy_generation, changed=True)
         self.service.poll_metrics()

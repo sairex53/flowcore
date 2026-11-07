@@ -56,16 +56,19 @@ class IncidentRuntime:
         self.scope_key = None
         self.last_network_sample = None
 
-    def policy(self, policy, capacity):
+    def policy(self, policy, capacity, allocation=None, stamp=None):
         self.policy_generation += 1
-        self.recorder.record('policy', time.monotonic_ns(), policy=policy, capacity=capacity,
-                             generation=self.policy_generation)
+        rates = {f'{field}_{name}':value for name,pair in (allocation or {}).items()
+                 for field,value in zip(('rate','ceil'),pair)}
+        self.recorder.record('policy', time.monotonic_ns() if stamp is None else stamp, policy=policy,
+                             capacity=capacity, generation=self.policy_generation, **rates)
 
     def decision(self, fields):
         result = fields['result']
         name = fields.get('service')
         self.recorder.record('controller', time.monotonic_ns(), name if isinstance(name,str) and NAME.fullmatch(name) else None,
-                             result=result, generation=self.policy_generation, comparable=fields.get('comparable'),
+                             result=result, action=fields.get('action'), strategy=self.service.controller.strategy,
+                             generation=self.policy_generation, comparable=fields.get('comparable'),
                              degraded=fields.get('degraded'), changed=False,
                              post_start_ns=fields.get('post_start_ns'), post_end_ns=fields.get('post_end_ns'))
 
@@ -85,6 +88,21 @@ class IncidentRuntime:
                                  memory_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024,
                                  source='daemon_cpu_and_peak_rss')
             self.cpu, self.stamp = cpu, stamp
+
+    def host_pressure(self):
+        pressure = {}
+        for name in ('cpu','memory','io'):
+            try:
+                with open('/proc/pressure/'+name, encoding='ascii') as stream:
+                    words = stream.readline(256).split()
+                if words[:1] == ['some'] and len(words) > 1 and words[1].startswith('avg10='):
+                    value = float(words[1][6:])
+                    if 0 <= value <= 100:
+                        pressure[name+'_stall_pct'] = value
+            except (OSError,ValueError):
+                continue
+        if pressure:
+            self.recorder.record('resource',time.monotonic_ns(),source='system_psi_avg10',**pressure)
 
     def request(self, *, service, traffic_class, stamp, start, outcome, duration, deadline, identity=None, cookie=None,
                 socket_identity=None, timings=None, protocol=None):

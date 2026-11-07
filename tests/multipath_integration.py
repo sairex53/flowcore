@@ -24,6 +24,12 @@ for event in trial['transitions']:
     assert event['kernel_state']['link_up'] is expected
     assert event['kernel_state']['peer_link_up'] is expected
     assert event['policy_decision']['status'] == 'applied'
+timeline = json.loads((Path(result['experiment'])/'r00-latency-preferred'/'causal-path-events.json').read_text())
+assert len(timeline) == len(trial['transitions'])
+for row, event in zip(timeline,trial['transitions']):
+    assert row['schema'] == 1 and row['kind'] == 'mptcp_path'
+    assert row['time_ns'] == event['kernel_confirmed_ns']
+    assert row['data']['up'] is (event['event'] == 'path-up')
 assert trial['namespace_disable_prevented_mptcp_socket']
 cleanup = json.loads((Path(result['experiment']) / 'r00-latency-preferred' / 'cleanup.json').read_text())
 assert not cleanup['errors'] and not cleanup['remaining_owned_endpoints']

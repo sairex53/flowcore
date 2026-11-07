@@ -20,15 +20,15 @@ FIELDS = {kind: set(fields.split()) for kind, fields in {
     'tcp': 'interface rtt_us min_rtt_us rttvar_us retransmits segments receiver_limited path_pressure coverage',
     'request': 'traffic_class request_ref start_ns outcome duration_us deadline_us socket_ref association cgroup_id netns_id interface interface_association observed_class sample_ns rtt_us min_rtt_us transport ' + ' '.join(STAGES),
     'interface': 'interface change up carrier',
-    'policy': 'policy capacity generation',
-    'controller': 'result generation changed comparable degraded post_start_ns post_end_ns',
-    'resource': 'cpu_pct memory_bytes source',
+    'policy': 'policy capacity generation rate_critical ceil_critical rate_interactive ceil_interactive rate_standard ceil_standard rate_background ceil_background',
+    'controller': 'result action strategy generation changed comparable degraded post_start_ns post_end_ns',
+    'resource': 'cpu_pct memory_bytes cpu_stall_pct memory_stall_pct io_stall_pct source',
     'mptcp_path': 'transport degraded error source path_id up',
     'fault': 'action status capacity link_up scheduled_ns',
     'quality': 'reason',
 }.items()}
 REQUIRED = {'window': {'end_ns'}, 'queue': {'interface','direction'}, 'request': {'start_ns','outcome','duration_us'}}
-STRINGS = set('traffic_class interface direction quality interface_association observed_class request_ref outcome socket_ref association transport change policy result source error action status reason'.split())
+STRINGS = set('traffic_class interface direction quality interface_association observed_class request_ref outcome socket_ref association transport change policy result strategy source error action status reason'.split())
 BOOLEANS = set('saturated owned receiver_limited path_pressure coverage up carrier changed comparable degraded link_up'.split())
 INTEGERS = set('end_ns attempts successes failures timeouts deadlines deadline_misses drops retransmits segments backlog start_ns sample_ns scheduled_ns post_start_ns post_end_ns cgroup_id netns_id event_evictions request_evictions generation memory_bytes path_id'.split())
 TOKEN = re.compile(r'[a-zA-Z0-9_.:-]{1,80}', re.ASCII)
@@ -251,7 +251,8 @@ class Recorder:
         row = self.record('window', stamp, service, end_ns=end_ns, event_evictions=self.event_evictions,
                           request_evictions=self.request_evictions, **detail)
         prior, active, clear = self.prior.get(service, (None,False,0))
-        if not prior or prior['data']['end_ns'] != end_ns-WINDOW:
+        if (not prior or prior['data']['end_ns'] != end_ns-WINDOW
+                or any(prior['data'].get(key) != detail.get(key) for key in ('traffic_class','target_us'))):
             prior, active, clear = None, False, 0
         triggered = signals(row['data'], metrics(prior))
         if triggered and not active:

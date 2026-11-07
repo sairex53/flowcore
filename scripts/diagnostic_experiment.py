@@ -45,50 +45,86 @@ def exact(sock, size):
     return data
 
 
-def peer_loop(sock, stop, processing):
-    sock.settimeout(.5)
+def peer_loop(sock, listener, stop, processing):
     while not stop.is_set():
+        if sock is None:
+            try:
+                sock, _ = listener.accept()
+            except TimeoutError:
+                continue
+            sock.settimeout(.5)
+            sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
         try:
             exact(sock, len(REQUEST))
-        except TimeoutError:
-            continue
-        except EOFError:
-            return
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
-        started = time.monotonic_ns()
-        if processing.is_set():
-            time.sleep(.021)
-        duration = (time.monotonic_ns()-started)/1000
-        sock.sendall(REPLY[:-8]+int(duration).to_bytes(8,'big'))
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+            started = time.monotonic_ns()
+            if processing.is_set():
+                time.sleep(.021)
+            duration = (time.monotonic_ns()-started)/1000
+            sock.sendall(REPLY[:-8]+int(duration).to_bytes(8,'big'))
+        except (EOFError,OSError):
+            sock.close()
+            sock = None
+    if sock is not None:
+        sock.close()
 
 
-def probe(sock, stop, samples, planned, identity):
-    sock.settimeout(.35)
+def client_socket(lab, listener, timeout):
+    with lab.enter(0):
+        client = socket.socket()
+    try:
+        client.settimeout(timeout)
+        client.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        client.connect(listener.getsockname())
+        return client
+    except BaseException:
+        client.close()
+        raise
+
+
+def socket_identity(sock):
+    local, peer = sock.getsockname(), sock.getpeername()
+    cookie = int.from_bytes(sock.getsockopt(socket.SOL_SOCKET,57,8),os.sys.byteorder)
+    return cookie, (sock.family,local[0],local[1],peer[0],peer[1])
+
+
+def probe(sock, lab, listener, stop, samples, planned, worker):
     deadline = time.monotonic()
-    while not stop.is_set():
-        deadline += PERIOD
-        if stop.wait(max(0,deadline-time.monotonic())):
-            return
-        if time.monotonic()-deadline >= PERIOD:
-            planned.append(deadline)
-            continue
-        start = time.monotonic_ns()
-        outcome = 'ok'
-        processing = None
-        try:
-            sock.sendall(REQUEST)
-            response = exact(sock,len(REPLY))
-            processing = int.from_bytes(response[-8:],'big')
-        except TimeoutError:
-            outcome = 'timeout'
-        except (OSError, EOFError):
-            outcome = 'failure'
-        end = time.monotonic_ns()
-        samples.put_nowait(dict(connection=identity,start=start,stamp=end,outcome=outcome,duration=(end-start)/1000,processing=processing))
-        if outcome != 'ok':
-            # A failed stream cannot be safely reused without framing recovery.
-            # Missing future offered slots are tracked separately.
-            return
+    association = socket_identity(sock)
+    try:
+        while not stop.is_set():
+            deadline += PERIOD
+            if stop.wait(max(0,deadline-time.monotonic())):
+                return
+            if time.monotonic()-deadline >= PERIOD:
+                planned.append(deadline)
+                continue
+            start = time.monotonic_ns()
+            outcome = 'ok'
+            processing = None
+            reconnected = sock is None
+            try:
+                if reconnected:
+                    sock = client_socket(lab,listener,.35)
+                    association = socket_identity(sock)
+                sock.settimeout(.35)
+                sock.sendall(REQUEST)
+                response = exact(sock,len(REPLY))
+                processing = int.from_bytes(response[-8:],'big')
+            except TimeoutError:
+                outcome = 'timeout'
+            except (OSError, EOFError):
+                outcome = 'failure'
+            end = time.monotonic_ns()
+            samples.put_nowait(dict(connection=worker,start=start,stamp=end,outcome=outcome,duration=(end-start)/1000,
+                                    processing=processing,association=association,reconnected=reconnected))
+            if outcome != 'ok':
+                if sock is not None:
+                    sock.close()
+                sock, association = None, (None,None)
+    finally:
+        if sock is not None:
+            sock.close()
 
 
 def socket_pairs(lab, stack, port, count):
@@ -99,16 +135,14 @@ def socket_pairs(lab, stack, port, count):
         listener.settimeout(2)
     pairs = []
     for _ in range(count):
-        with lab.enter(0):
-            client = stack.enter_context(socket.socket())
-            client.settimeout(2)
-        client.connect(listener.getsockname())
+        client = stack.enter_context(client_socket(lab,listener,2))
         peer = stack.enter_context(listener.accept()[0])
         for sock in (client,peer):
-            sock.settimeout(.25)
+            sock.settimeout(.5)
             sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
         pairs.append((client,peer))
-    return pairs
+    listener.settimeout(.5)
+    return listener, pairs
 
 
 def bulk(sock, stop, demand):
@@ -160,20 +194,16 @@ def trial(directory, case, variant):
         # The sender and receiver kernel states are collected on the same local
         # monotonic clock. Peer-reported processing duration is an explicit span.
         with ExitStack() as stack, ThreadPoolExecutor(max_workers=20) as pool:
-            pairs = socket_pairs(lab,stack,9000,9 if case == 'queue' else 8)
+            listener, pairs = socket_pairs(lab,stack,9000,9 if case == 'queue' else 8)
             probes, bulk_pairs = pairs[:8], pairs[8:]
             if case == 'queue':
-                bulk_pairs += socket_pairs(lab,stack,9001,1)
+                bulk_pairs += socket_pairs(lab,stack,9001,1)[1]
             futures = []
             for source,sink in bulk_pairs:
                 futures.extend((pool.submit(bulk,source,stop,demand),pool.submit(receive,stop,sink)))
-            identities = []
             for index,(client,server) in enumerate(probes):
-                local, peer = client.getsockname(), client.getpeername()
-                identities.append((int.from_bytes(client.getsockopt(socket.SOL_SOCKET,57,8),os.sys.byteorder),
-                                   (client.family,local[0],local[1],peer[0],peer[1])))
-                futures.extend((pool.submit(probe,client,stop,raw,planned,index),
-                                pool.submit(peer_loop,server,stop,processing)))
+                futures.extend((pool.submit(probe,client,lab,listener,stop,raw,planned,index),
+                                pool.submit(peer_loop,server,listener,stop,processing)))
             anchor = ((time.monotonic_ns()+NS)//WINDOW+1)*WINDOW
             service.incident.last_window = anchor
             last = last_seq = 0
@@ -219,6 +249,7 @@ def trial(directory, case, variant):
                             row = raw.get_nowait()
                         except Empty:
                             break
+                        association = row.pop('association')
                         app.append(row)
                         if row['stamp'] < anchor:
                             continue
@@ -229,7 +260,7 @@ def trial(directory, case, variant):
                                                      completed_ns=row['stamp'],duration_us=row['duration'],deadline_ms=15),
                                                 os.getuid(),record=False)
                         base_cpu = time.thread_time_ns()
-                        cookie, identity = identities[row['connection']] if case != 'opaque' else (None,None)
+                        cookie, identity = association if case != 'opaque' else (None,None)
                         service.incident.request(service='demo',traffic_class='critical',deadline=DEADLINE_US,timings=stage,
                             cookie=cookie,socket_identity=identity,protocol='tcp',identity=f"{row['connection']}:{row['start']}",
                             **{key:row[key] for key in ('stamp','start','outcome','duration')})
@@ -264,7 +295,8 @@ def trial(directory, case, variant):
                     future.result(timeout=3)
         summary = dict(case=case, variant=variant, anchor_ns=anchor, expected=CASES[case], interventions=interventions,
                        attempted=sum(anchor <= row['stamp'] < anchor+4*WINDOW for row in app),
-                       skipped_slots=len(planned), final_tc=lab.counters(),
+                       skipped_slots=len(planned), reconnect_attempts=sum(row['reconnected'] for row in app),
+                       final_tc=lab.counters(),
                        adapter_request_cpu_ns=dict(p50=statistics.median(cpu),p99=percentile(cpu,.99)),
                        observer_request_cpu_ns=dict(p50=statistics.median(baseline_cpu),p99=percentile(baseline_cpu,.99)),
                        sample_and_tick_cpu_ns=dict(p50=statistics.median(collection_cpu),p99=percentile(collection_cpu,.99)))
