@@ -34,15 +34,15 @@ Evidence: /home/elliot/projects/flowcore/results/review-primary-1794013173664498
 
 ### Paired effects
 
-- hybrid: overall P99 median relative regression 16.037%; gate INCONCLUSIVE; simultaneous interval {'low': 0.03360955223800179, 'high': 0.3408810723832358, 'coverage': 0.998046875}.
-  Critical P99 median paired effect 19.352%; exploratory interval {'low': 7.5698670156146175, 'high': 24.92978463620057, 'coverage': 0.978515625}.
-- queue-aware: overall P99 median relative regression 15.301%; gate INCONCLUSIVE; simultaneous interval {'low': 0.01469432854843248, 'high': 0.2699175914052256, 'coverage': 0.998046875}.
-  Critical P99 median paired effect 16.757%; exploratory interval {'low': 7.033380921150423, 'high': 21.218897740929886, 'coverage': 0.978515625}.
-- predictive: overall P99 median relative regression 13.861%; gate INCONCLUSIVE; simultaneous interval {'low': 0.069716180179356, 'high': 0.23299609814256148, 'coverage': 0.998046875}.
-  Critical P99 median paired effect 15.011%; exploratory interval {'low': 10.3197156922481, 'high': 23.27908575428168, 'coverage': 0.978515625}.
-- predictive-shadow: overall P99 median relative regression 15.373%; gate INCONCLUSIVE; simultaneous interval {'low': 0.060742396285317406, 'high': 3.213206520466899, 'coverage': 0.998046875}.
-  Critical P99 median paired effect 17.290%; exploratory interval {'low': 7.21730096289912, 'high': 116.70445098915665, 'coverage': 0.978515625}.
-- predictive_vs_shadow: {"overall_p99_percent_effect": {"n": 10, "median": -1.2055847161001387, "minimum": -70.73497128249191, "maximum": 6.62500245049189, "median_ci_95": {"low": -52.09830657647758, "high": 6.288319461738889, "coverage": 0.978515625}}, "qualification": "zero-action series cannot identify the benefit of dynamic actuation"}
+- hybrid: overall P99 median relative regression 16.037%; gate INCONCLUSIVE; simultaneous interval 3.361% to 34.088% (coverage 0.998047).
+  Critical P99 median paired effect 19.352%; exploratory interval 7.570% to 24.930% (coverage 0.978516).
+- queue-aware: overall P99 median relative regression 15.301%; gate INCONCLUSIVE; simultaneous interval 1.469% to 26.992% (coverage 0.998047).
+  Critical P99 median paired effect 16.757%; exploratory interval 7.033% to 21.219% (coverage 0.978516).
+- predictive: overall P99 median relative regression 13.861%; gate INCONCLUSIVE; simultaneous interval 6.972% to 23.300% (coverage 0.998047).
+  Critical P99 median paired effect 15.011%; exploratory interval 10.320% to 23.279% (coverage 0.978516).
+- predictive-shadow: overall P99 median relative regression 15.373%; gate INCONCLUSIVE; simultaneous interval 6.074% to 321.321% (coverage 0.998047).
+  Critical P99 median paired effect 17.290%; exploratory interval 7.217% to 116.704% (coverage 0.978516).
+- predictive_vs_shadow: median paired P99 effect -1.206%; interval -52.098% to 6.288% (coverage 0.978516); zero-action series cannot identify the benefit of dynamic actuation.
 
 ## baselines
 
@@ -66,12 +66,12 @@ Evidence: /home/elliot/projects/flowcore/results/review-baselines-17940140944721
 
 ### Paired effects
 
-- fifo: overall P99 median relative regression 500.152%; gate INCONCLUSIVE; simultaneous interval None.
-  Critical P99 median paired effect 518.291%; exploratory interval None.
-- fq_codel: overall P99 median relative regression 126.361%; gate INCONCLUSIVE; simultaneous interval None.
-  Critical P99 median paired effect 128.177%; exploratory interval None.
-- cake: overall P99 median relative regression 84.126%; gate INCONCLUSIVE; simultaneous interval None.
-  Critical P99 median paired effect 90.994%; exploratory interval None.
+- fifo: overall P99 median relative regression 500.152%; gate INCONCLUSIVE; simultaneous interval unavailable: insufficient independent runs.
+  Critical P99 median paired effect 518.291%; exploratory interval unavailable: insufficient independent runs.
+- fq_codel: overall P99 median relative regression 126.361%; gate INCONCLUSIVE; simultaneous interval unavailable: insufficient independent runs.
+  Critical P99 median paired effect 128.177%; exploratory interval unavailable: insufficient independent runs.
+- cake: overall P99 median relative regression 84.126%; gate INCONCLUSIVE; simultaneous interval unavailable: insufficient independent runs.
+  Critical P99 median paired effect 90.994%; exploratory interval unavailable: insufficient independent runs.
 
 ## low
 
@@ -95,12 +95,12 @@ Evidence: /home/elliot/projects/flowcore/results/review-low-1794014196307277881
 
 ### Paired effects
 
-- hybrid: overall P99 median relative regression -2.095%; gate INCONCLUSIVE; simultaneous interval None.
-  Critical P99 median paired effect 0.468%; exploratory interval None.
-- queue-aware: overall P99 median relative regression -4.667%; gate INCONCLUSIVE; simultaneous interval None.
-  Critical P99 median paired effect -13.507%; exploratory interval None.
-- predictive: overall P99 median relative regression 2.983%; gate INCONCLUSIVE; simultaneous interval None.
-  Critical P99 median paired effect -14.963%; exploratory interval None.
+- hybrid: overall P99 median relative regression -2.095%; gate INCONCLUSIVE; simultaneous interval unavailable: insufficient independent runs.
+  Critical P99 median paired effect 0.468%; exploratory interval unavailable: insufficient independent runs.
+- queue-aware: overall P99 median relative regression -4.667%; gate INCONCLUSIVE; simultaneous interval unavailable: insufficient independent runs.
+  Critical P99 median paired effect -13.507%; exploratory interval unavailable: insufficient independent runs.
+- predictive: overall P99 median relative regression 2.983%; gate INCONCLUSIVE; simultaneous interval unavailable: insufficient independent runs.
+  Critical P99 median paired effect -14.963%; exploratory interval unavailable: insufficient independent runs.
 
 ## linux_default
 
@@ -123,7 +123,7 @@ The primary held-out series has 50 valid runs and 88,000 offered requests, with 
 
 There were **zero policy adjustments in every primary run**. Decision records show critical-class borrowing and no observed critical backlog despite link saturation. Holding the policy is consistent with requiring network evidence before acting on application latency; it is not evidence that proactive allocation works. Static used a pilot-selected 40% critical guarantee; other modes started at 30%. Initial allocations and controller/reporting overhead confound a pure dynamic-action comparison. Predictive versus shadow also has zero actions, so their comparison cannot identify an actuation benefit. Do not tune against these evaluation seeds.
 
-Low-load hybrid and queue-aware point effects are favorable (−2.095% and −4.667% paired overall P99), while predictive is unfavorable (+2.983%). Three repetitions cannot supply the required uncertainty; all are INCONCLUSIVE. Zero actions also prevent attributing those favorable points to control. FIFO/fq_codel/CAKE/static rows use the same shaped 5 Mbps scenario; they are exploratory three-run evidence, separate from the 12 Mbps primary. Linux-default is explicitly unshaped/unimpaired with no background traffic: its P99 is context, not a capacity-matched congestion superiority comparison.
+Low-load hybrid and queue-aware point effects are favorable (−2.095% and −4.667% paired overall P99), while predictive is unfavorable (+2.983%). Three repetitions cannot supply the required uncertainty; all are INCONCLUSIVE. Zero actions also prevent attributing those favorable points to control. FIFO and fq_codel use a single-class HTB shaper with the named leaf; CAKE uses its own shaper; static uses differentiated HTB classes with fq_codel leaves. Those rows use the same shaped 5 Mbps scenario; they are exploratory three-run evidence, separate from the 12 Mbps primary. Linux-default is explicitly unshaped/unimpaired with no background traffic: its P99 is context, not a capacity-matched congestion superiority comparison.
 
 ### Configured versus observed network
 
@@ -223,3 +223,7 @@ python3 -B packaging/review-results.py results/release-review-<id>/index.json bu
 The evaluation data source is commit 7e801a6de4f1e4438e243d8f22e8b2aae0f26c8b, clean at start. Later review fixes concern admission/readback, tests, packaging and release documentation; no new evaluation fitting was performed. config/release-evidence.json records hashes of retained summary/index/plan artifacts, not a substitute for full raw data. The local primary index is results/release-review-1794013063206910777/index.json. It covers 77 evaluation runs plus six pilot runs. Raw request CSV, per-run JSON, topology/kernel readbacks, decision histories, host snapshots and generated CSV/HTML remain under the indexed result directories. Supplemental paths are recorded in the evidence index and release readiness.
 
 Full raw artifacts are preserved locally and excluded from Git per repository policy. A reviewed public evidence bundle is still pending; current hashes and reproduction commands are useful but do not make the existing raw data publicly accessible. Performance/reproducibility release gates remain PARTIAL.
+
+## Separately preregistered same-allocation check
+
+After the primary review exposed the initial-allocation confound, scenarios/review-same-allocation.json freezes 10 new paired repetitions of static30 versus hybrid, seed 2406113917, with the identical 16-second primary workload/network and matching 30% critical/30% background initial guarantees. This is a follow-up causal check, not an amendment to the primary endpoint or a re-selection of policies. Block seeds are disjoint from every prior pilot/evaluation group. No parameter fitting on this dataset is permitted. The existing 10% P99/failure/deadline/goodput gates are unchanged. Results are appended only after execution; no benefit is presumed.

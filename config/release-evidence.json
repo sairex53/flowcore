@@ -68,6 +68,16 @@
       "path": "results/deployment-systemd-1794015671180026521.json",
       "bytes": 2347,
       "sha256": "42517a345dcae67e73f4cd558cb966269f4a27fa0795890f1c5d53c01bd489f3"
+    },
+    {
+      "path": "results/release-scale-1794013003494455224/summary.json",
+      "bytes": 1864,
+      "sha256": "427b31e87f280f428b722874c4321bfd540791c90743d5816a49391d6029deca"
+    },
+    {
+      "path": "results/workloads-1794015909711438153/summary.json",
+      "bytes": 4086,
+      "sha256": "788d788f0661972494022465daeb697a13acbdee5cd8df90166fc9f8bdce4cab"
     }
   ]
 }

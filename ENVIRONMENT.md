@@ -12,7 +12,7 @@ Historical initial-MVP capability snapshot. Fresh review runs record kernel, arc
 | Build tool | CMake 4.3.0, Ninja |
 | iproute | 7.0.0-2.fc45 |
 | tc | Fedora iproute-tc 7.0.0-2.fc45, locally extracted under tools |
-| RPM integrity | rpm -K reports digests and signatures OK |
+| RPM integrity | Historical Fedora tc tool package signature/digest check; FLOWCORE evaluation RPM is unsigned |
 | Namespace lifecycle | unshare/namespace-holder PIDs/nsenter verified |
 | veth and MTU | two endpoints created and raised at MTU 1500 |
 | Offloads | TSO/GSO/GRO disabled on both endpoints, flags archived |

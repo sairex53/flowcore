@@ -79,6 +79,11 @@ def analyze(index):
 def fmt(value,digits=3):
     return 'N/A' if value is None else f'{value:.{digits}f}'
 
+def effect_interval(interval,scale=1):
+    if interval is None:
+        return 'unavailable: insufficient independent runs'
+    return f"{interval['low']*scale:.3f}% to {interval['high']*scale:.3f}% (coverage {interval['coverage']:.6f})"
+
 def render(data):
     lines=['# Independent benchmark report','',
       'Maintainer-run reproduction on Fedora 45 ARM64/QEMU. No external reviewer or physical system participated.',
@@ -110,12 +115,13 @@ def render(data):
             lines.extend(['','### Paired effects',''])
             for mode,effect in group['effects'].items():
                 if 'gate' not in effect:
-                    lines.append(f"- {mode}: {json.dumps(effect)}")
+                    metric=effect['overall_p99_percent_effect']
+                    lines.append(f"- {mode}: median paired P99 effect {fmt(metric['median'])}%; interval {effect_interval(metric['median_ci_95'])}; {effect['qualification']}.")
                     continue
                 finding=next(f for f in effect['gate']['findings'] if f['metric']=='p99_ms')
-                lines.append(f"- {mode}: overall P99 median relative regression {fmt((finding['median_regression'] or 0)*100)}%; gate {effect['gate']['outcome']}; simultaneous interval {finding['simultaneous_median_ci']}.")
+                lines.append(f"- {mode}: overall P99 median relative regression {fmt(finding['median_regression']*100 if finding['median_regression'] is not None else None)}%; gate {effect['gate']['outcome']}; simultaneous interval {effect_interval(finding['simultaneous_median_ci'],100)}.")
                 critical_effect=effect['critical_p99_percent_effect']
-                lines.append(f"  Critical P99 median paired effect {fmt(critical_effect['median'])}%; exploratory interval {critical_effect['median_ci_95']}.")
+                lines.append(f"  Critical P99 median paired effect {fmt(critical_effect['median'])}%; exploratory interval {effect_interval(critical_effect['median_ci_95'])}.")
         lines.append('')
     return '\n'.join(lines)+'\n'
 
