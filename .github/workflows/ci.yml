@@ -30,5 +30,5 @@ jobs:
         run: |
           uname -m
           cmake -S . -B build-sanitize -DFLOWCORE_BPF=OFF -DFLOWCORE_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build-sanitize --target telemetry_native_test
-          ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build-sanitize -R '^telemetry_native$' --output-on-failure
+          cmake --build build-sanitize --target telemetry_native_test sdk_lifetime_test intent_parser_test
+          ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build-sanitize -R '^(telemetry_native|sdk_lifetime|intent_parser)$' --output-on-failure

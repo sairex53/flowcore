@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "pilot_seed": 310147,
+  "evaluation_seed": 1511506147,
+  "low_seed": 95115431,
+  "baselines_seed": 78201491,
+  "linux_seed": 2014771,
+  "pilot_repetitions": 2,
+  "evaluation_repetitions": 10,
+  "exploratory_repetitions": 3,
+  "primary_modes": ["static", "hybrid", "queue-aware", "predictive", "predictive-shadow"],
+  "baseline_modes": ["fifo", "fq_codel", "cake", "static"],
+  "selection": "lowest pilot median failure_ratio, then successful-request P99, then highest background goodput",
+  "constraints": "no evaluation fitting; all manifests and seeds recorded before pilot; background minimum retained"
+}

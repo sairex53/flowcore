@@ -187,7 +187,7 @@ add_test(NAME workload_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_
 
 install(FILES WORKLOAD_NETWORKING.md CONTAINER_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
 
-option(FLOWCORE_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer for native telemetry" OFF)
+option(FLOWCORE_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer for native telemetry and SDK test paths" OFF)
 add_library(flowcore_telemetry SHARED src/telemetry.cpp)
 target_include_directories(flowcore_telemetry PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -228,3 +228,14 @@ install(FILES examples/python/flowcore_intent.py examples/python/quic_adapter.py
 install(FILES packaging/flowcore-monitor.service DESTINATION lib/systemd/system)
 add_test(NAME deployment_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deployment_test.py")
 install(FILES DEPLOYMENT.md OPERATIONS.md RECOVERY.md RELEASE_VALIDATION.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_executable(sdk_lifetime_test tests/sdk_lifetime.cpp)
+target_link_libraries(sdk_lifetime_test PRIVATE flowcore_sdk)
+add_test(NAME sdk_lifetime COMMAND sdk_lifetime_test)
+if(FLOWCORE_SANITIZE)
+    target_compile_options(flowcore_sdk PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(flowcore_sdk INTERFACE -fsanitize=address,undefined)
+    foreach(target sdk_lifetime_test intent_parser_test)
+        target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    endforeach()
+endif()
