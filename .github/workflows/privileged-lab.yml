@@ -34,6 +34,7 @@ jobs:
           sudo -n python3 -B tests/incident_integration.py
           sudo -n python3 -B tests/optimizer_integration.py
           sudo -n python3 -B tests/safety_integration.py
+          sudo -n python3 -B tests/multipath_integration.py
           sudo -n ./build/flowcore bench suite --quick
       - name: Optional isolated namespace soak
         if: ${{ inputs.run_soak }}

@@ -2,11 +2,13 @@
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from multipath import experiment
+from multipath import add_owned_endpoint, endpoint, experiment, remove_owned_endpoint, set_endpoint_backup
+from service_lab import ServiceLab
 
 if os.geteuid() != 0:
     raise SystemExit('Run as root: creates disposable network namespaces')
@@ -33,5 +35,28 @@ for row, event in zip(timeline,trial['transitions']):
 assert trial['namespace_disable_prevented_mptcp_socket']
 cleanup = json.loads((Path(result['experiment']) / 'r00-latency-preferred' / 'cleanup.json').read_text())
 assert not cleanup['errors'] and not cleanup['remaining_owned_endpoints']
+with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='mptcp-reuse-') as tmp:
+    lab = ServiceLab(Path(tmp))
+    try:
+        lab.start()
+        ledger = {}
+        path = dict(id=7,server_address='10.203.0.2',server_interface='fc1')
+        add_owned_endpoint(lab,path,ledger)
+        lab.command(1,['ip','mptcp','endpoint','delete','id','7'])
+        lab.command(1,['ip','addr','add','198.18.0.1/32','dev','fc1'])
+        lab.command(1,['ip','mptcp','endpoint','add','198.18.0.1','dev','fc1','id','7','signal'])
+        foreign = endpoint(lab,7)
+        for change in (lambda lease:set_endpoint_backup(lab,path,True,lease),
+                       lambda lease:remove_owned_endpoint(lab,7,lease)):
+            lease = dict(ledger)
+            try:
+                change(lease)
+            except RuntimeError as error:
+                assert 'ownership drift' in str(error)
+            else:
+                raise AssertionError('reused endpoint ID was accepted')
+            assert not lease and endpoint(lab,7)==foreign
+    finally:
+        lab.close()
 print(json.dumps(dict(experiment=result['experiment'],status='PASS',
                      p99_ms=trial['p99_ms'],failed=trial['failed'])))
