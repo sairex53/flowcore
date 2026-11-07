@@ -17,7 +17,8 @@ jobs:
       - name: Formatting and syntax
         run: |
           python3 -B scripts/check_style.py
-          python3 -m compileall -q scripts tests
+          python3 -m compileall -q scripts tests packaging
+          python3 -B packaging/check-docs.py
       - name: Python static analysis
         run: |
           python3 -m venv build/analysis

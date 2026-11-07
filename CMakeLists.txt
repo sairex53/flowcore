@@ -239,3 +239,9 @@ if(FLOWCORE_SANITIZE)
         target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     endforeach()
 endif()
+
+add_test(NAME release_gate COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_gate_test.py")
+add_test(NAME documentation_links COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/packaging/check-docs.py")
+install(FILES API.md FEATURE_MATRIX.md RELEASE_READINESS.md BENCHMARK_REPORT.md
+    OSS_ROADMAP.md REVIEW_FINDINGS.md CONTRIBUTING.md CHANGELOG.md
+    DESTINATION "${FLOWCORE_DATA}/docs")

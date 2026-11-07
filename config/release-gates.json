@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "scope": "experimental source candidate",
+  "license_approved": false,
+  "production_ready": false,
+  "gates": {
+    "functional": "PARTIAL",
+    "security": "PARTIAL",
+    "performance_evidence": "UNVERIFIED",
+    "reproducibility": "PARTIAL",
+    "portability": "PARTIAL",
+    "documentation": "PARTIAL",
+    "packaging": "PARTIAL"
+  }
+}

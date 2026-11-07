@@ -1,6 +1,6 @@
 # Machine validation
 
-Observed during this session on the target machine.
+Historical initial-MVP capability snapshot. Fresh review runs record kernel, architecture, source/build hashes and virtualization per experiment; see BENCHMARK_REPORT.md. The current target reports QEMU virtualization.
 
 | Capability | Observed result |
 |---|---|
@@ -28,9 +28,7 @@ CONFIG_NET_SCH_CAKE=m and CONFIG_NET_CLS_FLOWER=m. The successful lab operations
 establish availability beyond config declarations. Standard kernel modules may
 autoload when tc/ip requests their functions.
 
-CONFIG_BPF_SYSCALL=y and CONFIG_CGROUP_BPF=y are present. This project has no BPF
-program or BPF attachment. tc links the distribution libbpf shared library.
-The current measurements need application clocks and ordinary queue statistics.
+CONFIG_BPF_SYSCALL=y and CONFIG_CGROUP_BPF=y were present in the initial snapshot. The current project includes optional libbpf/CO-RE observer and TCX flow programs. Fresh kernel attachment, export and packet-fixture checks are described in FEATURE_MATRIX.md; compile-time flags alone do not prove attachment support.
 
 All benchmark topology is created within fresh anonymous namespaces. The host's
 existing interfaces and qdiscs are outside the experiment. Setup requires sudo.

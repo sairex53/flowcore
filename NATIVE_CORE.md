@@ -48,7 +48,7 @@ Priorities after this migration: quantify repeated tc subprocess cost; implement
 
 The flowcore_telemetry target is exported as flowcore::telemetry with the SDK's CMake package. Header installation supports direct C++23 reuse. Its shared library follows the existing native intelligence loader convention under the binary directory; a broader FHS library-path migration remains separate work.
 
-CMake option FLOWCORE_SANITIZE enables ASan/UBSan on the telemetry library and native test only. Existing BPF enablement stays independent. Sanitized shared objects are tested through a sanitized executable, rather than loaded into an unsanitized Python process.
+CMake option FLOWCORE_SANITIZE enables ASan/UBSan on the telemetry library and selected SDK/native test paths. The independent review added bounded offline SDK lifetime/concurrency and parser checks; this does not sanitize the entire Python-hosted runtime. Existing BPF enablement stays independent. Sanitized shared objects are tested through a sanitized executable, rather than loaded into an unsanitized Python process.
 
 ```sh
 cmake -S . -B build && cmake --build build -j2

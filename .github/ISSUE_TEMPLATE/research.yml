@@ -1,0 +1,19 @@
+name: Research or feature proposal
+description: A scoped capability or reproducible transport/control question
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Workload and measurable objective
+    validations:
+      required: true
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baselines and proposed experiment
+      description: Capacity, traffic direction, request/error/deadline accounting, repetitions and uncertainty
+  - type: textarea
+    id: scope
+    attributes:
+      label: Privileges, ownership and supported APIs
+      description: Identify kernel/library requirements and what is application-reported

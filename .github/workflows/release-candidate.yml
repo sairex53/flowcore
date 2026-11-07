@@ -1,0 +1,36 @@
+name: Release candidate gate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  candidate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build and validate source candidate
+        run: |
+          cmake -S . -B build -G Ninja -DFLOWCORE_BPF=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure
+          python3 -B packaging/check-docs.py
+      - name: Enforce owner license and release gates
+        run: python3 -B packaging/release-gate.py --enforce > build/release-gate.json
+      - name: Source archive with digest
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          ./packaging/source-archive.sh
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: gated-source-candidate
+          path: build/release/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-gate-report
+          path: build/release-gate.json

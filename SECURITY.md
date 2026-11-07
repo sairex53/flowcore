@@ -69,3 +69,24 @@ still explicitly privileged test runners.
 ## Controlled deployment review
 
 The read-only monitoring boundary is retained. Deployment operations do not add host network authority. Configuration reload is limited to log and sampling timing; checkpoint recovery never replays kernel object IDs or reactivates controllers. Private state uses validated regular files and fsync/rename with explicit post-commit uncertainty. Live transient systemd validation of the extracted RPM showed zero effective capabilities and recovery after SIGKILL. See RELEASE_VALIDATION.md for exact evidence and unresolved package-transaction, reboot and installed-active-helper validation limits.
+
+## Public reporting and current review
+
+Private vulnerability reporting is enabled for this repository. Use
+https://github.com/sairex53/flowcore/security/advisories/new .
+If the interface is unavailable, request a private reporting channel without
+posting exploit details or secrets in a public issue. There is no guaranteed response SLA.
+
+No umbrella component is certified production-secure. The current independent
+reproduction is a maintainer self-review with explicit gaps in RELEASE_READINESS.md.
+
+Executing a privileged source checkout already trusts its owner and code.
+Source-only configuration reads now allow that owner for paths within the project
+root. Installed configuration and generic persisted state retain root/daemon-UID
+ownership checks; group/world-writable files and symlinks remain rejected.
+The regression is documented in REVIEW_FINDINGS.md.
+
+SDK request reporting is best effort. Dropped end events can leave bounded
+inflight records until dissociation or expiry; flush does not certify complete
+application telemetry. Applications must inspect dropped/rejected/abandoned
+accounting. No packet-level or encrypted-stream deadline inference is supported.

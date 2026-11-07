@@ -10,7 +10,7 @@ archive="build/release/flowcore-$version.tar.gz"
 shopt -s nullglob
 tar --sort=name --format=gnu --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
   --exclude='__pycache__' --transform="s|^|flowcore-$version/|" -cf - \
-  CMakeLists.txt .github bpf config examples include monitoring packaging scenarios scripts src tests *.md |
+  CMakeLists.txt .github bpf config examples include monitoring packaging scenarios scripts src tests *.md LICENSE* |
   gzip -n >"$archive.tmp"
 mv -- "$archive.tmp" "$archive"
 sha256sum "$archive" >"$archive.sha256"

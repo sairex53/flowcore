@@ -1,0 +1,29 @@
+name: Reproducible bug
+description: A functional, security-boundary or measurement defect
+labels: ["bug"]
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Commit, kernel, architecture, VM/physical, build flags and selected feature
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Commands and configuration; identify owned namespaces and any host changes
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Redacted logs, raw artifact hashes/locations, failures and cleanup status. Do not attach secrets or live private traffic.

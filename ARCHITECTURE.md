@@ -1,4 +1,8 @@
-# FLOWCORE MVP
+# FLOWCORE architecture
+
+Current runtime ownership is documented in [NATIVE_CORE.md](NATIVE_CORE.md). The following MVP design describes the original legacy controller and is retained as historical architecture. The current Python daemon, typed helper, SDK, native kernels and optional BPF collectors extend that design. See [FEATURE_MATRIX.md](FEATURE_MATRIX.md) for independently tested scope.
+
+## Historical MVP
 
 ## Objective and scope
 
