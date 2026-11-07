@@ -113,7 +113,7 @@ class IntentAPI:
                 registry.shared_classes=old
             token=registration['instance_token']
             self.leases[token]=dict(name=intent['name'],uid=uid,pid=pid,process_start=start,
-                cgroup=cgroup,ttl_seconds=intent['ttl_seconds'],expires_ns=time.monotonic_ns()+intent['ttl_seconds']*10**9,
+                cgroup=cgroup,registered_ns=time.monotonic_ns(),ttl_seconds=intent['ttl_seconds'],expires_ns=time.monotonic_ns()+intent['ttl_seconds']*10**9,
                 requests={},completed=deque(maxlen=256),cookies=set(),notifications={},
                 expired_requests=0,abandoned_requests=0,deadline_ms=intent['deadline_ms'],outcomes=Counter(),
                 credits=4096,credit_ns=time.monotonic_ns())
@@ -137,7 +137,12 @@ class IntentAPI:
         if action=='transport_state':
             keys(request,('op','version','action','lease','session','degraded','error'))
             from transport_model import report
-            return report(lease,request['session'],request['degraded'],request['error'])
+            result = report(lease,request['session'],request['degraded'],request['error'])
+            row = lease['transport_sessions'][request['session']]
+            if row['kind'] == 'mptcp':
+                self.service.incident.recorder.record('mptcp_path', row['updated_ns'], lease['name'],
+                    transport='mptcp', degraded=row['degraded'], error=row['error'], source='application_reported')
+            return result
         if action=='renew':
             keys(request,('op','version','action','lease'))
             lease['expires_ns']=time.monotonic_ns()+lease['ttl_seconds']*10**9
@@ -171,6 +176,7 @@ class IntentAPI:
                 lease['completed'].append(identifier)
             lease['abandoned_requests']+=len(abandoned)
             lease['cookies'].discard(cookie)
+            lease.get('socket_identities',{}).pop(cookie,None)
             lease.get('socket_capabilities',{}).pop(cookie,None)
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='dissociated',uid=uid,
                                    pid=pid,service=lease['name'],cookie=cookie,abandoned=len(abandoned)))
@@ -194,6 +200,15 @@ class IntentAPI:
                     raise ValueError('association requires an Internet TCP or UDP socket')
                 cookie=int.from_bytes(sock.getsockopt(socket.SOL_SOCKET,57,8),os.sys.byteorder)
                 local=sock.getsockname()
+                try:
+                    peer=sock.getpeername()
+                except OSError:
+                    peer=None
+                if peer:
+                    import ipaddress
+                    lease.setdefault('socket_identities',{})[cookie] = (
+                        sock.family,str(ipaddress.ip_address(local[0].split('%')[0])),local[1],
+                        str(ipaddress.ip_address(peer[0].split('%')[0])),peer[1])
                 is_mptcp=None
                 if protocol in (6,262):
                     try:
@@ -250,6 +265,8 @@ class IntentAPI:
             fields.update(('stream_id','stream_priority'))
             number(event.get('stream_id'),0,2**62-1,True)
             number(event.get('stream_priority'),0,7,True)
+        if 'timings_us' in event and event.get('phase') != 'start':
+            fields.add('timings_us')
         keys(event,fields)
         number(event['id'],1,2**63-1,True)
         number(event['start_ns'],1,time.monotonic_ns(),True)
@@ -273,10 +290,20 @@ class IntentAPI:
         number(event['end_ns'],event['start_ns'],time.monotonic_ns(),True)
         duration=(event['end_ns']-event['start_ns'])/1000
         number(duration,0,600_000_000)
-        self.service.observer.ingest(dict(op='request_sample',service=lease['name'],
+        from causal_diagnostics import timing_fields
+        timings = timing_fields(event['timings_us'],duration) if 'timings_us' in event else None
+        deadline = event['deadline_us'] or (lease['deadline_ms']*1000 if lease['deadline_ms'] is not None else None)
+        accepted = self.service.observer.ingest(dict(op='request_sample',service=lease['name'],
             outcome='failure' if event['phase']=='cancelled' else event['phase'],
             duration_us=duration,completed_ns=event['end_ns'],
-            deadline_ms=event['deadline_us']/1000 if event['deadline_us'] else lease['deadline_ms']),uid)
+            deadline_ms=deadline/1000 if deadline is not None else None),uid,record=False)
+        cookie = event['cookie']
+        capabilities = lease.get('socket_capabilities',{}).get(cookie,{})
+        protocol = 'mptcp' if capabilities.get('is_mptcp') else {6:'tcp',17:'udp'}.get(capabilities.get('protocol'))
+        self.service.incident.request(service=lease['name'], traffic_class=accepted['traffic_class'],
+            stamp=event['end_ns'], start=event['start_ns'], outcome=event['phase'], duration=duration, deadline=deadline,
+            identity=f"{lease['pid']}:{lease['process_start']}:{lease['registered_ns']}:{request}", cookie=cookie, timings=timings,
+            socket_identity=lease.get('socket_identities',{}).get(cookie), protocol=protocol)
         del lease['requests'][request]
         lease['completed'].append(request)
         lease['outcomes'][event['phase']]+=1

@@ -45,6 +45,7 @@ class Observer:
         self.events = deque(maxlen=1024)
         self.event_sequence = 0
         self.generation = 0
+        self.on_request = None
         self.reset()
 
     def reset(self):
@@ -53,7 +54,7 @@ class Observer:
         self.snapshot_order_drops = 0
         self.host_interfaces = []
         self.scope = 'current_network_namespace'
-        self.windows = Windows(max(*self.cfg['windows'], self.cfg['thresholds']['window_seconds'])+1)
+        self.windows = Windows(max(*self.cfg['windows'], self.cfg['thresholds']['window_seconds'], 7)+1)
         self.requests = {}
         self.current = {}
         self.previous = {}
@@ -90,7 +91,7 @@ class Observer:
         self.events.append(dict(sequence=self.event_sequence, time_ns=ts, generation=self.generation,
                                 kind=kind, scope=self.scope, **detail))
 
-    def ingest(self, request, uid):
+    def ingest(self, request, uid, *, record=True):
         if not self.cfg['enabled']:
             raise ValueError('observability disabled')
         name = request.get('service')
@@ -146,8 +147,13 @@ class Observer:
             bucket.counters[f'{key}.reason.{reason}'] += 1
         if outcome == 'ok':
             bucket.observe(key, duration)
-        if deadline is not None and (duration > deadline * 1000 or outcome != 'ok'):
-            bucket.counters[f'{key}.deadline_miss'] += 1
+        if deadline is not None:
+            bucket.counters[f'{key}.deadline_reported'] += 1
+            if duration > deadline * 1000 or outcome != 'ok':
+                bucket.counters[f'{key}.deadline_miss'] += 1
+        if record and self.on_request and source == 'application':
+            self.on_request(service=name, traffic_class=cls, stamp=stamp, start=max(0,stamp-int(duration*1000)),
+                            outcome=outcome, duration=duration, deadline=deadline*1000 if deadline is not None else None)
         self.processed += 1
         return dict(accepted=True, service=name, traffic_class=cls, provenance=source)
 
@@ -323,7 +329,7 @@ class Observer:
             app[name] = dict(traffic_class=settings['class'])
             for source in ('application', 'ipc_boundary'):
                 key = f'app.{name}.{source}'
-                counts = {outcome: counters[f'{key}.{outcome}'] for outcome in ('ok', 'failure', 'timeout', 'deadline_miss', 'probe_overlap')}
+                counts = {outcome: counters[f'{key}.{outcome}'] for outcome in ('ok', 'failure', 'timeout', 'deadline_miss', 'deadline_reported', 'probe_overlap')}
                 total = counts['ok'] + counts['failure'] + counts['timeout']
                 app[name][source] = dict(**hist.get(key, empty), **counts,
                                          failure_reasons={reason: counters[f'{key}.reason.{reason}']

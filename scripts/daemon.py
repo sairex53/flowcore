@@ -23,6 +23,7 @@ from platform_network import Inventory
 from platform_policy import PolicyStore, merged
 from adaptive import Controller
 from bottleneck_diagnostics import Diagnostics
+from incident_runtime import IncidentRuntime
 from directional_qos import Ingress
 from service_config import keys, load, profile
 from service_lab import ServiceLab
@@ -48,6 +49,8 @@ class Service:
         self.sampled = 0
         self.capabilities = {}
         self.observer = Observer(config['observability'])
+        self.incident = IncidentRuntime(self)
+        self.observer.on_request = self.incident.request
         self.diagnostics = Diagnostics(self)
         self.controller = Controller(self, egress_gate=self.diagnostics.egress_admitted)
         self.container_attachment = None
@@ -70,6 +73,7 @@ class Service:
 
     def close_lab(self):
         self.diagnostics.lab.reset('lab closed or replaced')
+        self.incident.reset()
         self.container_attachment = None
         self.container_attachments = {}
         self.controller.detach()
@@ -123,6 +127,7 @@ class Service:
         self.research_mode = None
         self.research_step_done = False
         self.observer.start(candidate)
+        self.incident.policy(name, settings['bandwidth_kbit'])
         self.log('lab_ready', policy=name, profile=settings)
         return True
 
@@ -141,6 +146,10 @@ class Service:
             observed = time.monotonic_ns()
             self.diagnostics.lab_sample(self.telemetry, collected/1e9)
             self.controller.sample_prediction()
+            self.incident.sample(collected, self.config['interface'], self.diagnostics.lab.view(),
+                                 scope=('lab', self.observer.generation),
+                                 sample_id=self.diagnostics.lab.previous[0] if self.diagnostics.lab.previous else None,
+                                 healthy=not (self.observer.errors or self.observer.truncated))
             self.telemetry_timing = dict(time_ns=begin, counters_ns=collected-begin,
                                          observer_ns=observed-collected,
                                          prediction_ns=time.monotonic_ns()-observed)
@@ -152,6 +161,7 @@ class Service:
             self.telemetry = {}
             self.diagnostics.lab.reset('lab telemetry unavailable')
             self.error = str(exc)
+            self.incident.recorder.record('quality', time.monotonic_ns(), reason='lab_collection_failed')
             self.log('error', detail=self.error)
 
     def status(self):
@@ -172,6 +182,24 @@ class Service:
         if not isinstance(op,str):
             raise ValueError('expected operation name')
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
+        if op in ('diagnose', 'incident_list', 'incident_inspect', 'incident_export'):
+            return self.incident.command(request)
+        if op == 'diagnostic_intervention':
+            keys(request, ('op','action'))
+            if not self.research or not self.lab or os.geteuid() != 0:
+                raise PermissionError('interventions require an explicit owned research lab')
+            action = request['action']
+            if action == 'freeze':
+                self.controller.freeze_for_lab(15)
+            elif action in ('disable','restore'):
+                self.controller.stop('diagnostic intervention')
+                if action == 'restore':
+                    self.controller.verify_lab_baseline()
+            else:
+                raise ValueError('unsupported diagnostic intervention')
+            self.incident.recorder.record('fault', time.monotonic_ns(), action=action, status='applied')
+            return dict(action=action, freeze_seconds=15 if action == 'freeze' else 0,
+                        policy_generation=self.incident.policy_generation)
         if op == 'intent_v2_revoke':
             keys(request,('op','name'))
             return self.intent_api.revoke(request.get('name'),uid,pid)
@@ -254,7 +282,14 @@ class Service:
                 raise ValueError('research commands require a research daemon')
             if op == 'research_conditions':
                 from research_faults import apply_conditions
-                return apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'))
+                try:
+                    applied = apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'))
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                    self.incident.recorder.record('fault', time.monotonic_ns(), action='research_conditions', status='failed')
+                    raise
+                self.incident.recorder.record('fault', time.monotonic_ns(), action='research_conditions', status='applied',
+                                              capacity=self.profile['bandwidth_kbit'], link_up=self.research_link_up)
+                return applied
             if op == 'research_reservation_step':
                 if not self.lab or self.research_mode != 'static-step' or self.research_step_done or self.controller.mode != 'off':
                     raise ValueError('requires an unused static-step research lab')
@@ -438,6 +473,10 @@ class Service:
                         name = attrs(body[16:]).get(3, b'').rstrip(b'\0').decode(errors='replace')
                         row.update(index=index, name=name, up=bool(flags & 1), carrier=bool(flags & 0x10000))
                     self.events.append(row)
+                    if (self.lab and origin != 'host') or (not self.lab and origin == 'host'):
+                        self.incident.recorder.record('interface', time.monotonic_ns(), interface=row.get('name')
+                            if row.get('name','').isascii() and row.get('name','').replace('-','').replace('_','').isalnum() else None,
+                            change=f'rtnl_{kind}', up=row.get('up'), carrier=row.get('carrier'))
         except OSError as error:
             self.events.append(dict(source=origin, error=str(error), resync='next interface snapshot'))
 
@@ -595,8 +634,17 @@ def main():
                             service.workloads.refresh()
                             if not service.lab:
                                 service.observer.sample_host(service.inventory)
+                                view = service.diagnostics.query(dict(op='bottleneck_inspect'))
+                                interface = view['interface']
+                                service.incident.sample(time.monotonic_ns(), interface, view,
+                                                        scope=('host', interface, view['generation']),
+                                                        sample_id=service.inventory.sampled,
+                                                        healthy=not (service.observer.errors or service.observer.truncated
+                                                                     or service.inventory.error))
+
                             inventory_tick = time.monotonic()
                             notify('WATCHDOG=1')
+                        service.incident.tick()
                 finally:
                     notify('STOPPING=1')
                     service.close_lab()

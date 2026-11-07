@@ -47,6 +47,15 @@ def main():
             command.add_argument('--jsonl', action='store_true')
         if name == 'metrics':
             command.add_argument('--prometheus', action='store_true')
+    diagnose = commands.add_parser('diagnose', help='explain retained SLO and network evidence')
+    diagnose.add_argument('--service')
+    diagnose.add_argument('--lab-intervention', choices=('disable','freeze','restore'),
+                          help='explicit, bounded operation on a privileged research daemon')
+    incident = commands.add_parser('incident', help='inspect or replay bounded evidence').add_subparsers(dest='action', required=True)
+    incident.add_parser('list')
+    for action in ('inspect', 'export'):
+        incident.add_parser(action).add_argument('id')
+    incident.add_parser('replay').add_argument('file')
     operational=commands.add_parser('ops',help='deployment health and conservative control')
     operational.add_argument('action',choices=('status','validate','reload','emergency','diagnostics'))
     flows=commands.add_parser('flows',help='read-only current-namespace TCP/UDP fallback; never attaches BPF')
@@ -111,6 +120,21 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command in ('diagnose','incident'):
+            if args.command == 'diagnose':
+                if args.lab_intervention:
+                    if args.service is not None:
+                        raise ValueError('--service cannot be combined with --lab-intervention')
+                    result = request('diagnostic_intervention', action=args.lab_intervention)
+                else:
+                    result = request('diagnose', **({'service':args.service} if args.service is not None else {}))
+            elif args.action == 'replay':
+                from incident_runtime import replay_file
+                result = replay_file(args.file)
+            else:
+                result = request('incident_'+args.action, **({'id':args.id} if hasattr(args,'id') else {}))
+            print(json.dumps(result, indent=None if getattr(args,'action',None) == 'export' else 2))
+            return 0
         if args.command in ('bottleneck', 'capacity', 'qos', 'path'):
             fields = {'interface': args.interface} if args.interface is not None else {}
             operation = 'bottleneck_inspect' if args.command == 'bottleneck' else args.command+'_'+args.action

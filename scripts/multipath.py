@@ -554,6 +554,8 @@ def _trial(parent,strategy,scenario,path_count,duration,seed,target_latency_ms,s
     cleanup_errors=[]
     decisions=[]
     events=[]
+    from causal_diagnostics import Recorder
+    causal = Recorder()
     client_error=None
     host_before=capabilities()
     with (trial_path/'server.log').open('w') as server_log, (trial_path/'client.log').open('w') as client_log:
@@ -626,7 +628,11 @@ def _trial(parent,strategy,scenario,path_count,duration,seed,target_latency_ms,s
                     event['policy_decision']=dict(status='static-endpoints',
                         rationale='Keep the initial static endpoint backup map; kernel performs failover.')
                 events.append(event)
+                if transport == 'mptcp':
+                    causal.record('mptcp_path', state['kernel_confirmed_ns'], service_name,
+                                  transport='mptcp', source='rtnetlink_lab_readback', path_id=path_id, up=up)
                 save(trial_path/'transitions.json',events)
+                save(trial_path/'causal-path-events.json',list(causal.events))
             time.sleep(max(0,start+duration-time.monotonic()))
             if client.poll() is None:
                 try:

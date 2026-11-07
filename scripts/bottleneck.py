@@ -129,7 +129,7 @@ def tcp_evidence(current, previous, elapsed):
         row['port'] for row in active if not row['stable']}
     return dict(matched_sockets=len(matched), active_sockets=len(active), rtt_us=median('rtt_us'),
                 rttvar_us=median('rttvar_us'), min_rtt_us=median('min_rtt_us'),
-                retransmit_segments=retrans if retrans_pairs else None,
+                retransmit_segments=retrans if retrans_pairs else None, data_segments=segments if retrans_pairs else None,
                 retransmit_ratio=retrans / segments if segments else None,
                 receive_window_limited_fraction=median('rwnd_fraction'),
                 receiver_pressure=any(row['window_pressure'] for row in active),

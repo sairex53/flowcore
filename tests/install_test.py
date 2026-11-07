@@ -67,6 +67,8 @@ def main():
                 assert result['error'] is None and len(result['interfaces'])>=1
                 bottleneck = json.loads(command([cli, 'bottleneck', 'inspect'], env=env))
                 assert bottleneck['scope'] == 'host_read_only' and bottleneck['schema'] == 1
+                assert json.loads(command([cli, 'diagnose'],env=env))['schema'] == 1
+                assert json.loads(command([cli, 'incident','list'],env=env))['incidents'] == []
                 denied = subprocess.run([cli,'lab','up'],env=env,capture_output=True,text=True,timeout=5)
                 assert denied.returncode==1 and 'forbidden' in denied.stderr
                 with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as peer:

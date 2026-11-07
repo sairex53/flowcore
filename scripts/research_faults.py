@@ -11,7 +11,7 @@ def rate_args(rate, ceil):
     return ['htb', 'rate', f'{rate}kbit', 'ceil', f'{ceil}kbit']
 
 
-def resize_htb(service, capacity):
+def resize_htb(service, capacity, *, preserve_windows=False):
     """Rebase the managed controller on a scheduled capacity change."""
     number(capacity, 100, 1000000, True)
     lab, control = service.lab, service.controller
@@ -46,7 +46,8 @@ def resize_htb(service, capacity):
     observer = service.observer
     observer.previous = {}
     observer.queue_time = None
-    observer.windows.buckets.clear()
+    if not preserve_windows:
+        observer.windows.buckets.clear()
     observer.last_detect = None
     observer.detectors.clear()
     if mode != 'off':

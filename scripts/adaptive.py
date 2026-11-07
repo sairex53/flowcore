@@ -63,6 +63,7 @@ class Controller:
         self.predictor = Predictor()
         self.cfg = service.config.get('adaptive', DEFAULT)
         self.history = deque(maxlen=128)
+        self.freeze_until = 0
         self.path = None
         self.mode = 'off'
         self.strategy = 'slo'
@@ -95,6 +96,8 @@ class Controller:
                 self.service.log('error',detail='adaptive journal invalid; history unavailable; controller remains disabled')
 
     def record(self, **fields):
+        if incident := getattr(self.service, 'incident', None):
+            incident.decision(fields)
         self.history.append(dict(controller_session=self.session,time_unix=time.time(), time_ns=time.monotonic_ns(), generation=self.service.observer.generation, **fields))
         payload = json.dumps(list(self.history))
         while len(payload.encode())>262144 and self.history:
@@ -154,11 +157,17 @@ class Controller:
 
     def write(self, target):
         timing = adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target)
+        changed = self.current != target
         self.current = dict(target)
+        if changed and (incident := getattr(self.service, 'incident', None)):
+            incident.policy_generation += 1
+            incident.recorder.record('controller', timing['verified_ns'], result='kernel_verified',
+                                     generation=incident.policy_generation, changed=True)
         self.service.poll_metrics()
         return dict(timing, refresh_ns=time.monotonic_ns()-timing['verified_ns'])
 
     def stop(self, reason):
+        self.freeze_until = 0
         if self.mode == 'active' and self.current != self.base and self.service.lab:
             self.write(self.base)
             self.record(result='restored_baseline', reason=reason, allocation=self.base)
@@ -168,6 +177,7 @@ class Controller:
         self.service.observer.probe_start_ns = None
 
     def detach(self):
+        self.freeze_until = 0
         if self.mode != 'off':
             self.record(result='lab_closed', reason='topology removed')
         self.mode = 'off'
@@ -528,8 +538,30 @@ class Controller:
                                 start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified,
                                 peer_before=plan['objectives'], prediction=plan.get('predictive'))
 
+    def verify_lab_baseline(self):
+        capacity, policy = self.capacity(), self.policy()
+        if not self.service.lab or policy['scheduler'] != 'htb':
+            raise ValueError('restore verification requires owned HTB')
+        expected = {name:(capacity*row['min_pct']//100,capacity*row['max_pct']//100)
+                    for name,row in policy['classes'].items()}
+        if adaptive_tc.read(self.service.lab,capacity,policy) != expected:
+            raise RuntimeError('kernel allocation differs from configured baseline')
+
+    def freeze_for_lab(self, seconds):
+        if not self.service.research or self.mode != 'active' or self.pending or self.freeze_until or not self.service.lab:
+            raise ValueError('freeze requires a settled active owned lab controller')
+        if adaptive_tc.read(self.service.lab, self.capacity(), self.policy()) != self.current:
+            raise RuntimeError('freeze refused after allocation drift')
+        self.freeze_until = time.monotonic()+seconds
+        self.record(result='lab_policy_frozen')
+
     def safe_tick(self):
         try:
+            if self.freeze_until:
+                self.registry.expire()
+                if time.monotonic() < self.freeze_until and self.registry.revision == self.revision:
+                    return
+                self.stop('bounded diagnostic freeze ended')
             prior = self.pending
             self.tick()
             if self.mode == 'off':
@@ -575,4 +607,5 @@ class Controller:
                     predictive_timing=self.prediction_timing() if self.strategy == 'predictive' else None,
                     engine_state=self.state.name, state_reason=self.state.reason,
                     last_decision=self.last_plan, reversals=self.reversals,
+                    lab_frozen_until_ns=int(self.freeze_until*NANO) if self.freeze_until else None,
                     fairness=self.fairness(window), timing=self.timing)
