@@ -1,6 +1,6 @@
 # Causal SLO Diagnostics
 
-FLOWCORE joins application SLO reports, Linux queue and TCP measurements, verified policy changes and explicit laboratory faults on a local monotonic clock. The report presents competing explanations and points to the recorded evidence. Its strength labels describe evidence quality. They are neither probabilities nor estimates of causal effect.
+FLOWCORE joins application SLO reports, Linux queue and TCP measurements, verified policy changes and explicit laboratory faults on a local monotonic clock. The report presents competing explanations and points to the recorded evidence. Its strength labels describe evidence quality. Estimating causal effects requires controlled comparisons.
 
 ## Read the report
 
@@ -25,7 +25,7 @@ A default report contains the observed network scope and each registered service
 | Retransmission increase | At least 20 data segments in each interval, at least three current retransmits and a five-percentage-point rise |
 | Possible controller regression | Application regression with a nearby verified write and a comparable controller-declared degraded evaluation |
 
-The daemon uses adjacent four-second windows and waits two seconds for delayed reports. Histogram percentiles are approximate; even 100 successes give limited tail resolution. Thresholds are engineering heuristics. The reports give denominators and leave absent metrics null.
+The daemon uses adjacent four-second windows and waits two seconds for delayed reports. Histogram percentiles are approximate, with limited tail resolution at 100 successes. Thresholds are engineering heuristics. The reports give denominators and leave absent metrics null.
 
 ## Associations and alternatives
 

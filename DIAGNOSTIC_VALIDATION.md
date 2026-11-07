@@ -32,7 +32,7 @@ The first complete evaluation used Fedora 45 QEMU ARM64, four vCPUs, kernel `7.2
 
 The expected candidate ranked first in 6/6 attributable trials, with zero incorrect top candidates in these ten trials. Eight fault windows with SLO events, including the opaque fixture, reported symptoms 6.001–6.033 s after application. This reflects the window length and grace period for boundary-aligned faults. It is not a general detector latency bound. Independent repetitions are limited to two per fixture. This study provides no population accuracy estimate.
 
-Removing netem reduced P99 to 5.79–10.62 ms with zero deadline misses. Reapplying it brought P99 to 27.56–38.97 ms. Removing the application sleep reduced P99 to 6.32–6.89 ms with zero deadline misses; reapplying it brought P99 to 30.05–32.77 ms. These within-trial reversals support the known manipulated mechanisms in those fixtures. They are not field effect sizes.
+Removing netem reduced P99 to 5.79–10.62 ms with zero deadline misses. Reapplying it brought P99 to 27.56–38.97 ms. Removing the application sleep reduced P99 to 6.32–6.89 ms with zero deadline misses. Reapplying it brought P99 to 30.05–32.77 ms. These within-trial reversals support the known manipulated mechanisms in those fixtures. Field effect sizes remain unknown.
 
 In the first queue trials, all eight request workers stopped after their transport timeout. One trial recorded eight transport timeouts during the fault window and the other eight during the intervention window. There were 216 and 315 observed skipped slots respectively, plus unoffered slots after worker exit. Those trials demonstrate attribution under severe congestion. Their intervention and restoration windows are insufficient for measuring application recovery.
 
