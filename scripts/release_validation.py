@@ -17,13 +17,13 @@ def main():
     plan=json.loads((ROOT/'config/release-evaluation-plan.json').read_text())
     template=json.loads((ROOT/'scenarios/v2-heavy-paired.json').read_text())
     primary=copy.deepcopy(template)
-    primary.update(duration_seconds=12,repetitions=plan['evaluation_repetitions'],
+    primary.update(duration_seconds=16,repetitions=plan['evaluation_repetitions'],
                    seed=plan['evaluation_seed'],modes=plan['primary_modes'])
     primary['network'].update(bandwidth_kbit=12000,base_rtt_ms=6)
-    primary['workload'].update(payload_bytes=8192,deadline_ms=40,critical_services=2,
-        priority_weights=dict(critical=60,interactive=25,standard=15),
+    primary['workload'].update(payload_bytes=4096,deadline_ms=40,critical_services=2,
+        priority_weights=dict(critical=80,interactive=15,standard=5),
         phases=[dict(seconds=s,requests_per_second=r,background_streams=b)
-                for s,r,b in ((2,40,1),(3,100,4),(4,150,8),(3,60,2))])
+                for s,r,b in ((2,40,1),(3,100,4),(8,150,8),(3,60,2))])
     primary['controller'].update(target_p99_ms=30)
     primary['faults']=[]
     pilot=copy.deepcopy(primary)

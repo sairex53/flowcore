@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "pilot_seed": 310147,
   "evaluation_seed": 1511506147,
   "low_seed": 95115431,
@@ -8,8 +8,20 @@
   "pilot_repetitions": 2,
   "evaluation_repetitions": 10,
   "exploratory_repetitions": 3,
-  "primary_modes": ["static", "hybrid", "queue-aware", "predictive", "predictive-shadow"],
-  "baseline_modes": ["fifo", "fq_codel", "cake", "static"],
+  "primary_modes": [
+    "static",
+    "hybrid",
+    "queue-aware",
+    "predictive",
+    "predictive-shadow"
+  ],
+  "baseline_modes": [
+    "fifo",
+    "fq_codel",
+    "cake",
+    "static"
+  ],
   "selection": "lowest pilot median failure_ratio, then successful-request P99, then highest background goodput",
-  "constraints": "no evaluation fitting; all manifests and seeds recorded before pilot; background minimum retained"
+  "constraints": "no evaluation fitting; all manifests and seeds recorded before pilot; background minimum retained",
+  "pre_pilot_amendment": "Source inspection requires >=100 critical-service samples per 2s window. Use 80% critical weight, 4 KiB requests and an 8s high-load phase; total 16s. No pilot/evaluation observations used."
 }
