@@ -47,7 +47,9 @@ def summarize(rows, offered_rps, duration):
 
 
 def request_worker(index, args, start_ns, count, adapter, rows, lock):
-    connection = http.client.HTTPConnection(args.host, args.port, timeout=args.timeout)
+    source = getattr(args, 'source_address', None)
+    connection = http.client.HTTPConnection(args.host, args.port, timeout=args.timeout,
+                                            source_address=(source, 0) if source else None)
     rng = random.Random(args.seed + index)
     initial_setup_ms = 0
     cookie = 0
@@ -129,7 +131,9 @@ def background_transfer(args, start_ns):
     delay = (start_ns - time.monotonic_ns()) / 1e9
     if delay > 0:
         time.sleep(delay)
-    connection = http.client.HTTPConnection(args.host, args.background_port, timeout=args.background_timeout)
+    source = getattr(args, 'source_address', None)
+    connection = http.client.HTTPConnection(args.host, args.background_port, timeout=args.background_timeout,
+                                            source_address=(source, 0) if source else None)
     started = time.monotonic_ns()
     status, received, error = None, 0, None
     try:

@@ -1,0 +1,17 @@
+{
+  "owner": "experiment-a",
+  "direction": "forward",
+  "capacity_kbit": 20000,
+  "ports": [19000, 19001, 19002],
+  "critical_pct": 40,
+  "roles": {
+    "client": {"ssh": "lab-client", "checkout": "/opt/flowcore", "interface": "data0", "address": "192.0.2.2"},
+    "server": {"ssh": "lab-server", "checkout": "/opt/flowcore", "interface": "data0", "address": "198.51.100.2"},
+    "shaper": {"ssh": "lab-router", "checkout": "/opt/flowcore", "namespace": "flowcore-test", "interface": "to-server"}
+  },
+  "workload": {
+    "duration": 20, "api_rate": 50, "interactive_rate": 35, "concurrency": 4,
+    "deadline_ms": 100, "work_ms": 2, "bulk_bytes": 33554432, "bulk_timeout": 45
+  },
+  "impairment": {"interface": "to-client", "after_seconds": 5, "delay_ms": 12, "loss_pct": 0.2}
+}

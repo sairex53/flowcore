@@ -276,3 +276,6 @@ install(FILES SAFETY_INVARIANTS.md STATE_MACHINE_SPEC.md MODEL_TEST_RESULTS.md D
 
 add_test(NAME autotune_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/autotune_test.py")
 install(FILES AUTOTUNING.md OPTIMIZATION_EXPERIMENTS.md AUTOTUNING_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME multi_host_lab_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/multi_host_test.py")
+install(FILES MULTI_HOST_LAB.md HARDWARE_VALIDATION.md EXTERNAL_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
