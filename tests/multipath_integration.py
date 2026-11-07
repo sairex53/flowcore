@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='mptcp-reuse-') as tmp:
         lab.command(1,['ip','addr','add','198.18.0.1/32','dev','fc1'])
         lab.command(1,['ip','mptcp','endpoint','add','198.18.0.1','dev','fc1','id','7','signal'])
         foreign = endpoint(lab,7)
+        assert foreign and foreign['address']=='198.18.0.1'
         for change in (lambda lease:set_endpoint_backup(lab,path,True,lease),
                        lambda lease:remove_owned_endpoint(lab,7,lease)):
             lease = dict(ledger)
