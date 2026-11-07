@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>

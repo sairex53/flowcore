@@ -1,7 +1,7 @@
 {
   "version": 1,
   "scope": "experimental source candidate",
-  "license_approved": false,
+  "license_approved": true,
   "production_ready": false,
   "gates": {
     "functional": "PARTIAL",

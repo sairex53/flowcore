@@ -4,7 +4,7 @@ Experimental Linux networking research tools with a C++23 SDK/native core and a 
 
 Use FLOWCORE to run isolated QoS experiments, observe Linux network state without root, and report application latency/deadlines explicitly. Adaptive, predictive, per-flow BPF, MPTCP, container and QUIC integrations remain experimental or partial. A performance advantage over tuned static QoS has not been established.
 
-**Public release is blocked pending an owner-selected project license and the release gates in [RELEASE_READINESS.md](RELEASE_READINESS.md).** The internal build version 0.2.0 is an experimental snapshot.
+The repository uses Apache-2.0. The two eBPF sources also offer GPLv2 for kernel loading. Build version 0.2.0 is an experimental snapshot subject to the release gates. [License](LICENSE) · [Release readiness](RELEASE_READINESS.md)
 
 ## Start with read-only monitoring
 

@@ -1,6 +1,6 @@
 # Contributing
 
-FLOWCORE is an experimental research project. Project-wide licensing and contribution terms remain pending the owner's decision; no license grant is inferred from repository visibility. Preserve attribution and identify third-party code/dependencies in proposed changes.
+FLOWCORE is an experimental research project licensed under Apache-2.0. Section 5 governs contributions submitted for inclusion. The two eBPF sources also carry a GPLv2 option for loading into Linux. Preserve attribution and identify any third-party code or dependencies in proposed changes. [Apache-2.0](LICENSE) · [GPLv2](LICENSE.GPL-2.0)
 
 ## Scope and build
 

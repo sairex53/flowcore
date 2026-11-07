@@ -2,11 +2,10 @@
 
 ## Public-release prerequisites
 
-1. Obtain an explicit owner license decision and document contribution/provenance policy.
-2. Publish a reviewed, sanitized raw-evidence bundle alongside reproducible manifests and source/build hashes.
-3. Resolve installed RPM upgrade/erase validation under the target security policy; sign artifacts and verify dependency-resolved installation.
-4. Add genuine reboot/power-loss and installed-active-helper interruption tests on dedicated infrastructure.
-5. Complete a separately reviewed threat model and vulnerability reporting path.
+1. Publish a reviewed, sanitized raw-evidence bundle alongside reproducible manifests and source/build hashes.
+2. Resolve installed RPM upgrade/erase validation under the target security policy; sign artifacts and verify dependency-resolved installation.
+3. Add genuine reboot/power-loss and installed-active-helper interruption tests on dedicated infrastructure.
+4. Complete a separately reviewed threat model and vulnerability reporting path.
 
 ## Highest-priority engineering gaps
 

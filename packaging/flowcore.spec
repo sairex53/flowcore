@@ -3,7 +3,7 @@ Name:           flowcore
 Version:        0.2.0
 Release:        2%{?dist}
 Summary:        Linux adaptive networking laboratory and read-only interface monitor
-License:        LicenseRef-FLOWCORE-Unspecified
+License:        Apache-2.0
 Source0:        %{name}-%{version}.tar.gz
 BuildRequires:  gcc-c++ >= 13
 BuildRequires:  cmake
@@ -42,6 +42,7 @@ ctest --test-dir build --output-on-failure
 DESTDIR=%{buildroot} cmake --install build
 
 %files
+%license LICENSE
 %doc README.md ARCHITECTURE.md
 %config(noreplace) %{_sysconfdir}/flowcore/service.json
 %config(noreplace) %{_sysconfdir}/flowcore/helper.json

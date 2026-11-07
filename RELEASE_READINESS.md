@@ -2,7 +2,7 @@
 
 Decision: **experimental evaluation snapshot; public open-source release blocked**.
 
-No project-wide license has been selected by the owner. No LICENSE was invented. The internal version remains 0.2.0 for existing SDK/package compatibility; no stable release tag is created by this review. A proposed v0.2.0-rc.1 requires the gates below.
+The owner selected Apache-2.0 after the independent review. The repository and RPM metadata record that choice. The internal version remains 0.2.0 for SDK and package compatibility. A proposed v0.2.0-rc.1 requires the gates below. [License](LICENSE)
 
 ## Gates
 
@@ -15,7 +15,7 @@ No project-wide license has been selected by the owner. No LICENSE was invented.
 | Portability | Actual ARM64 and x86_64 execution within advertised scope | PARTIAL: actual x86 helper/scale passed; HTB lab unsupported with runner tc 6.1; physical Linux unavailable |
 | Documentation | Current quickstart, feature matrix, API references, contribution/security guidance | PASS for current source documentation: local links, gate schema/tests and limitation review |
 | Packaging | Dependency-resolved installed upgrade/erase, signed provenance and security-profile validation | PARTIAL: local unsigned RPM; isolated transaction/security-policy blocker remains |
-| Licensing | Explicit owner selection and provenance/contribution policy | BLOCKED |
+| Licensing | Explicit owner selection and provenance/contribution policy | PASS for owner selection and published license |
 
 Machine-readable gates are in config/release-gates.json. packaging/release-gate.py fails closed for publication. The manual candidate workflow builds/tests/checks a source candidate and uploads artifacts only if these gates pass. It has read-only repository permissions and never creates a stable release or tag.
 
@@ -74,7 +74,7 @@ The earlier extracted payload remains in build/review-package/payload. Build out
 
 This was a fresh maintainer-run reproduction using disjoint pilot/evaluation seeds, not an external independent audit. Prior results are historical scoped evidence; current claims are bounded by FEATURE_MATRIX.md and BENCHMARK_REPORT.md.
 
-**Decision: do not publish a stable or production-ready release.** The source repository is public for review, but no stable tag, release asset or owner-selected license is created. Publication remains blocked by licensing; functional/security/packaging/portability/reproducibility gates remain PARTIAL. A public source repository without an owner-selected license is not a completed open-source licensing decision.
+**Decision: retain the experimental source snapshot.** Functional, security, packaging, portability and reproducibility gates remain PARTIAL after the licensing decision.
 
 Next priorities: recover from SDK terminal-event loss in long-lived sessions; isolate same-allocation controller action effects on new held-out scenarios; support/verify TC class readback across declared toolchains; complete installed active-helper, genuine reboot and soak campaigns; resolve dependency-aware RPM upgrade/erase under enforcing security policy; review/publish a raw-evidence bundle and sign licensed artifacts.
 
