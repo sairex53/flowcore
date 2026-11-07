@@ -7,9 +7,10 @@ from pathlib import Path
 from service_config import keys, number, profile, unique
 
 LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
-MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', 'static20', 'static30', 'static40', 'static35', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer')
+STATIC_MODES = tuple(f'static{pct}' for pct in range(20, 41))
+MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer')
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset(('static', 'threshold', 'slo', 'htb-fq_codel', 'static20', 'static30', 'static40', 'static35', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer'))
+CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer'))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)

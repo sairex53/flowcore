@@ -40,6 +40,30 @@ def add_commands(commands):
     shrink.add_argument('--mode',choices=MODES,required=True)
     shrink.add_argument('--failure-ratio',type=float,required=True)
     shrink.add_argument('--budget',type=int,default=6)
+    optimize = commands.add_parser('optimize', help='bounded isolated search with independent holdout evaluation').add_subparsers(dest='action',required=True)
+    plan = optimize.add_parser('plan', help='validate a search and write a reproducible plan; does not run experiments')
+    plan.add_argument('manifest', type=Path)
+    plan.add_argument('--algorithm', choices=('manual','random','grid','coordinate','local'), default='grid')
+    plan.add_argument('--candidate-budget', type=int, default=5)
+    plan.add_argument('--step', type=int, default=5)
+    plan.add_argument('--repetitions', type=int, default=10)
+    plan.add_argument('--seed', type=int, default=1)
+    plan.add_argument('--holdout', type=Path, action='append', default=[])
+    plan.add_argument('--weights', type=Path, help='JSON objective-weight object')
+    plan.add_argument('--constraints', type=Path, help='JSON hard-constraint object')
+    plan.add_argument('--budget-seconds', type=float, default=3600)
+    plan.add_argument('--budget-cpu-seconds', type=float, default=3600)
+    plan.add_argument('--budget-memory-mb', type=float, default=2048)
+    plan.add_argument('--budget-disk-mb', type=float, default=2048)
+    plan.add_argument('--output', type=Path)
+    optimize.add_parser('run', help='execute a validated plan only in owned Research Lab namespaces').add_argument('plan', type=Path)
+    for action in ('status','results','recommend'):
+        optimize.add_parser(action).add_argument('job', type=Path)
+    compare_cmd=optimize.add_parser('compare', help='compare two Research Lab summaries')
+    compare_cmd.add_argument('baseline', type=Path)
+    compare_cmd.add_argument('candidate', type=Path)
+    compare_cmd.add_argument('--baseline-mode', required=True)
+    compare_cmd.add_argument('--candidate-mode', required=True)
     chaos = commands.add_parser('chaos',help='controlled laboratory fault injection').add_subparsers(dest='action',required=True)
     chaos.add_parser('run').add_argument('manifest',type=Path)
     chaos.add_parser('stop')
@@ -47,6 +71,48 @@ def add_commands(commands):
 
 def dispatch(args):
     action = args.action
+    if args.command == 'optimize':
+        from autotune import make_plan, load_plan, load_job, results as optimize_results, run_plan, status as optimize_status
+        from paths import RESULTS
+        if action == 'plan':
+            def read_object(path, label):
+                if path is None:
+                    return None
+                value=json.loads(path.read_bytes())
+                if not isinstance(value,dict):
+                    raise ValueError(f'{label} must contain a JSON object')
+                return value
+            plan=make_plan(args.manifest,args.algorithm,args.candidate_budget,args.step,
+                args.repetitions,args.seed,args.holdout,read_object(args.weights,'weights'),
+                read_object(args.constraints,'constraints'),args.budget_seconds,
+                args.budget_cpu_seconds,args.budget_memory_mb,args.budget_disk_mb)
+            RESULTS.mkdir(parents=True,exist_ok=True)
+            output=args.output or RESULTS/f'autotune-plan-{plan["created_unix_ns"]}.json'
+            with output.open('x') as stream:
+                json.dump(plan,stream,indent=2,allow_nan=False)
+                stream.write('\n')
+            return dict(plan=str(output.resolve()),algorithm=plan['algorithm'],
+                candidate_budget=plan['search']['candidate_budget'],repetitions=plan['search']['repetitions'],
+                holdouts=len(plan['holdouts']),application_mode='recommendation only'),0
+        if action == 'run':
+            load_plan(args.plan)
+            with exclusive():
+                state=run_plan(args.plan)
+            code=2 if state['status'] not in ('complete',) or state['outcome'] in ('REGRESSION','INVALID EXPERIMENT') else 0
+            return dict(job=state['job_directory'],status=state['status'],outcome=state['outcome'],
+                selected_pct=state.get('selected_pct'),recommendation=state.get('recommendation'),
+                error=state.get('error')),code
+        if action in ('status','results','recommend'):
+            state=load_job(args.job)
+            if action=='status':
+                return optimize_status(args.job),0
+            if action=='results':
+                return optimize_results(args.job),0
+            return state.get('recommendation') or dict(state=state['status'],recommendation='No recommendation is available yet.'),0
+        if action == 'compare':
+            from autotune import compare_summaries
+            result=compare_summaries(args.baseline,args.candidate,args.baseline_mode,args.candidate_mode)
+            return result,2 if result.get('outcome')=='INVALID EXPERIMENT' else int(result.get('outcome')=='REGRESSION')
     if args.command=='chaos' and action=='stop':
         return cancel(),0
     if action=='soak':

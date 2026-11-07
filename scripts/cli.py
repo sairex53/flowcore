@@ -164,7 +164,7 @@ def main():
             from platform_cli import dispatch
             print(json.dumps(dispatch(args),indent=2))
             return 0
-        if args.command in ('bench','chaos'):
+        if args.command in ('bench','chaos','optimize'):
             from research_cli import dispatch
             result,code = dispatch(args)
             print(json.dumps(result,indent=2))
@@ -244,7 +244,7 @@ def main():
         print(json.dumps(result, indent=None if args.json else 2))
         return 0
     except KeyboardInterrupt:
-        return 130 if args.command in ('bench','chaos') else 0
+        return 130 if args.command in ('bench','chaos','optimize') else 0
     except OSError as error:
         print(f'flowcore: daemon connection or Linux query failed: {error}', file=sys.stderr)
         return 3

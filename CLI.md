@@ -30,6 +30,7 @@ a separate runtime directory. The installed default is /run/flowcore.
 | congestion, events [--jsonl], metrics [--prometheus] | Observations, live events and exports |
 | report start/sample/complete | Explicit application measurement IPC |
 | bench run/replay MANIFEST, bench suite [--quick] | Reproduce and compare owned scenarios |
+| optimize plan/run/status/results/recommend/compare | Bounded HTB reservation search in owned namespaces; never deploys a host policy |
 | bench compare BASE CANDIDATE, bench report SUMMARY | Analyze existing evidence |
 | bench minimize MANIFEST --mode MODE --failure-ratio N | Bounded failure reproduction and reduction |
 | chaos run MANIFEST, chaos stop | Run or cancel owned research faults |
@@ -38,7 +39,7 @@ Management commands return JSON. `--json` selects compact output where
 supported. Research commands publish evidence under FLOWCORE_RESULTS, or
 results/ in the source tree. Application, Prometheus, CSV and event formats
 are described in OBSERVABILITY.md. See ADAPTIVE.md and RESEARCH.md for
-workload examples and phase timing.
+workload examples and phase timing. Autotuning budgets, search scope and uncertainty are documented in AUTOTUNING.md and OPTIMIZATION_EXPERIMENTS.md.
 
 Exit codes are 0 for success, 1 for rejection or experiment failure, 2 for
 invalid CLI syntax, 3 for unavailable IPC or a Linux query error, and 130

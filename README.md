@@ -2,7 +2,7 @@
 
 Experimental Linux networking research tools with a C++23 SDK/native core and a Python control daemon.
 
-Use FLOWCORE to run isolated QoS experiments, observe Linux network state without root, and report application latency/deadlines explicitly. Adaptive, predictive, per-flow BPF, MPTCP, container and QUIC integrations remain experimental or partial. A performance advantage over tuned static QoS has not been established.
+Use FLOWCORE to run isolated QoS experiments, observe Linux network state without root, and report application latency/deadlines explicitly. Adaptive, predictive, per-flow BPF, MPTCP, container and QUIC integrations remain experimental or partial. A performance advantage over tuned static QoS has not been established. The autotuner searches only owned-lab HTB reservations and writes shadow recommendations; it does not configure host interfaces.
 
 The repository uses Apache-2.0. The two eBPF sources also offer GPLv2 for kernel loading. Build version 0.2.0 is an experimental snapshot subject to the release gates. [License](LICENSE) · [Release readiness](RELEASE_READINESS.md)
 
@@ -58,7 +58,7 @@ See [APPLICATION_INTEGRATION.md](APPLICATION_INTEGRATION.md), [INTENT_API.md](IN
 |---|---|
 | Verified feature scope | [FEATURE_MATRIX.md](FEATURE_MATRIX.md) |
 | SLO incident investigation | [Causal diagnostics](CAUSAL_DIAGNOSTICS.md), [incident validation](DIAGNOSTIC_VALIDATION.md) |
-| Network allocation | [Policy optimizer](POLICY_OPTIMIZER.md), [optimization results](OPTIMIZATION_RESULTS.md) |
+| Network allocation | [Policy optimizer](POLICY_OPTIMIZER.md), [allocation results](OPTIMIZATION_RESULTS.md), [autotuning](AUTOTUNING.md), [experiment method](OPTIMIZATION_EXPERIMENTS.md), [autotuning results](AUTOTUNING_RESULTS.md) |
 | Current architecture | [NATIVE_CORE.md](NATIVE_CORE.md), [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
 | Deployment and troubleshooting | [DEPLOYMENT.md](DEPLOYMENT.md), [OPERATIONS.md](OPERATIONS.md), [RECOVERY.md](RECOVERY.md) |
