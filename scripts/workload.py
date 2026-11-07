@@ -104,7 +104,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
         while True:
             writer = None
             try:
-                host = research.get('server_address','10.203.0.2')
+                host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
                 _, writer = await asyncio.open_connection(host, background_port)
                 writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
@@ -297,8 +297,10 @@ async def client(output, duration, rate, payload, request_port, background_port,
         task.cancel()
     for task in udp_backgrounds.values():
         task.cancel()
-    await asyncio.gather(report, changes, *backgrounds.values(), *retired,
+    worker_results = await asyncio.gather(report, changes, *backgrounds.values(), *retired,
                          *udp_backgrounds.values(), *retired_udp, return_exceptions=True)
+    worker_errors = sorted({type(item).__name__ for item in worker_results
+                            if isinstance(item, BaseException) and not isinstance(item, asyncio.CancelledError)})
     with (output / 'requests.csv').open('w') as stream:
         writer = csv.writer(stream)
         writer.writerow(['id', 'scheduled', 'completed', 'latency_ms', 'outcome', 'traffic_class', 'service', 'dispatch_lag_ms'])
@@ -308,7 +310,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
                'completed': len(successes), 'failed': len(rows) - len(successes),
                'p50_ms': percentile(successes, .50), 'p95_ms': percentile(successes, .95),
                'p99_ms': percentile(successes, .99), 'max_ms': max(successes, default=None),
-               'background_errors': background_errors,'udp_send_errors':len(udp_send_errors)}
+               'background_errors': background_errors,'udp_send_errors':len(udp_send_errors),
+               'worker_errors': worker_errors}
     if reporters:
         per_class = {name: await reporter.close() for name, reporter in reporters.items()}
         summary['application_reports'] = {key: sum(row[key] for row in per_class.values())
@@ -318,6 +321,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
         if own_tcp_info:
             (output / 'own-tcp-info.json').write_text(json.dumps(own_tcp_info, indent=2) + '\n')
     (output / 'client.json').write_text(json.dumps(summary, indent=2) + '\n')
+    if worker_errors:
+        raise RuntimeError('workload worker failed; inspect client.json')
     if background_errors and not research:
         raise RuntimeError('background workload failed; inspect client.json')
     if summary['failed']:
@@ -349,8 +354,8 @@ if __name__ == '__main__':
         parser.error('up to 16 phases with rates in 0..1000')
     if not 1 <= args.payload <= 65536 or not 0 <= args.streams <= 32:
         parser.error('payload must be 1..65536 and streams 0..32')
-    if not all(1 <= port <= 65535 for port in (args.request_port, args.background_port,args.udp_port)) or len({args.request_port,args.background_port,args.udp_port}) != 3:
-        parser.error('request and background ports must be distinct and in 1..65535')
+    if not all(1 <= port <= 65535 for port in (args.request_port, args.background_port,args.udp_port)) or args.request_port == args.background_port:
+        parser.error('ports must be in 1..65535; TCP request/background ports must differ')
     workload = (args.payload, args.request_port, args.background_port, args.streams)
     asyncio.run(server(args.output, *workload, udp_port=args.udp_port,research=research) if args.mode == 'server'
                 else client(args.output, args.duration, args.rate, *workload,

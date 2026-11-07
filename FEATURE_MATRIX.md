@@ -17,7 +17,7 @@ Labels: STABLE means a published supported contract with its scoped release gate
 | Predictive controller | EXPERIMENTAL | Held-out predictive/shadow comparisons and causal forecast histories | No demonstrated predictive/action benefit; short-window/cold-start limits |
 | MPTCP lab/path policies | EXPERIMENTAL | Fresh TCP/default-MPTCP/static/policy failover matrix; negotiation/subflows verified; host state preserved | One repetition; endpoint backup controls, not custom scheduling or TCP migration |
 | Podman/cgroup integration | PARTIAL | Fresh rootful container classification and stale-rule cleanup; bounded owner registry | Multiple-container congestion/restart/rootless enforcement unverified |
-| Workload discovery/policies | PARTIAL | PID/cgroup/namespace identity unit/live tests; explicit owner authorization | No automatic host-network management or safe restart rebinding |
+| Workload discovery/policies | PARTIAL | Fresh two-cgroup UDP classifier/counter/conflict/cleanup fixture; PID/cgroup/namespace identity tests | No automatic host-network management or safe restart rebinding |
 | Research/chaos lab | EXPERIMENTAL | Fresh chaos/replay/UDP/report/minimization/cancellation/cleanup integration; frozen evaluation | Deterministic configuration replay, not deterministic packet scheduling |
 | Cooperative QUIC | EXPERIMENTAL | Fresh aioquic handshakes/echo under five impairments, C++ SDK stream reporting | No HTTP/3 implementation, transparent migration or encrypted content inference |
 | Native histogram backend | EXPERIMENTAL | Differential and concurrent native tests plus ASan/UBSan | Opt-in; previous CPU gain is not independently re-established as a runtime speedup here |
@@ -34,7 +34,7 @@ The per-flow wire test had 1,200 exported cookies. Its 1,070 BPF_PROG_TEST_RUN c
 | Environment | Status |
 |---|---|
 | Fedora 45 ARM64 QEMU VM | Fresh root/network/scale/performance validation executed |
-| GitHub-hosted x86_64 Linux | Fresh build/unit/sanitizer CI; manual namespace validation tracked separately |
+| GitHub-hosted x86_64 Linux | Fresh build/unit/sanitizer CI; native helper and 10k held connections passed; full HTB lab UNSUPPORTED with tc 6.1 text class readback |
 | Physical Linux system | UNVERIFIED: none available in this review |
 
 Host-wide adaptive enforcement, native Kubernetes integration, arbitrary container coverage, transparent TCP→QUIC migration and per-request kernel scheduling inside encrypted multiplexed connections are UNSUPPORTED.

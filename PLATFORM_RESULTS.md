@@ -1,5 +1,7 @@
 # FLOWCORE 0.2 validation report
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Target: Fedora 45 ARM64, Linux 7.2.11-300.fc45.aarch64. This checkout does not
 contain Git metadata. Research reports therefore record a null commit and
 source hashes rather than a fabricated revision.

@@ -1,5 +1,7 @@
 # FLOWCORE Deep Observability Engine completion
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 This increment extends the existing daemon, bounded aggregation windows,
 Unix IPC, SDK reporting, native inventory and optional CO-RE collector.
 It does not create a second control service.

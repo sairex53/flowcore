@@ -1,5 +1,7 @@
 # Network Research Lab 2.0 — validation results
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 ## Scope
 
 The runs below validate the version 3 scenario parser, timed-event actuator, IPv6 endpoint setup/recovery, paced UDP generator/accounting, artifact generation, replay schedule, minimization, namespace cleanup, and host-network boundary. They do not establish that a controller strategy is better, nor that a particular packet impairment is deterministic.

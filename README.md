@@ -35,7 +35,7 @@ Ctrl+C or SIGTERM shuts down this monitor. It creates no lab and changes no host
 
 Privileged tests create owned namespaces/veth devices. Use a disposable Linux VM. They do not require custom kernel modules or a replacement TCP stack.
 
-On Fedora, scripts/setup-tools.sh extracts the distribution tc tool into tools/. Alternatively set FLOWCORE_TC to an installed absolute tc path. Optional CAKE, MPTCP, BPF and Podman need actual kernel/userspace support.
+On Fedora, scripts/setup-tools.sh extracts the distribution tc tool into tools/. Alternatively set FLOWCORE_TC to an installed absolute tc path. HTB labs require actual JSON class readback: Fedora tc 7.0 passed; tc 6.1 on the x86 runner returned text and is unsupported for this lab. Optional CAKE, MPTCP, BPF and Podman need actual kernel/userspace support.
 
 ```sh
 ./scripts/setup-tools.sh

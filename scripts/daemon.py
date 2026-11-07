@@ -97,6 +97,8 @@ class Service:
             candidate.start()
             policy = self.config['policies'][name]
             candidate.install_policy(policy, settings)
+            # Admission requires usable telemetry before replacing a working policy.
+            candidate.counters()
             self.capabilities[policy['scheduler']] = 'verified'
             for index in (0, 1):
                 watches.append(candidate.watcher(index))

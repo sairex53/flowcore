@@ -1,5 +1,7 @@
 # FLOWCORE runtime performance engineering
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 ## Measurements and changes
 
 Fedora 45 AArch64, kernel 7.2.11-300.fc45.aarch64. The system has neither

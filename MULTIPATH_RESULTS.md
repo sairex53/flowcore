@@ -1,5 +1,7 @@
 # Multipath validation results
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Fedora 45 aarch64, kernel 7.2.11-300.fc45.aarch64, iproute2 7.0.0. Kernel and userspace path managers were listed; only the default scheduler was listed. Kernel PM was used.
 
 Existing laboratory baseline before the extension: results/mptcp-1793976939035009914, 4,292,608 verified bytes, two subflows, no fallback, 29 completed exchanges during primary outage and 55 after recovery. This is a historical single run.

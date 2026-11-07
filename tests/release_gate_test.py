@@ -26,11 +26,18 @@ class GateTest(unittest.TestCase):
             self.assertFalse(gate.evaluate(root, data)["publication_allowed"])
             data["gates"]["security"] = "PASS"
             (root / "LICENSE").unlink()
+            (root / "README.md").write_text("large fixture " * 20)
             (root / "LICENSE").symlink_to(root / "README.md")
             self.assertFalse(gate.evaluate(root, data)["publication_allowed"])
 
     def test_invalid_input(self):
         cases = [None, {}, dict(version=True), {"unexpected": 1}]
+        valid = dict(version=1, scope="fixture", license_approved=False,
+                     production_ready=False, gates={key: "PASS" for key in gate.GATES})
+        for key, value in (("version", True), ("license_approved", "yes"),
+                           ("production_ready", True), ("scope", []),
+                           ("gates", {key: [] for key in gate.GATES})):
+            cases.append(dict(valid, **{key: value}))
         for data in cases:
             with self.assertRaises(ValueError):
                 gate.evaluate(ROOT, data)

@@ -1,5 +1,7 @@
 # Native migration measurements
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 ## Migrated component
 
 Opt-in C++23 histogram P50/P95/P99 summaries, reached through ABI version 1. Python still owns sample insertion, sparse merges, rolling windows, telemetry collection, daemon lifecycle, IPC, policy state, helpers and research orchestration.

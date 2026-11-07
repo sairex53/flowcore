@@ -37,3 +37,7 @@ The scripts use explicit systemctl operations so package build does not depend o
 ## Safe lab mode
 
 Run privileged experiments separately from the monitor, with a different FLOWCORE_RUNTIME and FLOWCORE_STATE directory. Only explicitly created owned namespaces/interfaces are admitted. Avoid running experimental root daemons under the monitoring service unit. No startup checkpoint reactivates a controller, BPF program, service lease or lost network namespace.
+
+## Review toolchain limitation
+
+The HTB laboratory requires tc class JSON readback, verified with Fedora iproute2 7.0. The Ubuntu x86_64 review runner had iproute2 6.1, which returned text despite -j: full laboratory operation was rejected. No fallback class counters are fabricated. Read-only monitoring, native helper and held-connection scale checks have separate evidence; see FEATURE_MATRIX.md and REVIEW_FINDINGS.md.

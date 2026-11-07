@@ -245,3 +245,6 @@ add_test(NAME documentation_links COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_S
 install(FILES API.md FEATURE_MATRIX.md RELEASE_READINESS.md BENCHMARK_REPORT.md
     OSS_ROADMAP.md REVIEW_FINDINGS.md CONTRIBUTING.md CHANGELOG.md
     DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME workload_legacy COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/workload_legacy_test.py")
+set_tests_properties(workload_legacy PROPERTIES TIMEOUT 15)

@@ -1,5 +1,7 @@
 # Adaptive Intelligence Engine 2.0 results
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Fedora 45 AArch64. Initial functional matrix used an 18-second workload,
 two phases at 90 and 170 requests/s, four bulk streams, a 10 Mbit/s cap,
 12 ms controller objective and 25 ms deadline. Each arm offered 2,420

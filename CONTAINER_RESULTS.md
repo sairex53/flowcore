@@ -1,5 +1,7 @@
 # Workload and container validation
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Fedora 45 ARM64. These results validate classification and lifecycle cleanup, not production host QoS or performance superiority.
 
 ## Concurrent native workloads

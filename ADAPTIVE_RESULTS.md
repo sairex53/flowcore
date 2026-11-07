@@ -1,5 +1,7 @@
 # Adaptive controller validation
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Fedora 45 ARM64, Linux 7.2.11-300.fc45.aarch64. Experiments used the managed
 daemon and real TCP sockets in disposable veth namespaces. Each run issued
 1,520 application requests in four 4-second phases at 60, 100, 135 and

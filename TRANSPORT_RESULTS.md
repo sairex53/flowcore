@@ -1,5 +1,7 @@
 # Transport integration results
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Fedora 45 ARM64, kernel 7.2.11-300.fc45.aarch64, Python 3.15 and aioquic 1.7.2. These are experimental single-run functionality observations, not transport rankings or a demonstration of FLOWCORE performance gains.
 
 The initial suite artifact results/transport-1794005535178112844 confirmed TCP, negotiated MPTCP and QUIC handshakes. Inspection found two benchmark defects: whole-session goodput included inactive gaps, and the interface fault happened after the short workload. Its interface case is invalid as a recovery experiment.

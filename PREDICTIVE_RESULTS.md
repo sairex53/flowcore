@@ -1,5 +1,7 @@
 # Predictive engine: measured results
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 **No measurable predictive advantage is established. Keep this feature experimental
 and disabled by default.** The chosen hybrid model produced no verified proactive
 kernel intervention in the evaluated active arms. Risk remains an uncalibrated

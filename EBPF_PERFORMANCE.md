@@ -1,5 +1,7 @@
 # eBPF flow-engine measurements
 
+> Historical scoped evidence. The independent maintainer review is in [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md); older results below are not new independent validation or general performance guarantees.
+
 Outcome: **INCONCLUSIVE** for a latency or throughput advantage over existing
 flower classification. No general eBPF speedup or zero-overhead claim is supported.
 

@@ -20,6 +20,6 @@
 
 ## Portability and scope
 
-Current environments: Fedora ARM64 VM and GitHub-hosted x86_64 unprivileged CI. Obtain a physical Linux system and a second privileged x86_64 lab before hardware/network-portability claims. A 10k-held-connection fixture does not validate 10k SDK clients, managed workloads or classified BPF flows.
+Current environments: Fedora ARM64 VM and GitHub-hosted x86_64 CI, including native helper and held-connection namespace fixtures. The full HTB service lab is unsupported with the runner’s tc 6.1 text class output; validate a compatible JSON-class toolchain next. Obtain a physical Linux system before hardware claims. A 10k-held-connection fixture does not validate 10k SDK clients, managed workloads or classified BPF flows.
 
 Kubernetes integration, arbitrary container support, transparent TCP-to-QUIC migration, encrypted stream inspection and replacement transport stacks are outside implemented scope. ROADMAP.md links here to keep one authoritative plan.

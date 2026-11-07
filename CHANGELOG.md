@@ -15,3 +15,7 @@ The build version is retained for existing API/package compatibility. No stable 
 - New held-out static-pilot/evaluation plan, scale fixture and release gates preserve negative/inconclusive evidence.
 
 Earlier measured values remain in their historical reports and must be interpreted with each report's conditions. No universal latency improvement or production readiness is claimed.
+
+- Reject laboratory policy admission when required TC counter readback is unusable; preserve the previous policy and identify the failed TC object kind.
+- Fix legacy non-research bulk workload startup, surface unexpected asynchronous worker failures, and allow independent UDP/TCP listeners to share a numeric port.
+- Add real loopback regression coverage and document the x86 tc 6.1 class-JSON limitation.

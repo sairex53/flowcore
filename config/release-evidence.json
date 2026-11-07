@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "review_scope": "maintainer-run reproduction; not external certification",
+  "performance_source_commit": "7e801a6de4f1e4438e243d8f22e8b2aae0f26c8b",
+  "raw_publication": "pending reviewed evidence bundle; raw local artifacts excluded from Git",
+  "files": [
+    {
+      "path": "results/release-review-1794013063206910777/index.json",
+      "bytes": 88844,
+      "sha256": "f81cf33d1089317c46e4adcb4ae6ba5da5c2e43862fee55ad1f43f1c4d77abd6"
+    },
+    {
+      "path": "results/release-review-1794013063206910777/frozen-plan.json",
+      "bytes": 9854,
+      "sha256": "8ec04030a60fa7021109d6ca87376f783ac9545a3c456116a6487af9f3cbf3a2"
+    },
+    {
+      "path": "/home/elliot/projects/flowcore/results/review-pilot-1794013063207259193/summary.json",
+      "bytes": 53192,
+      "sha256": "1e1e9bdf36207e6ad85c12eabb9b0ee0c7234e7e587b4b0607f55bf9a4d2818a"
+    },
+    {
+      "path": "/home/elliot/projects/flowcore/results/review-primary-1794013173664498860/summary.json",
+      "bytes": 350666,
+      "sha256": "fba623d7f414ca08161cf59ddeb8197200c9add3d59d47c8c76e155373c19886"
+    },
+    {
+      "path": "/home/elliot/projects/flowcore/results/review-baselines-1794014094472115202/summary.json",
+      "bytes": 87680,
+      "sha256": "d1583b34df75167fb8f9539c608143170d592ead1037582280d399cc6640ecd8"
+    },
+    {
+      "path": "/home/elliot/projects/flowcore/results/review-low-1794014196307277881/summary.json",
+      "bytes": 86003,
+      "sha256": "192a24ec1b25aafab593cbf0110deea673960c2fded73eac7cb75fe25ca295ad"
+    },
+    {
+      "path": "/home/elliot/projects/flowcore/results/review-linux_default-1794014296991932472/summary.json",
+      "bytes": 29316,
+      "sha256": "6d8ae22e4843026614b5e796dc08724ee6d1b7cbfa4a36aebca3ead51326abde"
+    },
+    {
+      "path": "results/flow-benchmark-1794014542113457787/summary.json",
+      "bytes": 3299,
+      "sha256": "99ca1397d7c35a97602615c7a48b3a7a14dc06b6651343fa92449a7769ac69df"
+    },
+    {
+      "path": "results/observer-perf-1794014562413161065/summary.json",
+      "bytes": 8275,
+      "sha256": "d95fcaeef931d4b7028c82f6f22469e1fdfd17e2801bfd3effcc8d3eeda246dd"
+    },
+    {
+      "path": "results/multipath-1794014619473428020/summary.json",
+      "bytes": 122125,
+      "sha256": "e04ca215186960a64bea050a81c2faf9e9093b9bb1f74a3cee7364b4cca23a7d"
+    },
+    {
+      "path": "results/container-1794014688374116181/summary.json",
+      "bytes": 1712,
+      "sha256": "77c3ddaab449f40611e2d5f323de2e4c934ccc89a9c19e7a269a68b71cec399f"
+    },
+    {
+      "path": "results/transport-1794014693324543205/summary.json",
+      "bytes": 407260,
+      "sha256": "95b7ecca7e9ad6aa34b837846d2208a3f370fad99c7a59bbfdbe0fa93e809222"
+    },
+    {
+      "path": "results/deployment-systemd-1794015671180026521.json",
+      "bytes": 2347,
+      "sha256": "42517a345dcae67e73f4cd558cb966269f4a27fa0795890f1c5d53c01bd489f3"
+    }
+  ]
+}

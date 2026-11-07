@@ -6,10 +6,10 @@
   "gates": {
     "functional": "PARTIAL",
     "security": "PARTIAL",
-    "performance_evidence": "UNVERIFIED",
+    "performance_evidence": "PARTIAL",
     "reproducibility": "PARTIAL",
     "portability": "PARTIAL",
-    "documentation": "PARTIAL",
+    "documentation": "PASS",
     "packaging": "PARTIAL"
   }
 }

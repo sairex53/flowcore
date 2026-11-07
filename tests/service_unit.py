@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,7 @@ BINARY = Path(os.environ.get('FLOWCORE_TEST_BINARY', ROOT / 'build/flowcore'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from service_config import load
 from service_lab import ServiceLab
+from daemon import Service
 from network_state import snapshot
 
 
@@ -44,6 +46,28 @@ class Unit(unittest.TestCase):
         lab.tc = lambda *args: 'unexpected output'
         with self.assertRaisesRegex(RuntimeError, 'tc qdisc readback is not JSON'):
             lab.counters()
+
+    def test_unreadable_candidate_preserves_existing_policy(self):
+        cfg = load(ROOT / 'config/service.json')
+        service = Service.__new__(Service)
+        service.config, service.profile = cfg, cfg['lab']
+        service.active, service.lab = 'default', object()
+        service.capabilities = {}
+        service.close_lab = Mock()
+        original = service.lab
+        with tempfile.TemporaryDirectory(dir=BINARY.parent) as directory:
+            with patch('daemon.RUNTIME', Path(directory)), patch('daemon.ServiceLab') as constructor:
+                candidate = constructor.return_value
+                candidate.counters.side_effect = RuntimeError('tc class readback is not JSON')
+                with self.assertRaisesRegex(RuntimeError, 'tc class readback'):
+                    service.replace('fair', cfg['lab'])
+                candidate.close.assert_called_once()
+                candidate.watcher.assert_not_called()
+                service.close_lab.assert_not_called()
+                self.assertEqual(list(Path(directory).iterdir()), [])
+        self.assertIs(service.lab, original)
+        self.assertEqual(service.active, 'default')
+        self.assertEqual(service.capabilities, {})
 
     def test_interfaces(self):
         result = snapshot()
