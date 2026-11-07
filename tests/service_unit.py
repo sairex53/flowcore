@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('FLOWCORE_TEST_BINARY', ROOT / 'build/flowcore'))
 sys.path.insert(0, str(ROOT / 'scripts'))
 from service_config import load
+from service_lab import ServiceLab
 from network_state import snapshot
 
 
@@ -37,6 +38,12 @@ class Unit(unittest.TestCase):
             path.write_text('{"version":1,"version":1}')
             with self.assertRaisesRegex(ValueError, 'duplicate'):
                 load(path)
+
+    def test_invalid_tc_readback_is_identified(self):
+        lab = ServiceLab.__new__(ServiceLab)
+        lab.tc = lambda *args: 'unexpected output'
+        with self.assertRaisesRegex(RuntimeError, 'tc qdisc readback is not JSON'):
+            lab.counters()
 
     def test_interfaces(self):
         result = snapshot()

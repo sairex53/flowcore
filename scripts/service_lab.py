@@ -95,8 +95,13 @@ class ServiceLab(Lab):
         self.validate()
 
     def counters(self):
-        stats = {kind: json.loads(self.tc('-s', '-j', kind, 'show', 'dev', 'fc0'))
-                 for kind in ('qdisc', 'class', 'filter')}
+        stats = {}
+        for kind in ('qdisc', 'class', 'filter'):
+            output = self.tc('-s', '-j', kind, 'show', 'dev', 'fc0')
+            try:
+                stats[kind] = json.loads(output)
+            except ValueError as error:
+                raise RuntimeError(f'tc {kind} readback is not JSON: {output[:160]!r}') from error
         stats['receiver_qdisc'] = json.loads(self.command(1, [TC, '-s', '-j', 'qdisc', 'show', 'dev', 'fc1']))
         by_handle = {row['handle']: row for row in stats['class']}
         stats['traffic_classes'] = {name: by_handle[f'1:{minor}'] for name, minor in CLASSES.items()
