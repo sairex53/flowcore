@@ -35,7 +35,7 @@ Failed runs remain identified; no noisy or inconvenient evaluation run was delet
 | Final unprivileged CTest | 30/30 PASS, 20.91 s, including real legacy loopback and admission regressions | build/review-final-ctest-2.log |
 | ARM64 ASan/UBSan + leak detection | 3/3 PASS: telemetry_native, intent_parser, sdk_lifetime | build/review-asan-tests.log |
 | C++ static analyzer | GCC -fanalyzer PASS on policy, intelligence/predictive, telemetry targets only | build/review-analyzer.log |
-| Python/static/source hygiene | compileall PASS; Ruff 0.17.4 E9/F63/F7/F82 PASS; 182 source files checked for whitespace/newlines | build/review-final-static.log; build/review-final-style.log |
+| Python/static/source hygiene | compileall PASS; Ruff 0.17.4 E9/F63/F7/F82 PASS; 183 source files checked for whitespace/newlines | build/review-final-static.log; build/review-final-style.log |
 | Documentation/release gate | local Markdown links PASS; strict schema/license approval/symlink tests PASS; --enforce exits 1 as required | tests/release_gate_test.py; build/review-release-gate-enforced.json |
 | Source archive | two archives from identical input/epoch had matching SHA-256 | build/review-archive-{1,2}.sha256; not independent reproducible binary builds |
 | Tracked-file secret patterns | no candidates in bounded prefix/private-key/password-assignment scan; not exhaustive | build/review-secret-scan.json; no values printed |
@@ -48,7 +48,7 @@ Failed runs remain identified; no noisy or inconvenient evaluation run was delet
 | MPTCP | PASS functional: two subflows confirmed, one failover repetition per strategy, host state unchanged; not performance superiority | build/review-mptcp.log; results/multipath-1794014619473428020 |
 | QUIC | PASS functional: five scenarios, 600/600 measured transport echoes, confirmed aioquic handshake; SDK drops recorded | build/review-transport.log; results/transport-1794014693324543205 |
 | Scale ARM64 | 100/1,000/10,000 held TCP connections PASS, zero failed echoes, FD 7→7 | results/release-scale-1794013003494455224; no soak/10k-client guarantee |
-| Performance | 77 held-out/exploratory evaluation runs plus six disjoint pilot runs, full failure/uncertainty reporting | BENCHMARK_REPORT.md; config/release-evidence.json |
+| Performance | 77 held-out/exploratory runs plus six disjoint pilot runs, then 20 newly preregistered same-allocation runs; failures/uncertainty preserved | BENCHMARK_REPORT.md; config/release-evidence.json |
 | Staged CMake installation | PASS: zero capabilities, watchdog, metrics, parser/auth refusal, SDK consumer, staged file removal | build/review-installed.log |
 | RPM/SRPM BPF-disabled build | PASS, including CTest 30/30 in RPM check | build/review-rpm-final.log |
 | Latest extracted RPM runtime/lifecycle | PASS: reload/partial-config refusal, SIGKILL/stale socket, concurrent clients, rapid restart, symlink/checkpoint refusal, cleanup | build/review-rpm-runtime-final.log |
@@ -77,3 +77,11 @@ This was a fresh maintainer-run reproduction using disjoint pilot/evaluation see
 **Decision: do not publish a stable or production-ready release.** The source repository is public for review, but no stable tag, release asset or owner-selected license is created. Publication remains blocked by licensing; functional/security/packaging/portability/reproducibility gates remain PARTIAL. A public source repository without an owner-selected license is not a completed open-source licensing decision.
 
 Next priorities: recover from SDK terminal-event loss in long-lived sessions; isolate same-allocation controller action effects on new held-out scenarios; support/verify TC class readback across declared toolchains; complete installed active-helper, genuine reboot and soak campaigns; resolve dependency-aware RPM upgrade/erase under enforcing security policy; review/publish a raw-evidence bundle and sign licensed artifacts.
+
+## Controlled same-allocation follow-up
+
+Scenario frozen in 408e7df before execution, 10 paired static30/hybrid runs on new disjoint seeds: 20/20 valid, 35,200 requests, zero failures/actions. The 10% regression-margin gate passed; lower P99 remained unsupported (−2.073% effect, simultaneous interval −13.815% to +8.800%). This is useful bounded non-regression evidence with identical initial allocations, not an adaptive-performance release gate or an improvement guarantee. BENCHMARK_REPORT.md contains the complete table, scoped CPU cost and limits. Raw path: results/research-1794016468042146959.
+
+## x86 installed-mode follow-up
+
+[CI at fb2c9ff](https://github.com/sairex53/flowcore/actions/runs/42327112417) additionally passed staged installation on the x86_64 VM: ordinary-user monitor with zero effective capabilities, watchdog/metrics, authorization/parser refusal, installed SDK consumer/session reuse and staged file removal. CTest 30/30 and selected sanitizers 3/3 also passed in that run. This is CMake staged installation, not a Fedora RPM transaction or installed privileged-helper campaign. Retained log: build/review-x86-installed-ci.log.

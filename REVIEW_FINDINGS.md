@@ -6,7 +6,7 @@ Reviewer: repository-maintainer agent. No external reviewer or certification bod
 
 Severity: HIGH for laboratory functionality, no demonstrated privilege escalation. Root-owned installed state/config checks introduced in deployment preparation also rejected the user-owned source project's config during sudo lab tests. tests/flow_v2_integration.py failed in durable_state.read_json before testing the engine.
 
-Fix: service_config.load explicitly trusts the source root owner only for configs resolving inside that source root. Installed mode and generic state reads retain root/daemon-UID ownership validation. Regression test fakes a different daemon UID and checks source acceptance, installed rejection and unchanged state rejection. Evidence: build/review-config-owner-test.log and build/review-flow-v2.log. Commit 84d8655.
+Fix: service_config.load explicitly trusts the source root owner only for configs resolving inside that source root. Installed mode and generic state reads retain root/daemon-UID ownership validation. Regression test fakes a different daemon UID and checks source acceptance, installed rejection and unchanged state rejection. Evidence: build/review-config-owner-test.log and build/review-flow-v2.log. Commit 84d8655. The initial failing flow-v2 log was superseded; the retained regression and corrected run establish the fix, not an archived original traceback.
 
 Reproduce: sudo python3 -B tests/flow_v2_integration.py; python3 -B tests/deployment_test.py.
 
@@ -22,7 +22,7 @@ Reproduce: ctest --test-dir build -R intent_v2_live --output-on-failure. Long-li
 
 Severity: MEDIUM documentation integrity. ENVIRONMENT.md still said no BPF program existed, and README defaulted to root execution despite the implemented ordinary-user monitor. ARCHITECTURE.md described the original controller without identifying it as historical.
 
-Fix: current quickstart defaults to zero-privilege monitoring; historical sections are labelled; the feature matrix and fresh report are authoritative for this review. Historical measurements remain available and are not rewritten as new evidence.
+Fix: current quickstart defaults to zero-privilege monitoring; historical sections are labelled; the feature matrix and fresh report are authoritative for this review. Historical measurements remain available and are not rewritten as new evidence. Reproduce the stale claims with git show 7e801a6:README.md and git show 7e801a6:ENVIRONMENT.md; compare the current quickstart and feature matrix.
 
 ## Interpretation constraints
 

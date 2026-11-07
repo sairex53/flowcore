@@ -78,6 +78,22 @@
       "path": "results/workloads-1794015909711438153/summary.json",
       "bytes": 4086,
       "sha256": "788d788f0661972494022465daeb697a13acbdee5cd8df90166fc9f8bdce4cab"
+    },
+    {
+      "path": "results/research-1794016468042146959/summary.json",
+      "bytes": 148358,
+      "sha256": "833726f4c59fbeb53622eef760dd490a0df31c63ca03c7ac5f1c30574ec81d56"
+    },
+    {
+      "path": "results/research-1794016468042146959/experiment.json",
+      "bytes": 1618,
+      "sha256": "6f31294d5601b84a64e09cc80a6cfa7e06e24dc2a7a55fa28b01b2a26cb774d0"
+    },
+    {
+      "path": "results/research-1794016468042146959/independent-analysis.json",
+      "bytes": 31935,
+      "sha256": "cd9990cbac068775ab717079c49025534c40c207fd6093895490a320d9d5443e"
     }
-  ]
+  ],
+  "followup_source_commit": "408e7df35bdc17c5ab1843d5ad818f04b06051c4"
 }

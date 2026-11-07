@@ -13,7 +13,7 @@ Labels: STABLE means a published supported contract with its scoped release gate
 | Telemetry/metrics | EXPERIMENTAL | Request ledgers, TC/link readback, INET_DIAG, histograms, loss counters, CPU/RSS | Polling misses short events; bounded samples can be truncated |
 | eBPF observer | EXPERIMENTAL | Fresh live observer run and mode-overhead comparison | Short single-repetition overhead; not zero cost; installed RPM disables BPF |
 | Per-flow intelligence | PARTIAL | 1,200 wire-flow cookies/exported rows; IPv4/IPv6/TCP/UDP/NAT; interrupted export refusal; 1,070 kernel fixtures separately labelled | 4,096 map bound; retained rows are not complete traffic coverage; no 10k-classification proof |
-| Adaptive controller | PARTIAL | 10 held-out paired runs per strategy against pilot-selected static QoS | Zero dynamic changes in primary series; no demonstrated advantage |
+| Adaptive controller | PARTIAL | 10 held-out paired runs per strategy against pilot-selected static QoS; separate 10-pair same-allocation follow-up | Zero dynamic changes in both series; same-allocation regression-margin gate passed, superiority unproven |
 | Predictive controller | EXPERIMENTAL | Held-out predictive/shadow comparisons and causal forecast histories | No demonstrated predictive/action benefit; short-window/cold-start limits |
 | MPTCP lab/path policies | EXPERIMENTAL | Fresh TCP/default-MPTCP/static/policy failover matrix; negotiation/subflows verified; host state preserved | One repetition; endpoint backup controls, not custom scheduling or TCP migration |
 | Podman/cgroup integration | PARTIAL | Fresh rootful container classification and stale-rule cleanup; bounded owner registry | Multiple-container congestion/restart/rootless enforcement unverified |
@@ -34,7 +34,7 @@ The per-flow wire test had 1,200 exported cookies. Its 1,070 BPF_PROG_TEST_RUN c
 | Environment | Status |
 |---|---|
 | Fedora 45 ARM64 QEMU VM | Fresh root/network/scale/performance validation executed |
-| GitHub-hosted x86_64 Linux | Fresh build/unit/sanitizer CI; native helper and 10k held connections passed; full HTB lab UNSUPPORTED with tc 6.1 text class readback |
+| GitHub-hosted x86_64 Linux | Fresh build/unit/sanitizer/staged-install + SDK-consumer CI; native helper and 10k held connections passed; full HTB lab UNSUPPORTED with tc 6.1 text class readback |
 | Physical Linux system | UNVERIFIED: none available in this review |
 
 Host-wide adaptive enforcement, native Kubernetes integration, arbitrary container coverage, transparent TCP→QUIC migration and per-request kernel scheduling inside encrypted multiplexed connections are UNSUPPORTED.

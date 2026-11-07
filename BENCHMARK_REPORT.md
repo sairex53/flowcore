@@ -137,7 +137,7 @@ Primary service labels share class-aggregated control. This does not validate co
 
 Tables show medians of independent run summaries; failed/offered are totals. Deadline attainment counts all offers, including failures. Completed requests outside the scheduling window remain in the ledger; they are not silently dropped from latency/failure comparisons. Successful-request latency alone is not the outcome. Total app Mbps counts verified request payload plus background goodput, excluding transport overhead; observed link rate counts link bytes.
 
-Order is seeded/randomized within paired repetition blocks; block workload seeds match between modes. Pilot and evaluation partitions are disjoint. The plan and its pre-data sample-window amendment are in Git. No outlier was deleted: predictive-shadow's 110.076 ms P99 run remains in the primary summary. Individual-run median intervals use exact order-statistic coverage; primary gate intervals also adjust for the tested endpoint family. Three-run intervals are explicitly unavailable, not bootstrapped from thousands of requests. Statistical fixture tests in tests/research_test.py cover effects, failure regressions, invalid experiments and insufficient samples.
+Order is seeded/randomized within paired repetition blocks; block workload seeds match between modes. Pilot and evaluation partitions are disjoint. The plan and its pre-data sample-window amendment are in Git. No outlier was deleted: predictive-shadow's 110.076 ms P99 run remains in the primary summary. Investigation of r6-predictive-shadow found 20 critical requests with latency >=100 ms, scheduled 5.720–5.887 s after start. Their dispatch lag ranged 0.215–46.377 ms; aggregate dispatch P99 was 9.798 ms, just below the 10 ms warning. This localized event is not explained solely by the aggregate warning; available snapshots do not establish a kernel-versus-VM cause. Individual-run median intervals use exact order-statistic coverage; primary gate intervals also adjust for the tested endpoint family. Three-run intervals are explicitly unavailable, not bootstrapped from thousands of requests. Statistical fixture tests in tests/research_test.py cover effects, failure regressions, invalid experiments and insufficient samples.
 
 No primary run triggered the configured noise warning. One static baseline run and every low-load/default run triggered dispatch-P99 >10 ms. All remain included. Primary median host busy fraction is about 12–12.4% across four CPUs; low-load medians are about 4.2–4.5%, yet dispatch lag is about 11.4–11.7 ms. Low host utilization does not prove absence of VM scheduling interference. Host CPU/PSI/load/kernel/build/commit snapshots are preserved. CPU seconds in the main table cover daemon/collected child cost during the sampled interval; RSS is sampled daemon peak. Neither is whole-system or universal overhead.
 
@@ -206,7 +206,7 @@ All QUIC handshakes were confirmed with aioquic. MPTCP negotiation was confirmed
 
 ## Ablations still missing
 
-There is no independently reproduced same-allocation application-intent on/off comparison, sufficiently powered queue-input ablation, prediction method/lead-time ablation, or active-action benefit comparison. Existing fixture tests and decision logs are not substitute measurements. Complete absence of FLOWCORE versus installed host-monitor overhead, long-duration memory stability and physical-hardware measurements remain unverified.
+The follow-up below adds a same-allocation static-versus-hybrid comparison. There is still no independently reproduced application-intent on/off comparison, sufficiently powered queue-input ablation, prediction method/lead-time ablation, or active-action benefit comparison. Existing fixture tests and decision logs are not substitute measurements. Complete absence of FLOWCORE versus installed host-monitor overhead, long-duration memory stability and physical-hardware measurements remain unverified.
 
 ## Reproduction and evidence retention
 
@@ -227,3 +227,33 @@ Full raw artifacts are preserved locally and excluded from Git per repository po
 ## Separately preregistered same-allocation check
 
 After the primary review exposed the initial-allocation confound, scenarios/review-same-allocation.json freezes 10 new paired repetitions of static30 versus hybrid, seed 2406113917, with the identical 16-second primary workload/network and matching 30% critical/30% background initial guarantees. This is a follow-up causal check, not an amendment to the primary endpoint or a re-selection of policies. Block seeds are disjoint from every prior pilot/evaluation group. No parameter fitting on this dataset is permitted. The existing 10% P99/failure/deadline/goodput gates are unchanged. Results are appended only after execution; no benefit is presumed.
+
+### Follow-up results
+
+Evidence: /home/elliot/projects/flowcore/results/research-1794016468042146959
+
+| Mode | Valid/invalid | Overall P50/P95/P99 ms | Critical P99 ms | Failed/offered | Deadline attainment | Total app Mbps | Background Mbps | Background Jain | CPU s | Peak RSS MiB | Changes |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| static30 | 10/0 | 15.503/25.146/29.950 | 30.786 | 0/17600 | 1.000 | 11.191 | 7.587 | 1.000 | 1.468 | 32.443 | 0 |
+| hybrid | 10/0 | 15.475/25.174/29.519 | 29.972 | 0/17600 | 1.000 | 11.182 | 7.578 | 1.000 | 1.555 | 34.043 | 0 |
+
+#### Run-level variability and uncertainty
+
+| Mode | Overall P99 min–max ms | 95% distribution-free median interval ms |
+|---|---:|---|
+| static30 | 28.381–33.125 | 28.487–33.079 (coverage 0.9785) |
+| hybrid | 27.761–32.641 | 28.379–31.916 (coverage 0.9785) |
+
+#### Paired effects
+
+- hybrid: overall P99 median relative regression -2.073%; gate PASS; simultaneous interval -13.815% to 8.800% (coverage 0.998047).
+  Critical P99 median paired effect -1.281%; exploratory interval -8.309% to 8.120% (coverage 0.978516).
+
+
+All 20 runs were valid, with 35,200 offers, zero failed requests, zero actions and no configured noise warning. All ten paired config.json files are identical between modes. Source commit 408e7df35bdc17c5ab1843d5ad818f04b06051c4, clean at start; earlier primary/pilot results are not pooled with these observations.
+
+The gate is **PASS for the declared regression margins in this workload**, not a superiority result: paired P99 effect −2.073%, simultaneous interval −13.815% to +8.800%, so lower P99 is not supported. Critical P99 is secondary: −1.281%, interval −8.309% to +8.120%. The favorable point estimate is published alongside uncertainty and the unfavorable primary comparison. With zero actions, this does not demonstrate adaptive efficacy or recovery.
+
+Sampled CPU cost medians were 1.468 s static30 versus 1.555 s hybrid; the exploratory paired CPU increase was 4.115% with unadjusted median interval 2.189–7.901% (coverage 0.9785). Median daemon RSS was about 32.44 versus 34.04 MiB. These are scoped overhead observations, not a whole-system CPU budget or universal performance bound.
+
+The narrower follow-up is consistent with initial allocation being a material confound in the original strategy comparison. It does not causally quantify that confound across different source snapshots/seeds, and it does not erase the original selected-static comparison. General adaptive advantage remains unproven. Replay: sudo ./build/flowcore bench replay results/research-1794016468042146959/experiment.json. Summary, raw ledgers, timeline, source hashes and generated report CSV/HTML remain in that directory.
