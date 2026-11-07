@@ -141,6 +141,7 @@ class Experiment:
         self.lab, self.private, self.mode, self.seed = lab, private, mode, seed
         self.agents, self.daemons, self.actuators = {}, {}, {}
         self.coordinator = None
+        self.fleet_config = None
         self.floor = 500 if mode == 'fabric' else 2000
         self.identities, self.pins = private_pki(private)
         self.coordinator_config = private / 'coordinator.json'
@@ -174,10 +175,13 @@ class Experiment:
                         precedence=10, weight=4 if host == 'a' else 1, desired_kbit=rate,
                         target_p99_us=100000)
                    for host, rate in zip(HOSTS, demands)]
-        save_user(self.coordinator_config, dict(cluster='fabric-lab', listen=dict(host='0.0.0.0', port=PORT),
+        coordinator_config = dict(cluster='fabric-lab', listen=dict(host='0.0.0.0', port=PORT),
             tls=self.identities['coordinator'], admins=[self.pins['operator']], agents=agents,
             resources={'uplink': dict(capacity_kbit=CAPACITY, path=['router-egress', 'receiver'])},
-            intents=intents))
+            intents=intents)
+        if self.fleet_config is not None:
+            coordinator_config['fleet'] = self.fleet_config
+        save_user(self.coordinator_config, coordinator_config)
         name = 'coordinator' if self.coordinator is None else 'coordinator-restart'
         self.coordinator = self.lab.spawn(ROUTER, [sys.executable, '-B', ROOT/'scripts/fabric_coordinator.py',
                     self.coordinator_config, '--state', self.coordinator_state], name)
@@ -188,7 +192,7 @@ class Experiment:
                self.private/f'agent-{host}.json', '--state', self.private/f'{host}-state'],
                f'agent-{host}' if host not in self.agents else f'agent-{host}-restart')
 
-    def start(self):
+    def start(self, coordinate=True):
         for index, host in enumerate(HOSTS):
             act = self.private/f'actuator-{host}.json'
             local = dict(resource='uplink', interface='data0', floor_kbit=self.floor, max_kbit=self.ceiling)
@@ -219,6 +223,8 @@ class Experiment:
         for index, host in enumerate(HOSTS):
             self.agents[host] = self.agent_start(index, host)
         until(self.verify, 'baseline readback acknowledgements')
+        if not coordinate:
+            return {'caps': [self.data_cap(i) for i in range(3)]}
         before = time.monotonic()
         report = self.cli('reconcile', '--apply')
         assert report['state'] == 'committed'

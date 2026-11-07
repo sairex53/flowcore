@@ -35,7 +35,7 @@ def pins(value):
 
 
 def config(value):
-    fields(value, ('cluster', 'listen', 'tls', 'admins', 'agents', 'resources', 'intents'))
+    fields(value, ('cluster', 'listen', 'tls', 'admins', 'agents', 'resources', 'intents'), ('fleet',))
     ident(value['cluster'])
     fields(value['listen'], ('host', 'port'))
     if not isinstance(value['listen']['host'], str) or not 1 <= len(value['listen']['host']) <= 253:
@@ -105,7 +105,12 @@ def config(value):
 
 def telemetry(value):
     fields(value, ('age_ms', 'interfaces', 'services', 'daemon_healthy', 'controller', 'bottleneck',
-                   'egress_kbit', 'decision'))
+                   'egress_kbit', 'decision'), ('sample_end_ns', 'controller_actions', 'controller_session'))
+    for key in ('sample_end_ns', 'controller_actions'):
+        if value.get(key) is not None:
+            integer(value[key], 0, 2**63-1)
+    if value.get('controller_session') is not None:
+        ident(value['controller_session'])
     integer(value['age_ms'], 0, 120000)
     if value['daemon_healthy'] is not None:
         boolean(value['daemon_healthy'])
@@ -199,6 +204,12 @@ class Coordinator:
                               quotas={host: row['floor_kbit'] for host, row in self.egress.items()})
             atomic_json(self.path, self.state)
         self.validate_state(self.state)
+        self.fleet = None
+        if 'fleet' in cfg:
+            from fleet_rollout import Fleet
+            self.fleet = Fleet(self, cfg['fleet'])
+        elif 'fleet' in self.state:
+            raise ValueError('Fleet state requires Fleet authority configuration')
 
     def validate_quotas(self, quotas):
         fields(quotas, self.egress)
@@ -210,7 +221,7 @@ class Coordinator:
             raise ValueError('allocation exceeds shared capacity')
 
     def validate_state(self, state):
-        fields(state, ('epoch', 'scope', 'generation', 'pending', 'quotas'))
+        fields(state, ('epoch', 'scope', 'generation', 'pending', 'quotas'), ('fleet',))
         hexdigest(state['epoch'], 32)
         if state['scope'] != self.scope:
             raise ValueError('enrollment resource scope changed; drain and re-enroll explicitly')
@@ -221,8 +232,7 @@ class Coordinator:
             if any(state['quotas'][host] > target for host, target in state['pending'].items()):
                 raise ValueError('pending allocation would decrease a committed cap')
 
-    def commit(self, quotas, pending):
-        state = dict(self.state, generation=self.state['generation'] + 1, quotas=quotas, pending=pending)
+    def persist(self, state):
         self.validate_state(state)
         try:
             atomic_json(self.path, state, on_commit=lambda: setattr(self, 'state', state))
@@ -230,6 +240,10 @@ class Coordinator:
             self.durability_failed = True
             audit('durability_error', generation=self.state['generation'])
             raise Rejected('durability_error') from error
+
+    def commit(self, quotas, pending):
+        state = dict(self.state, generation=self.state['generation'] + 1, quotas=quotas, pending=pending)
+        self.persist(state)
         audit('generation_committed', generation=state['generation'], quotas=quotas,
               pending_increases=pending is not None)
 
@@ -259,7 +273,7 @@ class Coordinator:
             raise ValueError('invalid boot identity')
         hexdigest(message['boot_id'].replace('-', ''), 32)
         caps = names(message['capabilities'])
-        if set(caps) - {'telemetry_v1', 'cap_v1'} or 'telemetry_v1' not in caps:
+        if set(caps) - {'telemetry_v1', 'cap_v1', 'fleet_metrics_v1'} or 'telemetry_v1' not in caps:
             raise Rejected('capability_mismatch')
         self.sessions[host] = dict(token=secrets.token_hex(24), seq=0, report=None,
                                    capabilities=caps, boot_id=message['boot_id'], received=None)
@@ -322,6 +336,8 @@ class Coordinator:
 
     def reconcile(self, apply):
         self.counters['reconciles'] += 1
+        if self.fleet and apply:
+            raise Rejected('fleet_owns_rollouts')
         if self.durability_failed:
             raise Rejected('durability_error')
         waiting = [host for host in self.egress if not self.verified(host)]
@@ -399,7 +415,24 @@ class Coordinator:
             result.update(agents=agents, resources=self.cfg['resources'], shared_egress=shared_egress)
         return result
 
+    def tick(self):
+        if self.fleet:
+            with self.lock:
+                try:
+                    self.fleet.tick()
+                except Rejected as error:
+                    audit('fleet_tick_rejected', code=error.code)
+
     def dispatch(self, pin, message):
+        if message['op'].startswith('fleet_'):
+            if self.fleet is None or pin not in self.cfg['admins']:
+                raise Rejected('fleet_unavailable')
+            try:
+                return self.fleet.dispatch(pin, message)
+            except (ValueError, KeyError, TypeError) as error:
+                audit('fleet_request_rejected', operation=message['op'],
+                      code=getattr(error, 'code', 'invalid_request'))
+                raise
         with self.lock:
             try:
                 op = message['op']
@@ -440,7 +473,7 @@ def main():
             listen = cfg['listen']
             with socket.create_server((listen['host'], listen['port'])) as listener:
                 audit('coordinator_ready', cluster=cfg['cluster'], generation=coordinator.state['generation'])
-                serve_tls(listener, context, coordinator.dispatch)
+                serve_tls(listener, context, coordinator.dispatch, coordinator.tick)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f'fabric coordinator: {error}', file=sys.stderr)
         return 1

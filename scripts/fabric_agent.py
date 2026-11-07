@@ -113,6 +113,8 @@ class Collector:
         state = metrics['controller']
         data['daemon_healthy'] = metrics['state']['healthy'] is True
         data['controller'] = maybe_ident(state.get('engine_state'))
+        data['controller_actions'] = state.get('actions')
+        data['controller_session'] = maybe_ident(state.get('controller_session'))
         data['decision'] = maybe_ident((state.get('last_decision') or {}).get('action'))
         data['bottleneck'] = maybe_ident(metrics['bottleneck'].get('classification'))
         observation = metrics['observability']
@@ -120,6 +122,7 @@ class Collector:
         windows = observation['windows']
         if not windows or type(age) not in (int, float) or not 0 <= age <= 3:
             return
+        data['sample_end_ns'] = observation['time_ns']
         shortest = min(windows.values(), key=lambda window: window['seconds'])
         for name in self.cfg['services']:
             row = shortest['application'].get(name, {}).get('application')
@@ -138,11 +141,13 @@ class Agent:
         self.collector = Collector(cfg)
         self.context = tls(cfg['tls'])
         self.session, self.seq = None, 0
+        self.fleet_metrics = False
         self.boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         self.local = cfg.get('egress')
         self.ack = None
         self.durability_failed = False
-        self.capabilities = ['telemetry_v1', *(['cap_v1'] if self.local else [])]
+        self.capabilities = ['telemetry_v1', *(['cap_v1'] if self.local else []),
+                             *(['fleet_metrics_v1'] if 'daemon_socket' in cfg else [])]
         try:
             self.state = read_json(path)
             fields(self.state, ('cluster', 'host', 'epoch', 'generation', 'rate_kbit'))
@@ -186,7 +191,15 @@ class Agent:
 
     def tick(self):
         if self.session is None:
-            reply = self.call('hello', boot_id=self.boot, capabilities=self.capabilities)
+            caps = self.capabilities
+            try:
+                reply = self.call('hello', boot_id=self.boot, capabilities=caps)
+            except Rejected as error:
+                if error.code != 'capability_mismatch' or 'fleet_metrics_v1' not in caps:
+                    raise
+                caps = [cap for cap in caps if cap != 'fleet_metrics_v1']
+                reply = self.call('hello', boot_id=self.boot, capabilities=caps)
+            self.fleet_metrics = 'fleet_metrics_v1' in caps
             hexdigest(reply['session'], 48)
             if self.state and reply['epoch'] != self.state['epoch']:
                 raise Rejected('epoch_changed')
@@ -198,9 +211,13 @@ class Agent:
             except (OSError, EOFError, ValueError):
                 pass
         self.seq += 1
+        data = self.collector.sample()
+        if not self.fleet_metrics:
+            for key in ('sample_end_ns', 'controller_actions', 'controller_session'):
+                data.pop(key, None)
         try:
             reply = self.call('heartbeat', session=self.session, seq=self.seq,
-                              telemetry=self.collector.sample(), ack=self.ack)
+                              telemetry=data, ack=self.ack)
         except Rejected as error:
             if error.code == 'unknown_session':
                 self.session = None

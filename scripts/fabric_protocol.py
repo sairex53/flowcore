@@ -157,7 +157,7 @@ def response(sock, dispatch, identity):
         send(sock, {'op': 'error', 'code': 'invalid_request'})
 
 
-def serve_tls(listener, context, dispatch):
+def serve_tls(listener, context, dispatch, tick=None):
     """Bound accepted TLS handshakes and use one short request per connection."""
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -179,6 +179,8 @@ def serve_tls(listener, context, dispatch):
     listener.settimeout(.2)
     with ThreadPoolExecutor(max_workers=16) as workers:
         while not stop.is_set():
+            if tick is not None:
+                tick()
             try:
                 raw, _ = listener.accept()
             except TimeoutError:

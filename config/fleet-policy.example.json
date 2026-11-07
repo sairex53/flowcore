@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "policy": "fixture-egress",
+  "revision": 1,
+  "owner": "network",
+  "cluster": "fabric-lab",
+  "host_groups": {"senders": ["a", "b", "c"]},
+  "service_groups": {"http": ["api", "batch"]},
+  "target": {"hosts": "senders", "services": "http", "classes": ["critical", "standard"]},
+  "caps_kbit": {"a": 1200, "b": 900, "c": 900},
+  "controller": {"mode": "fixed-cap", "on_loss": "protected-floor"},
+  "slo": {
+    "max_p99_us": 500000,
+    "max_p99_increase_us": null,
+    "max_error_ppm": 100000,
+    "max_deadline_miss_ppm": 100000,
+    "min_samples": 6,
+    "min_egress_kbit": 0,
+    "min_jain_ppm": 0,
+    "max_controller_actions": 0
+  },
+  "stages": {"canary": ["a"], "percentages": [50], "verify_seconds": 6, "observe_seconds": 18, "confirm_windows": 2}
+}

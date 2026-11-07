@@ -63,6 +63,7 @@ See [APPLICATION_INTEGRATION.md](APPLICATION_INTEGRATION.md), [INTENT_API.md](IN
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |
 | Distributed coordination | [FABRIC_ARCHITECTURE.md](FABRIC_ARCHITECTURE.md) |
+| Audited policy rollout | [FLEET_MANAGEMENT.md](FLEET_MANAGEMENT.md) |
 | Deployment and troubleshooting | [DEPLOYMENT.md](DEPLOYMENT.md), [OPERATIONS.md](OPERATIONS.md), [RECOVERY.md](RECOVERY.md) |
 | Safety validation | [Invariants](SAFETY_INVARIANTS.md), [model test results](MODEL_TEST_RESULTS.md) |
 | Security and privileges | [SECURITY.md](SECURITY.md), [PRIVILEGES.md](PRIVILEGES.md) |
