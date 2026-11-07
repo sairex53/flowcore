@@ -62,6 +62,7 @@ See [APPLICATION_INTEGRATION.md](APPLICATION_INTEGRATION.md), [INTENT_API.md](IN
 | Current architecture | [NATIVE_CORE.md](NATIVE_CORE.md), [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |
+| Distributed coordination | [FABRIC_ARCHITECTURE.md](FABRIC_ARCHITECTURE.md) |
 | Deployment and troubleshooting | [DEPLOYMENT.md](DEPLOYMENT.md), [OPERATIONS.md](OPERATIONS.md), [RECOVERY.md](RECOVERY.md) |
 | Safety validation | [Invariants](SAFETY_INVARIANTS.md), [model test results](MODEL_TEST_RESULTS.md) |
 | Security and privileges | [SECURITY.md](SECURITY.md), [PRIVILEGES.md](PRIVILEGES.md) |

@@ -116,6 +116,8 @@ def main():
     add_platform(commands)
     from helper_cli import add_commands as add_network
     add_network(commands)
+    from fabric_cli import add_commands as add_fabric
+    add_fabric(commands)
     args = parser.parse_args()
     watch = getattr(args, 'watch', None)
     if watch is not None and not .1 <= watch <= 60:
@@ -155,6 +157,10 @@ def main():
         if args.command=='flows':
             from flow_snapshot import snapshot as flow_snapshot
             print(json.dumps(flow_snapshot(args.limit),indent=None if args.json else 2))
+            return 0
+        if args.command == 'fabric':
+            from fabric_cli import dispatch
+            print(json.dumps(dispatch(args), indent=None if args.json else 2))
             return 0
         if args.command == 'network':
             from helper_cli import dispatch
@@ -245,7 +251,7 @@ def main():
         return 0
     except KeyboardInterrupt:
         return 130 if args.command in ('bench','chaos','optimize') else 0
-    except OSError as error:
+    except (OSError, EOFError) as error:
         print(f'flowcore: daemon connection or Linux query failed: {error}', file=sys.stderr)
         return 3
     except (ValueError, RuntimeError) as error:

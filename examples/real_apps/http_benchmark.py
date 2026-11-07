@@ -208,6 +208,7 @@ def main():
     parser.add_argument('--background-timeout', type=float, default=60)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--service', default='api-critical')
+    parser.add_argument('--priority', choices=('critical', 'interactive', 'standard'), default='critical')
     parser.add_argument('--no-flowcore', action='store_true')
     parser.add_argument('--metrics-endpoint', default='')
     parser.add_argument('--metrics-token', default=os.environ.get('OTEL_EXPORTER_OTLP_HEADERS_TOKEN', ''))
@@ -221,7 +222,7 @@ def main():
             not math.isfinite(args.background_timeout) or not 1 <= args.background_timeout <= 600 or
             args.start_ns < 0):
         parser.error('workload parameter outside supported bounds')
-    adapter = FlowcoreAdapter(args.service, priority='critical',
+    adapter = FlowcoreAdapter(args.service, priority=args.priority,
                               target_p99_ms=args.deadline_ms, deadline_ms=args.deadline_ms,
                               enabled=not args.no_flowcore)
     if adapter.sdk is not None:
@@ -243,24 +244,24 @@ def main():
         report = summarize(rows, args.rate, args.duration)
         metrics = OtlpMetrics(args.service)
         for row in rows:
-            attrs = {'http.request.method': 'GET', 'flowcore.traffic_class': 'critical'}
+            attrs = {'http.request.method': 'GET', 'flowcore.traffic_class': args.priority}
             metrics.observe('flowcore.http.request.duration',
                             row['latency_ms'] / 1000, attrs)
             metrics.add_counter('flowcore.http.requests', 1,
-                                {'flowcore.traffic_class': 'critical'})
+                                {'flowcore.traffic_class': args.priority})
             if row['outcome'] != 'ok':
                 metrics.add_counter('flowcore.http.errors', 1,
-                                    {'flowcore.traffic_class': 'critical'})
+                                    {'flowcore.traffic_class': args.priority})
             if row['deadline_miss']:
                 metrics.add_counter('flowcore.http.deadline_misses', 1,
-                                    {'flowcore.traffic_class': 'critical'})
+                                    {'flowcore.traffic_class': args.priority})
         if transfer.get('bytes_transferred'):
             metrics.add_counter('flowcore.background.transfer.bytes',
                                 transfer['bytes_transferred'],
                                 {'flowcore.traffic_class': 'background'})
         export = metrics.export(args.metrics_endpoint, args.metrics_token)
         result = {'schema_version': 1, 'service': args.service,
-                  'intent': {'priority': 'critical', 'target_p99_ms': args.deadline_ms,
+                  'intent': {'priority': args.priority, 'target_p99_ms': args.deadline_ms,
                              'deadline_ms': args.deadline_ms,
                              'flow_association': 'TCP socket cookie when SDK and daemon are available'},
                   'sdk': adapter.status(), 'workload': {
