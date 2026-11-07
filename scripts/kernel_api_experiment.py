@@ -62,9 +62,9 @@ def tcp_listener(lab, stack, port=0):
     return listener
 
 
-def udp_pair(lab, stack):
+def udp_pair(lab, stack, port=0):
     receiver = open_socket(lab, stack, 1, socket.AF_INET, socket.SOCK_DGRAM)
-    receiver.bind((SERVER, 0))
+    receiver.bind((SERVER, port))
     sender = open_socket(lab, stack, 0, socket.AF_INET, socket.SOCK_DGRAM)
     sender.connect(receiver.getsockname())
     return sender, receiver
@@ -362,16 +362,14 @@ def native_classes(sock, index):
 
 
 def feedback_trials(lab, rng, pairs, output):
-    lab.tc('qdisc', 'del', 'dev', 'fc0', 'root')
     lab.configure('static40')
+    lab.tc('filter', 'add', 'dev', 'fc0', 'parent', '1:', 'protocol', 'ip',
+           'pref', '11', 'flower', 'ip_proto', 'udp', 'dst_port', '9000', 'classid', '1:10')
     with ExitStack() as stack:
-        listener = tcp_listener(lab, stack, port=9000)
-        sender, receiver = tcp_pair(lab, stack, listener)
-        sender.sendall(URGENT)
-        require(receiver.recv(len(URGENT), socket.MSG_WAITALL) == URGENT, 'TCP counter fixture failed')
-        udp, sink = udp_pair(lab, stack)
-        udp.send(BULK)
-        require(sink.recv(128) == BULK, 'background counter fixture failed')
+        for port, marker in [(0, BULK), (9000, URGENT)]:
+            sender, receiver = udp_pair(lab, stack, port)
+            sender.send(marker)
+            require(receiver.recv(128) == marker, 'HTB counter fixture payload missing')
 
     with ExitStack() as stack:
         sock = open_socket(lab, stack, 0, socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)
@@ -389,8 +387,6 @@ def feedback_trials(lab, rng, pairs, output):
                 (output/'tc-class-unexpected.json').write_text(json.dumps(rows, indent=2)+'\n')
                 raise
         backends = {'tc': cli, 'rtnetlink': lambda: native_classes(sock, index)}
-        # Let final TCP teardown/ACKs leave the classes before measuring quiescent dumps.
-        time.sleep(.1)
         expected = cli()
         require(set(expected) == {'1:1', '1:10', '1:20'} and all(row['bytes'] > 0 and row['packets'] > 0 for row in expected.values()),
                 'expected nonzero HTB counters')
@@ -402,8 +398,13 @@ def feedback_trials(lab, rng, pairs, output):
                 counters = backends[method]()
                 cpu = cpu_ns() - start_cpu
                 wall = time.monotonic_ns() - start_wall
-                require(counters == expected, 'class counters changed or decoders disagreed')
+                if counters != expected:
+                    (output/'counter-mismatch.json').write_text(json.dumps(
+                        dict(repetition=rep, method=method, expected=expected, actual=counters),
+                        indent=2)+'\n')
+                    raise RuntimeError('class counters changed or decoders disagreed')
                 samples.append(dict(repetition=rep, method=method, wall_ns=wall, cpu_ns=cpu))
+    lab.tc('qdisc', 'del', 'dev', 'fc0', 'root')
     return dict(counters=expected, samples=samples)
 
 
@@ -470,12 +471,14 @@ def main():
         result = dict(environment=metadata(), inputs=vars(args), status='running')
         try:
             lab.start()
+            for index, interface in enumerate(('fc0', 'fc1')):
+                lab.command(index, ['sysctl', '-w', f'net.ipv6.conf.{interface}.disable_ipv6=1'])
             result['permissions'] = permission_trial(lab)
+            result['feedback'] = feedback_trials(lab, rng, args.feedback_pairs, output)
             result['queue_pulse'] = queue_pulse(lab)
             result['priority'] = priority_trials(lab, args.repetitions, rng, output)
             result['txtime'] = txtime_trial(lab)
             result['pacing'] = pacing_trials(lab, rng)
-            result['feedback'] = feedback_trials(lab, rng, args.feedback_pairs, output)
             storage = BINDIR/'kernel_socket_storage_probe'
             result['socket_storage'] = (json.loads(lab.command(0, [storage])) if storage.is_file()
                                         else dict(status='not_run', reason='optional libbpf probe not built'))
