@@ -178,9 +178,11 @@ def background_transfer(args, start_ns):
     ended = time.monotonic_ns()
     seconds = (ended - started) / 1e9
     expected = Path(args.background_upload_file).stat().st_size if args.background_upload_file else args.background_bytes
-    return {'enabled': True, 'direction': 'upload' if args.background_upload_file else 'download',
-            'status': status, 'bytes_expected': expected,
-            'bytes_received': received, 'completion_seconds': seconds,
+    direction = 'upload' if args.background_upload_file else 'download'
+    return {'enabled': True, 'direction': direction, 'status': status, 'bytes_expected': expected,
+            'bytes_transferred': received, 'bytes_sent': received if direction == 'upload' else 0,
+            'bytes_received': received if direction == 'download' else 0,
+            'completion_seconds': seconds,
             'goodput_mbps': received * 8 / seconds / 1e6 if seconds else 0, 'error': error}
 
 
@@ -198,6 +200,7 @@ def main():
     parser.add_argument('--background-path', default='')
     parser.add_argument('--background-upload-file', default='')
     parser.add_argument('--timeout', type=float, default=3)
+    parser.add_argument('--start-ns', type=int, default=0)
     parser.add_argument('--background-timeout', type=float, default=60)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--service', default='api-critical')
@@ -211,7 +214,8 @@ def main():
             args.concurrency > max(1, math.ceil(args.rate * args.duration)) or
             not 0 < args.deadline_ms <= 600000 or not 0 <= args.work_ms <= 1000 or
             not 0 <= args.background_bytes <= 64 * 1024 * 1024 or
-            not math.isfinite(args.background_timeout) or not 1 <= args.background_timeout <= 600):
+            not math.isfinite(args.background_timeout) or not 1 <= args.background_timeout <= 600 or
+            args.start_ns < 0):
         parser.error('workload parameter outside supported bounds')
     adapter = FlowcoreAdapter(args.service, priority='critical',
                               target_p99_ms=args.deadline_ms, deadline_ms=args.deadline_ms,
@@ -220,7 +224,7 @@ def main():
         adapter.sdk.declare_transport('api-http1', 'tcp', multiplexed=False)
     rows, lock = [], threading.Lock()
     number = math.ceil(args.rate * args.duration)
-    start_ns = time.monotonic_ns() + 300_000_000
+    start_ns = args.start_ns or time.monotonic_ns() + 300_000_000
     try:
         with ThreadPoolExecutor(max_workers=args.concurrency + 1) as pool:
             futures = [pool.submit(request_worker, i, args, start_ns,
@@ -246,9 +250,9 @@ def main():
             if row['deadline_miss']:
                 metrics.add_counter('flowcore.http.deadline_misses', 1,
                                     {'flowcore.traffic_class': 'critical'})
-        if transfer.get('bytes_received'):
+        if transfer.get('bytes_transferred'):
             metrics.add_counter('flowcore.background.transfer.bytes',
-                                transfer['bytes_received'],
+                                transfer['bytes_transferred'],
                                 {'flowcore.traffic_class': 'background'})
         export = metrics.export(args.metrics_endpoint, args.metrics_token)
         result = {'schema_version': 1, 'service': args.service,
@@ -259,6 +263,7 @@ def main():
                       'rate_rps': args.rate, 'duration_seconds': args.duration,
                       'concurrency': args.concurrency, 'connection_reuse': 'persistent per worker',
                       'random_seed': args.seed, 'background_bytes': args.background_bytes,
+                      'start_monotonic_ns': start_ns,
                       'background_mode': 'upload' if args.background_upload_file else 'download',
                       'background_path': args.background_upload_file or args.background_path or 'generated bounded stream'},
                   'summary': report, 'background_transfer': transfer,

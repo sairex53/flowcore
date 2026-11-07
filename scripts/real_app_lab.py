@@ -206,6 +206,7 @@ def run_trial(mode, rep, seed, args, output):
                                   stdout=grpc_log, stderr=grpc_log, env=grpc_env)
             wait_ready(grpc_server, directory / 'grpc-server.log', '"ready": true')
             grpc_cpu_before = proc_cpu_seconds(grpc_server.pid)
+        workload_start_ns = time.monotonic_ns() + 2_000_000_000
         server_cpu_before = proc_cpu_seconds(http.pid)
         http_client = command(sender, APPS / 'http_benchmark.py',
                               ['--host', '10.203.0.2', '--port', 9000, '--background-port', 9001,
@@ -213,6 +214,7 @@ def run_trial(mode, rep, seed, args, output):
                                '--concurrency', args.concurrency, '--deadline-ms', args.deadline_ms,
                                '--background-bytes', args.background_bytes,
                                '--background-upload-file', artifact, '--seed', seed,
+                               '--start-ns', workload_start_ns,
                                '--metrics-endpoint', exporter, '--output', directory / 'http.json'],
                               stdout=(directory / 'http-client.log').open('w'),
                               stderr=subprocess.STDOUT, env=env)
@@ -221,8 +223,8 @@ def run_trial(mode, rep, seed, args, output):
             db_client = command(sender, APPS / 'postgres_benchmark.py',
                                 ['--dsn', dsn, '--rate', args.db_rate, '--duration', args.duration,
                                  '--concurrency', args.db_concurrency, '--deadline-ms', args.db_deadline_ms,
-                                 '--seed', seed, '--metrics-endpoint', exporter,
-                                 '--output', directory / 'postgres.json'],
+                                 '--seed', seed, '--start-ns', workload_start_ns,
+                                 '--metrics-endpoint', exporter, '--output', directory / 'postgres.json'],
                                 stdout=(directory / 'postgres-client.log').open('w'),
                                 stderr=subprocess.STDOUT, env=env)
         if args.grpc:
@@ -230,8 +232,8 @@ def run_trial(mode, rep, seed, args, output):
                                   ['--target', '10.203.0.2:9002', '--rate', args.grpc_rate,
                                    '--duration', args.duration, '--concurrency', args.grpc_concurrency,
                                    '--deadline-ms', args.grpc_deadline_ms, '--work-ms', 2,
-                                   '--seed', seed, '--metrics-endpoint', exporter,
-                                   '--output', directory / 'grpc.json'],
+                                   '--seed', seed, '--start-ns', workload_start_ns,
+                                   '--metrics-endpoint', exporter, '--output', directory / 'grpc.json'],
                                   stdout=(directory / 'grpc-client.log').open('w'),
                                   stderr=subprocess.STDOUT, env=grpc_env)
         http_rc = http_client.wait(timeout=args.duration + 40)

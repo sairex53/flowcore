@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--concurrency', type=int, default=4)
     parser.add_argument('--deadline-ms', type=float, default=100)
     parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--start-ns', type=int, default=0)
     parser.add_argument('--service', default='database-client')
     parser.add_argument('--no-flowcore', action='store_true')
     parser.add_argument('--metrics-endpoint', default='')
@@ -36,7 +37,7 @@ def main():
     if (not math.isfinite(args.rate) or not .1 <= args.rate <= 500 or
             not 1 <= args.duration <= 180 or not 1 <= args.concurrency <= 64 or
             args.concurrency > max(1, math.ceil(args.rate * args.duration)) or
-            not 0 < args.deadline_ms <= 600000):
+            not 0 < args.deadline_ms <= 600000 or args.start_ns < 0):
         parser.error('workload parameter outside supported bounds')
     try:
         import psycopg
@@ -49,7 +50,7 @@ def main():
     if adapter.sdk is not None:
         adapter.sdk.declare_transport('postgresql-tcp', 'tcp', multiplexed=False)
     count = math.ceil(args.rate * args.duration)
-    start_ns = time.monotonic_ns() + 300_000_000
+    start_ns = args.start_ns or time.monotonic_ns() + 300_000_000
 
     def worker(index):
         rng = random.Random(args.seed + index)
@@ -124,7 +125,7 @@ def main():
                   'deadline_misses': misses,
                   'deadline_miss_rate': misses / len(rows) if rows else 0,
                   'completion_ratio': (len(rows) - failures) / len(rows) if rows else 0,
-                  'query_rps': len(rows) / elapsed,
+                  'query_rps': (len(rows) - failures) / elapsed,
                   'offered_rps': args.rate,
                   'p50_ms': percentile(values, .50), 'p95_ms': percentile(values, .95),
                   'p99_ms': percentile(values, .99),
@@ -133,6 +134,7 @@ def main():
                       'priority': 'standard', 'target_p99_ms': args.deadline_ms,
                       'deadline_ms': args.deadline_ms, 'socket_association': 'cookie where psycopg exposes fd'},
                   'workload': {'query': 'SELECT indexed row by primary key', 'random_seed': args.seed,
+                               'start_monotonic_ns': start_ns,
                                'rate_rps': args.rate, 'duration_seconds': args.duration,
                                'concurrency': args.concurrency, 'connection_reuse': 'one persistent connection per worker'},
                   'summary': report, 'otel_export': export,

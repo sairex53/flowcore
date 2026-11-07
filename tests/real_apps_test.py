@@ -175,7 +175,7 @@ def test_http_service():
                 stderr=subprocess.PIPE, timeout=10)
             client = json.loads(output.read_text())
             assert client['background_transfer']['direction'] == 'upload'
-            assert client['background_transfer']['bytes_received'] == upload.stat().st_size
+            assert client['background_transfer']['bytes_transferred'] == upload.stat().st_size
             assert client['background_transfer']['error'] is None
         finally:
             process.terminate()

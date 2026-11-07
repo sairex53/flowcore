@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--work-ms', type=int, default=2)
     parser.add_argument('--response-bytes', type=int, default=128)
     parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--start-ns', type=int, default=0)
     parser.add_argument('--service', default='grpc-critical')
     parser.add_argument('--no-flowcore', action='store_true')
     parser.add_argument('--metrics-endpoint', default='')
@@ -45,7 +46,7 @@ def main():
             not 1 <= args.duration <= 180 or not 1 <= args.concurrency <= 64 or
             args.concurrency > max(1, math.ceil(args.rate * args.duration)) or
             not 0 < args.deadline_ms <= 600000 or not 0 <= args.work_ms <= 1000 or
-            not 0 <= args.response_bytes <= 65536):
+            not 0 <= args.response_bytes <= 65536 or args.start_ns < 0):
         parser.error('workload parameter outside supported bounds')
     adapter = FlowcoreAdapter(args.service, priority='interactive',
                               target_p99_ms=args.deadline_ms, deadline_ms=args.deadline_ms,
@@ -61,7 +62,7 @@ def main():
     connection_setup_ms = (time.monotonic_ns() - setup_started) / 1e6
     stub = grpc_app_pb2_grpc.ApplicationStub(channel)
     count = math.ceil(args.rate * args.duration)
-    start_ns = time.monotonic_ns() + 300_000_000
+    start_ns = args.start_ns or time.monotonic_ns() + 300_000_000
     rows, lock = [], threading.Lock()
 
     def worker(index):
@@ -151,7 +152,8 @@ def main():
                              'deadline_ms': args.deadline_ms},
                   'connection_setup_ms': connection_setup_ms,
                   'workload': {'rate_rps': args.rate, 'duration_seconds': args.duration,
-                               'concurrency': args.concurrency, 'random_seed': args.seed},
+                               'concurrency': args.concurrency, 'random_seed': args.seed,
+                               'start_monotonic_ns': start_ns},
                   'summary': report, 'otel_export': export,
                   'requests': sorted(rows, key=lambda row: row['request'])}
         Path(args.output).write_text(json.dumps(result, indent=2, allow_nan=False) + '\n')
