@@ -40,6 +40,17 @@ class Deployment(unittest.TestCase):
             with self.assertRaises(PermissionError):read_json(target)
             with patch('durable_state.os.open',side_effect=PermissionError('injected denial')):
                 with self.assertRaises(PermissionError):atomic_json(directory/'new',{})
+    def test_source_config_owner_exception_does_not_relax_installed_or_state(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as temp:
+            config=Path(temp)/'service.json'
+            config.write_text((ROOT/'config/service.json').read_text())
+            with patch('durable_state.os.geteuid',return_value=123456):
+                with self.assertRaises(PermissionError):read_json(config)
+                with patch('paths.INSTALLED',False):
+                    self.assertEqual(load(config)['version'],1)
+                with patch('paths.INSTALLED',True):
+                    with self.assertRaises(PermissionError):load(config)
+
     def test_reload_has_explicit_compatibility_and_rollback(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build') as temp:
             directory=Path(temp);config=directory/'service.json'

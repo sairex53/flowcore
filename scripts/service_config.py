@@ -37,7 +37,12 @@ def unique(pairs):
 
 def load(path):
     from durable_state import read_json
-    cfg = read_json(Path(path),65536)
+    from paths import ROOT, INSTALLED
+    selected=Path(path)
+    # Executing a source checkout already trusts its owner. Keep this exception
+    # local to source configuration; installed configuration/state stay strict.
+    owners=(ROOT.stat().st_uid,) if not INSTALLED and selected.resolve().is_relative_to(ROOT) else ()
+    cfg = read_json(selected,65536,trusted_owners=owners)
     from observability_config import DEFAULT, validate
     from adaptive import DEFAULT as ADAPTIVE_DEFAULT
     if isinstance(cfg, dict):

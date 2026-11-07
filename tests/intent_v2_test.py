@@ -307,8 +307,13 @@ def live():
                     assert client.generation()>first_generation
                     with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as udp:
                         cookie=client.associate_socket(udp.fileno())
+                        dropped_before=client.statistics()['dropped']
                         with client.request(cookie=cookie): pass
                         assert client.flush()
+                        abandoned=client.dissociate_socket(cookie)
+                        # flush drains queued work; try-lock loss can orphan a start.
+                        assert abandoned in (0,1)
+                        assert abandoned<=client.statistics()['dropped']-dropped_before
                         assert client.dissociate_socket(cookie)==0
                 # A SIGKILL must reclaim the process lease without graceful SDK close.
                 code="import sys,time;sys.path.insert(0,sys.argv[1]);from flowcore_intent import Service;s=Service(sys.argv[2],sys.argv[3],'crashed');assert s.ready();print('ready',flush=True);time.sleep(60)"

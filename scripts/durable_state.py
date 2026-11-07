@@ -9,11 +9,11 @@ class DurabilityUncertain(OSError):
     """Replacement committed, but directory durability could not be confirmed."""
 
 
-def read_json(path,limit=524288):
+def read_json(path,limit=524288,*,trusted_owners=()):
     fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK)
     with os.fdopen(fd,'rb') as stream:
         info=os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0,os.geteuid()) or info.st_mode&0o022 or info.st_nlink!=1:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0,os.geteuid(),*trusted_owners) or info.st_mode&0o022 or info.st_nlink!=1:
             raise PermissionError('state/configuration must be an owned non-writable regular file')
         data=stream.read(limit+1)
         if len(data)>limit:raise ValueError('state/configuration exceeds size limit')
