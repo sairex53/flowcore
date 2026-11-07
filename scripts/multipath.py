@@ -329,49 +329,71 @@ def probe_path(lab,path,attempts=5):
     return summarize_probe(path,latencies,len(latencies),attempts,sent,elapsed)
 
 
+def endpoint(lab, endpoint_id):
+    rows=json.loads(lab.command(1,['ip','-j','mptcp','endpoint','show']))
+    return next((row for row in rows if row.get('id')==endpoint_id),None)
+
+
+def endpoint_identity(row):
+    return (row.get('address'),row.get('dev'),row.get('signal')) if row else None
+
+
+def require_endpoint(lab, endpoint_id, owned_ids):
+    if endpoint_id not in owned_ids:
+        raise ValueError('endpoint is outside this lab ownership set')
+    try:
+        namespace = lab.namespace_identity(1)
+        row = endpoint(lab,endpoint_id)
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):
+        del owned_ids[endpoint_id]
+        raise
+    if (namespace,endpoint_identity(row))!=owned_ids[endpoint_id]:
+        del owned_ids[endpoint_id]
+        raise RuntimeError('MPTCP endpoint ownership drift')
+    return row
+
+
 def add_owned_endpoint(lab,path,owned_ids):
     endpoint_id=path['id']
-    if endpoint_id in owned_ids:
-        raise RuntimeError('duplicate FLOWCORE endpoint ownership ID')
-    existing=json.loads(lab.command(1,['ip','-j','mptcp','endpoint','show']))
-    if any(row.get('id')==endpoint_id for row in existing):
+    namespace = lab.namespace_identity(1)
+    if endpoint_id in owned_ids or endpoint(lab,endpoint_id):
         raise RuntimeError('refusing to modify a pre-existing MPTCP endpoint')
     lab.command(1,['ip','mptcp','endpoint','add',path['server_address'],'dev',
                    path['server_interface'],'id',str(endpoint_id),'signal'])
-    owned_ids.add(endpoint_id)
-    rows=json.loads(lab.command(1,['ip','-j','mptcp','endpoint','show']))
-    row=next((item for item in rows if item.get('id')==endpoint_id),None)
-    if not row or row.get('address')!=path['server_address'] or row.get('dev')!=path['server_interface']:
+    row = endpoint(lab,endpoint_id)
+    identity = (path['server_address'],path['server_interface'],True)
+    if lab.namespace_identity(1)!=namespace or endpoint_identity(row)!=identity:
         raise RuntimeError('MPTCP endpoint registration failed readback')
+    owned_ids[endpoint_id] = (namespace,identity)
     return row
 
 
 def set_endpoint_backup(lab,path,backup,owned_ids):
     endpoint_id=path['id']
-    if endpoint_id not in owned_ids or type(backup) is not bool:
-        raise ValueError('endpoint update is outside this lab ownership set')
+    if type(backup) is not bool:
+        raise ValueError('invalid endpoint backup flag')
+    require_endpoint(lab,endpoint_id,owned_ids)
     operation='backup' if backup else 'nobackup'
     lab.command(1,['ip','mptcp','endpoint','change','id',str(endpoint_id),operation])
-    rows=json.loads(lab.command(1,['ip','-j','mptcp','endpoint','show']))
-    row=next((item for item in rows if item.get('id')==endpoint_id),None)
-    if not row or bool(row.get('backup',False))!=backup:
+    row = require_endpoint(lab,endpoint_id,owned_ids)
+    if bool(row.get('backup',False))!=backup:
         raise RuntimeError('MPTCP endpoint backup readback mismatch')
     return row
 
 
 def remove_owned_endpoint(lab,endpoint_id,owned_ids):
-    if endpoint_id not in owned_ids:
-        raise ValueError('refusing to remove an unowned MPTCP endpoint')
+    require_endpoint(lab,endpoint_id,owned_ids)
     lab.command(1,['ip','mptcp','endpoint','delete','id',str(endpoint_id)])
-    rows=json.loads(lab.command(1,['ip','-j','mptcp','endpoint','show']))
-    if any(row.get('id')==endpoint_id for row in rows):
+    del owned_ids[endpoint_id]
+    if endpoint(lab,endpoint_id):
         raise RuntimeError('MPTCP endpoint removal readback mismatch')
-    owned_ids.remove(endpoint_id)
 
 
 def _apply_plan(lab,paths,plan,owned_ids,history,trigger):
     validate_plan(plan,[path['id'] for path in paths])
     backup_ids=set(plan['backup_path_ids'])
+    for path in paths:
+        require_endpoint(lab,path['id'],owned_ids)
     begun=time.monotonic_ns()
     updates=[]
     for path in paths:
@@ -550,7 +572,7 @@ def _trial(parent,strategy,scenario,path_count,duration,seed,target_latency_ms,s
     paths=_topology(path_count,scenario)
     lab=ServiceLab(trial_path)
     server=client=None
-    owned_ids=set()
+    owned_ids={}
     cleanup_errors=[]
     decisions=[]
     events=[]

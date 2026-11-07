@@ -59,8 +59,8 @@ class Operations:
             raise
 
     def finish(self):
-        self.checkpoint=dict(self.checkpoint,clean_shutdown=True)
-        self.save()
+        checkpoint=dict(self.checkpoint,clean_shutdown=True)
+        atomic_json(self.path,checkpoint,on_commit=lambda:setattr(self,'checkpoint',checkpoint))
 
     def status(self):
         lab=self.service.lab

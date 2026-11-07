@@ -147,7 +147,9 @@ def convergence(samples, history, transitions, m, start, mode):
     """Two nonoverlapping healthy critical windows at the same allocation after recovery."""
     if mode not in ('threshold','slo','queue-aware','optimizer'):
         return None
-    anchor = max([start, *(item['applied_ns']/NANO for item in transitions if not item.get('initial'))])
+    confirmed = (item.get('kernel_confirmed_ns',item.get('applied_ns')) for item in transitions
+                 if not item.get('initial') and item.get('status') not in ('failed','invalid'))
+    anchor = max([start, *(stamp/NANO for stamp in confirmed if type(stamp) is int)])
     width = m['controller']['window_seconds']
     last_change = max([anchor, *(row['time_ns']/NANO for row in history
         if row['result'] in ('pending','released','rolled_back','verified','restored_baseline','inconclusive','research_rebase'))])

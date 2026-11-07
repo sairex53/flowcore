@@ -104,6 +104,8 @@ class PolicyStore:
             return dict(changed=False,revision=expected)
         if self.path is None:
             raise RuntimeError('policy store not ready')
+        if expected == 2**63-1:
+            raise ValueError('policy revision exhausted')
         revision = expected+1
         state = dict(revision=revision,policy=policy,audit=(
             self.state['audit']+[dict(revision=revision,time_unix=time.time(),owner_uid=uid,

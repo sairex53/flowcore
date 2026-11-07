@@ -262,3 +262,7 @@ add_test(NAME optimizer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE
 set_tests_properties(optimizer_unit PROPERTIES ENVIRONMENT "FLOWCORE_TEST_OPTIMIZER=$<TARGET_FILE:flowcore_intelligence>")
 
 install(FILES POLICY_OPTIMIZER.md OPTIMIZER_TESTS.md OPTIMIZATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME safety_model COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/safety_model_test.py")
+
+install(FILES SAFETY_INVARIANTS.md STATE_MACHINE_SPEC.md MODEL_TEST_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

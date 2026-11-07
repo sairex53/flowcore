@@ -58,7 +58,7 @@ def integer(data):
     return int.from_bytes(data, byteorder=os.sys.byteorder)
 
 
-def snapshot(*, sysfs_speed=True):
+def snapshot(*, sysfs_speed=True, link_alias=False):
     links = {}
     routes = []
     with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE) as sock:
@@ -87,6 +87,8 @@ def snapshot(*, sysfs_speed=True):
                                 mac=a.get(1,b'').hex(), counters=counters, up=bool(flags & 1),
                                 carrier=bool(flags & 0x10000), mtu=integer(a.get(4, b'')),
                                 speed_mbps=speed if speed and speed > 0 else None, addresses=[])
+            if link_alias:
+                links[index]['alias'] = a.get(20,b'').rstrip(b'\0').decode(errors='replace')
         for _, body in dump(sock, 22, bytes(8)):
             family, prefix, _, scope, index = struct.unpack_from('=BBBBI', body)
             a = attrs(body[8:])

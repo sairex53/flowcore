@@ -41,29 +41,41 @@ class Lab:
         self.namespace_fds = []
 
     def close(self):
-        # Worker groups first, namespace holders last. No host interface is created.
-        for proc in list(reversed(self.processes)) + list(reversed(self.holders)):
-            if proc.poll() is None:
+        # Worker groups first, namespace holders last. Always release pins.
+        fds, self.namespace_fds = self.namespace_fds, []
+        streams, self.files = self.files, []
+        with contextlib.ExitStack() as resources:
+            for fd in reversed(fds):
+                resources.callback(os.close,fd)
+            for stream in reversed(streams):
+                resources.callback(stream.close)
+            for proc in list(reversed(self.processes)) + list(reversed(self.holders)):
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+            for proc in self.processes + self.holders:
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-        for proc in self.processes + self.holders:
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-        for stream in self.files:
-            stream.close()
-        for fd in self.namespace_fds:
-            os.close(fd)
-        self.namespace_fds.clear()
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.wait(timeout=3)
 
     def namespace_path(self, index):
+        if not 0 <= index < len(self.namespace_fds):
+            raise RuntimeError('namespace pin is unavailable')
         if self.holders[index].poll() is not None:
             raise RuntimeError('lab namespace holder exited')
         return f'/proc/{os.getpid()}/fd/{self.namespace_fds[index]}'
+
+    def namespace_identity(self,index):
+        self.namespace_path(index)
+        info = os.fstat(self.namespace_fds[index])
+        return info.st_dev,info.st_ino
 
     @contextlib.contextmanager
     def enter(self, index):

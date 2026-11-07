@@ -18,6 +18,7 @@ def resize_htb(service, capacity, *, preserve_windows=False):
     old = service.profile['bandwidth_kbit']
     if capacity == old:
         return
+    lab.assert_owned_sender()
     mode, strategy = control.mode, control.strategy
     control.stop('scheduled research capacity change')
     policy = service.config['policies'][service.active]
@@ -27,6 +28,7 @@ def resize_htb(service, capacity, *, preserve_windows=False):
         raise RuntimeError('research resize refused unexpected HTB baseline')
 
     def parent():
+        lab.assert_owned_sender()
         lab.tc('class', 'change', 'dev', 'fc0', 'parent', '1:', 'classid', '1:1',
                *rate_args(capacity, capacity))
     if capacity > old:
@@ -35,6 +37,7 @@ def resize_htb(service, capacity, *, preserve_windows=False):
     for name, c in policy['classes'].items():
         rate, ceil = capacity*c['min_pct']//100, capacity*c['max_pct']//100
         desired[name] = (rate, ceil)
+        lab.assert_owned_sender()
         lab.tc('class', 'change', 'dev', 'fc0', 'parent', '1:1', 'classid', f'1:{CLASSES[name]}',
                *rate_args(rate, ceil), 'prio', c['priority'], 'quantum', '1514')
     if capacity < old:
@@ -95,6 +98,7 @@ def apply_conditions(service, settings, mode, seed, link_up):
 def update_conditions(service, lab, profile, mode, seed, link_up, settings=None):
     from benchmark import TC
     from research_manifest import CLASSIFIED
+    lab.assert_owned_sender()
     settings = settings or {}
     cap = profile['bandwidth_kbit']
     if service.research_mode is None:
@@ -207,7 +211,8 @@ def reservation_step(service):
         raise ValueError('fixed step would violate the background floor')
     desired = dict(allocation, critical=(critical+step,ceil),
                    background=(background-step,background_ceil))
-    timing = adaptive_tc.change(lab, capacity, policy, allocation, desired)
+    timing = adaptive_tc.change(lab, capacity, policy, allocation, desired,
+                                background_floor=capacity*control.cfg['background_floor_pct']//100)
     control.record(result='verified', reason='fixed research reservation step',
                    previous=allocation, allocation=desired, timing=timing)
     return timing

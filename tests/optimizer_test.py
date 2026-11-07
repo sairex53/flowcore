@@ -155,13 +155,19 @@ class Optimizer(unittest.TestCase):
                    sample(16,4000,pending=True),sample(18,4000),sample(20,4000)]
         self.assertEqual(convergence(samples,[],[],plan,10,'optimizer'),10)
         self.assertIsNone(convergence(samples[:-1],[],[],plan,10,'optimizer'))
+        transitions = [dict(initial=True,applied_ns=10*10**9),
+                       dict(kernel_confirmed_ns=11*10**9,status='applied')]
+        self.assertEqual(convergence(samples,[],transitions,plan,10,'queue-aware'),9)
 
     def test_transaction_preflight_compensation_and_drift(self):
         current = {name:(25,100) for name in NAMES}
         desired = dict(current,critical=(30,100),background=(20,100))
-        policy = dict(classes={name:dict(priority=idx) for idx,name in enumerate(NAMES)})
+        policy = dict(classes={name:dict(priority=idx,min_pct=1,max_pct=100) for idx,name in enumerate(NAMES)})
 
         class Kernel:
+            def assert_owned_sender(self):
+                pass
+
             def __init__(self):
                 self.state = dict(current)
                 self.calls = []

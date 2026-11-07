@@ -123,7 +123,8 @@ class Actuator:
         self.failed = False
 
     def view(self):
-        return dict(epoch=self.epoch, revision=self.revision, lab_up=self.net.indices is not None,
+        return dict(epoch=self.epoch, revision=self.revision, verified=not self.failed,
+                    lab_up=None if self.failed else self.net.indices is not None,
                     limit_packets=self.queue)
 
     def run(self, uid, command):
@@ -132,6 +133,8 @@ class Actuator:
             raise Rejected('forbidden')
         if op == 'status':
             return self.view()
+        if self.failed:
+            raise Rejected('network_failed')
         if (command['epoch'], command['revision']) != (self.epoch, self.revision):
             raise Rejected('stale_revision')
         if self.revision == 2**31-1:
@@ -159,6 +162,7 @@ class Actuator:
                 self.queue = target
         except (OSError, RuntimeError, ValueError, KeyError, struct.error) as error:
             self.failed = True
+            self.net.indices = self.queue = None
             audit('network_failed', uid=uid, op=op, epoch=self.epoch, revision=self.revision,
                   failure=type(error).__name__, errno=getattr(error, 'errno', None),
                   detail=str(error) if type(error) is RuntimeError else None)

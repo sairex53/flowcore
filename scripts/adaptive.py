@@ -71,6 +71,7 @@ class Controller:
         self.mode = 'off'
         self.strategy = 'slo'
         self.base = self.current = None
+        self.allocation_confirmed = False
         self.pending = None
         self.revision = 0
         self.last_tick = 0
@@ -120,6 +121,8 @@ class Controller:
         return self.service.profile['bandwidth_kbit']
 
     def start(self, mode, strategy):
+        if mode not in ('active','shadow','observe'):
+            raise ValueError('unknown controller mode')
         if strategy not in STRATEGIES:
             raise ValueError('unknown controller strategy')
         if not self.service.lab or self.policy()['scheduler'] != 'htb':
@@ -137,10 +140,8 @@ class Controller:
         classes = [row['intent']['priority'] for row in self.registry.rows.values()]
         if not shared and len(classes) != len(set(classes)):
             raise ValueError('legacy strategy requires exclusive traffic classes')
-        self.registry.shared_classes = shared
         self.stop('mode change')
-        self.predictor = Predictor()
-        self.state.move('OBSERVING','explicit activation')
+        self.service.lab.assert_owned_sender()
         capacity = self.capacity()
         installed = adaptive_tc.read(self.service.lab, capacity, self.policy())
         configured = {name: (capacity*cls['min_pct']//100, capacity*cls['max_pct']//100)
@@ -151,7 +152,11 @@ class Controller:
         self.base = configured
         if self.base['background'][0] < self.capacity()*self.cfg['background_floor_pct']//100:
             raise ValueError('operator background floor exceeds installed reservation')
+        self.registry.shared_classes = shared
+        self.predictor = Predictor()
+        self.state.move('OBSERVING','explicit activation')
         self.current = dict(installed)
+        self.allocation_confirmed = True
         self.mode, self.strategy = mode, strategy
         self.revision = self.registry.revision
         self.last_tick = time.monotonic()
@@ -165,11 +170,24 @@ class Controller:
         self.timing = {}
 
     def write(self, target):
-        if self.strategy == 'optimizer':
-            # Own the exact veth topology through admission and readback. A
-            # dirty topology or an external class edit is never repaired blindly.
-            self.service.lab.validate()
-        timing = adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target)
+        if self.mode!='active' or self.service.lab is None:
+            raise PermissionError('controller write requires active lab authority')
+        try:
+            floor_pct = max([self.cfg['background_floor_pct'], *(
+                row['intent']['background_min_pct'] for row in self.registry.rows.values())])
+            timing = adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target,
+                                        background_floor=self.capacity()*floor_pct//100)
+        except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
+            self.allocation_confirmed = False
+            self.mode = 'off'
+            self.pending = self.current = None
+            self.service.observer.probe_start_ns = None
+            self.error = str(error)
+            self.state.move('SAFE_FALLBACK',self.error)
+            self.record(result='transaction_rejected', reason=self.error,
+                        compensated=getattr(error,'compensated',False))
+            raise
+        self.allocation_confirmed = True
         changed = self.current != target
         self.current = dict(target)
         if changed and (incident := getattr(self.service, 'incident', None)):
@@ -181,24 +199,31 @@ class Controller:
 
     def stop(self, reason):
         self.freeze_until = 0
-        if self.mode == 'active' and self.service.lab:
-            fallback = (policy_optimizer.contracts(self,time.monotonic())['fallback']
-                        if self.strategy == 'optimizer' else self.base)
-            if fallback is not None and self.current != fallback:
-                self.write(fallback)
-                self.record(result='restored_baseline', reason=reason, allocation=fallback)
-        self.mode = 'off'
-        self.pending = None
-        self.state.move('DISABLED',reason)
-        self.service.observer.probe_start_ns = None
+        try:
+            if self.mode == 'active' and self.service.lab:
+                fallback = (policy_optimizer.contracts(self,time.monotonic())['fallback']
+                            if self.strategy == 'optimizer' else self.base)
+                if fallback is not None and self.current != fallback:
+                    self.write(fallback)
+                    self.record(result='restored_baseline', reason=reason, allocation=fallback)
+        finally:
+            self.mode = 'off'
+            self.pending = None
+            self.allocation_confirmed = False
+            if self.state.name!='SAFE_FALLBACK':
+                self.state.move('DISABLED',reason)
+            self.service.observer.probe_start_ns = None
 
     def detach(self):
         self.freeze_until = 0
-        if self.mode != 'off':
-            self.record(result='lab_closed', reason='topology removed')
+        was_running = self.mode != 'off'
         self.mode = 'off'
         self.current = self.base = self.pending = None
+        self.allocation_confirmed = False
+        self.state.move('DISABLED','lab detached')
         self.service.observer.probe_start_ns = None
+        if was_running:
+            self.record(result='lab_closed', reason='topology removed')
 
     def register(self, value, uid, pid):
         intent = self.registry.validate(value)
@@ -456,6 +481,9 @@ class Controller:
                   for row in self.service.telemetry.get('class', []) if row.get('class') == 'htb'}
         if actual != expected:
             raise RuntimeError('telemetry readback shows HTB capacity or allocation drift')
+        if not self.allocation_confirmed:
+            self.service.lab.assert_owned_sender()
+            self.allocation_confirmed = True
         began = time.monotonic_ns()
         window = observer.window(began, seconds, complete=True)
         window_end = time.monotonic_ns()
@@ -650,6 +678,7 @@ class Controller:
                 target = 'CONGESTED' if any(row.get('eligible') for row in observations.values()) else 'HEALTHY'
                 self.state.move(target,'sampled queue and application evidence')
         except Exception as error:
+            self.allocation_confirmed = False
             self.error = str(error)
             if self.state.name == 'DISABLED':
                 self.state.move('OBSERVING','fault assessment')
@@ -666,7 +695,7 @@ class Controller:
         window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'])
         return dict(controller_session=self.session,mode=self.mode, strategy=self.strategy, allocation=self.current,
                     actions=self.actions, pending=self.pending, error=self.error,
-                    allocation_verified=self.error is None and self.mode != 'off',
+                    allocation_verified=self.allocation_confirmed and self.error is None and self.mode != 'off',
                     prediction=self.predictor.status() if self.strategy == 'predictive' else None,
                     predictive_timing=self.prediction_timing() if self.strategy == 'predictive' else None,
                     engine_state=self.state.name, state_reason=self.state.reason,

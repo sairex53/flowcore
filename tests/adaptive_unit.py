@@ -56,6 +56,7 @@ class Unit(unittest.TestCase):
         observer = Observer(copy.deepcopy(DEFAULT))
         service = Mock(observer=observer, profile={'bandwidth_kbit': 10000}, active='default',
                        config={'policies':{'default':{'classes':{'critical':{'priority':0}}}}})
+        service.lab.assert_owned_sender = Mock()
         engine = Controller(service)
         engine.registry.register({'name':'demo','background_min_pct':25}, 0)
         engine.base = {'critical':(3000,10000),'interactive':(2000,10000),
@@ -80,6 +81,7 @@ class Unit(unittest.TestCase):
         service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
                        config={'telemetry_seconds':1,
                                'policies':{'default':{'classes':{'critical':{'priority':0}}}}})
+        service.lab.assert_owned_sender = Mock()
         engine = Controller(service)
         engine.registry.register({'name':'demo'}, 0)
         baseline = {'critical':(3000,10000),'interactive':(2000,10000),
@@ -152,6 +154,7 @@ class Unit(unittest.TestCase):
         service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
                        config={'telemetry_seconds':1,
                                'policies':{'default':{'classes':{'critical':{'priority':0}}}}})
+        service.lab.assert_owned_sender = Mock()
         engine = Controller(service)
         engine.registry.register({'name':'demo'}, 0)
         engine.base = engine.current = {'critical':(3000,10000),'interactive':(2000,10000),
@@ -207,8 +210,11 @@ class Unit(unittest.TestCase):
                   'standard':(2000,10000),'background':(3000,10000)}
         after = dict(before, critical=(3500,10000), background=(2500,10000))
         actual = dict(before)
-        policy = {'classes':{name:{'priority':i} for i,name in enumerate(CLASSES)}}
+        policy = {'classes':{name:{'priority':i,'min_pct':1,'max_pct':100} for i,name in enumerate(CLASSES)}}
         class Lab:
+            def assert_owned_sender(self):
+                pass
+
             def tc(self, *args):
                 minor = int(args[args.index('classid')+1].split(':')[1])
                 name = next(name for name, value in CLASSES.items() if value==minor)

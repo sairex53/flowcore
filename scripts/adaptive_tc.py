@@ -4,6 +4,13 @@ import time
 from service_config import CLASSES
 
 
+class TransactionFailure(RuntimeError):
+    """The attempted update failed, with or without verified compensation."""
+    def __init__(self, message, *, compensated):
+        super().__init__(message)
+        self.compensated = compensated
+
+
 def read(lab, capacity, policy):
     roots = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
     root = next((q for q in roots if q.get('root')), {})
@@ -41,17 +48,24 @@ def diff(before, after):
             for cls in ordered if before[cls] != after[cls]]
 
 
-def change(lab, capacity, policy, expected, desired):
+def change(lab, capacity, policy, expected, desired, *, background_floor=1):
     validate(capacity,expected)
     validate(capacity,desired)
+    for name,(rate,ceil) in desired.items():
+        cls = policy['classes'][name]
+        floor = background_floor if name=='background' else capacity*cls['min_pct']//100
+        if rate < floor or ceil > capacity*cls['max_pct']//100:
+            raise ValueError('HTB target exceeds authorized class bounds')
     changes = diff(expected,desired)
     start = time.monotonic_ns()
+    lab.assert_owned_sender()
     if read(lab, capacity, policy) != expected:
         raise RuntimeError('class allocation drift, refusing to overwrite')
     pre_read_ns = time.monotonic_ns()-start
     current = dict(expected)
 
     def write(name, value):
+        lab.assert_owned_sender()
         rate, ceil = value
         lab.tc('class', 'change', 'dev', 'fc0', 'parent', '1:1', 'classid', f'1:{CLASSES[name]}',
                'htb', 'rate', f'{rate}kbit', 'ceil', f'{ceil}kbit',
@@ -66,6 +80,7 @@ def change(lab, capacity, policy, expected, desired):
         apply_start = time.monotonic_ns()
         apply(desired)
         verify_start = time.monotonic_ns()
+        lab.assert_owned_sender()
         if read(lab, capacity, policy) != desired:
             raise RuntimeError('HTB readback differs from desired allocation')
         verified_ns = time.monotonic_ns()
@@ -74,12 +89,15 @@ def change(lab, capacity, policy, expected, desired):
                     transaction='VERIFIED', diff=changes)
     except Exception as failure:
         try:
+            lab.assert_owned_sender()
             observed = read(lab, capacity, policy)
             if observed != current:
                 raise RuntimeError('unknown external state, refusing overwrite')
             apply(expected)
+            lab.assert_owned_sender()
             if read(lab, capacity, policy) != expected:
                 raise RuntimeError('rollback readback mismatch')
         except Exception as rollback:
-            raise RuntimeError(f'HTB transaction failed: {failure}; rollback failed: {rollback}') from failure
-        raise RuntimeError(f'HTB transaction failed and rolled back: {failure}') from failure
+            raise TransactionFailure(f'HTB transaction failed: {failure}; rollback failed: {rollback}',
+                                     compensated=False) from failure
+        raise TransactionFailure(f'HTB transaction failed and rolled back: {failure}', compensated=True) from failure

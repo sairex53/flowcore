@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from collections import deque
+from contextlib import ExitStack
 from pathlib import Path
 
 from benchmark import ROOT
@@ -76,19 +77,19 @@ class Service:
         self.incident.reset()
         self.container_attachment = None
         self.container_attachments = {}
-        self.controller.detach()
-        self.observer.close()
-        for watcher in self.watches:
-            watcher.close()
-        self.watches.clear()
-        if self.lab:
-            lab = self.lab
-            self.lab = None
-            lab.close()
-            lab.storage.cleanup()
+        lab, self.lab = self.lab, None
+        watches, self.watches = self.watches, []
         self.telemetry = {}
         self.error = None
         self.sampled = 0
+        with ExitStack() as cleanup:
+            if lab:
+                cleanup.callback(lab.storage.cleanup)
+                cleanup.callback(lab.close)
+            for watcher in watches:
+                cleanup.callback(watcher.close)
+            cleanup.callback(self.observer.close)
+            self.controller.detach()
 
     def replace(self, name, settings, ingress=None):
         if name not in self.config['policies']:
@@ -97,11 +98,12 @@ class Service:
         if (self.lab and name == self.active and settings == self.profile
                 and all(holder.poll() is None for holder in self.lab.holders)):
             return False
-        storage = tempfile.TemporaryDirectory(prefix='lab-', dir=RUNTIME)
-        candidate = ServiceLab(Path(storage.name))
-        candidate.storage = storage
-        watches = []
-        try:
+        with ExitStack() as cleanup:
+            storage = tempfile.TemporaryDirectory(prefix='lab-', dir=RUNTIME)
+            cleanup.callback(storage.cleanup)
+            candidate = ServiceLab(Path(storage.name))
+            candidate.storage = storage
+            cleanup.callback(candidate.close)
             candidate.start()
             policy = self.config['policies'][name]
             candidate.install_policy(policy, settings)
@@ -109,19 +111,18 @@ class Service:
             if selected_ingress is not None:
                 selected_ingress.install(candidate)
                 candidate.ingress = selected_ingress
-            # Admission requires usable telemetry before replacing a working policy.
             candidate.counters()
-            self.capabilities[policy['scheduler']] = 'verified'
+            watches = []
             for index in (0, 1):
-                watches.append(candidate.watcher(index))
-        except BaseException:
-            for watcher in watches:
-                watcher.close()
-            candidate.close()
-            storage.cleanup()
-            raise
-        self.close_lab()
-        self.lab, self.watches = candidate, watches
+                watcher = candidate.watcher(index)
+                cleanup.callback(watcher.close)
+                watches.append(watcher)
+            self.close_lab()
+            cleanup.callback(self.observer.close)
+            self.observer.start(candidate)
+            self.lab, self.watches = candidate, watches
+            self.capabilities[policy['scheduler']] = 'verified'
+            cleanup.pop_all()
         self.active, self.profile = name, settings
         self.research_link_up = True
         self.research_mode = None
@@ -160,6 +161,7 @@ class Service:
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             self.telemetry = {}
             self.diagnostics.lab.reset('lab telemetry unavailable')
+            self.controller.allocation_confirmed = False
             self.error = str(exc)
             self.incident.recorder.record('quality', time.monotonic_ns(), reason='lab_collection_failed')
             self.log('error', detail=self.error)
@@ -466,6 +468,7 @@ class Service:
                 if kind in (16, 17, 20, 21, 24, 25):
                     if origin in ('sender', 'receiver') and self.lab:
                         self.lab.topology_dirty = True
+                        self.controller.allocation_confirmed = False
                         self.diagnostics.lab.reset('lab link, address or route changed')
                     elif origin == 'host':
                         for monitor in self.diagnostics.host.values():
@@ -476,6 +479,13 @@ class Service:
                         name = attrs(body[16:]).get(3, b'').rstrip(b'\0').decode(errors='replace')
                         row.update(index=index, name=name, up=bool(flags & 1), carrier=bool(flags & 0x10000))
                     self.events.append(row)
+                    if kind==17 and self.lab and origin in ('sender','receiver'):
+                        index = self.lab.sender_owner[2] if origin=='sender' else self.lab.receiver_index
+                        if row.get('index')==index:
+                            self.close_lab()
+                            self.error = 'owned veth removed; lab detached'
+                            self.log('error',detail=self.error)
+                            return
                     if (self.lab and origin != 'host') or (not self.lab and origin == 'host'):
                         self.incident.recorder.record('interface', time.monotonic_ns(), interface=row.get('name')
                             if row.get('name','').isascii() and row.get('name','').replace('-','').replace('_','').isalnum() else None,

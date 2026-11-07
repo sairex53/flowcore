@@ -2,6 +2,7 @@
 from paths import BINDIR, RESULTS
 import json
 import os
+import secrets
 from benchmark import Lab, TC, run
 from network_state import snapshot, subscribe
 from service_config import CLASSES
@@ -39,20 +40,46 @@ class ServiceLab(Lab):
                     socket_snapshot_truncated=sockets['truncated'],snapshot=engine.last_snapshot)
 
     def close(self):
-        if getattr(self,'flow_engine',None):
-            self.flow_engine.close()
-        super().close()
+        try:
+            if getattr(self,'flow_engine',None):
+                self.flow_engine.close()
+        finally:
+            self.sender_owner = self.receiver_index = None
+            super().close()
 
     def command(self, index, argv):
         return run(self.ns(index, argv))
 
     def network(self, index):
         with self.enter(index):
-            return snapshot(sysfs_speed=False)
+            return snapshot(sysfs_speed=False, link_alias=True)
 
     def watcher(self, index):
         with self.enter(index):
             return subscribe()
+
+    def start(self):
+        super().start()
+        tag = 'flowcore:'+secrets.token_hex(16)
+        self.command(0,['ip','link','set','dev','fc0','alias',tag])
+        sender = next((row for row in self.network(0)['interfaces'] if row['name']=='fc0'),{})
+        if sender.get('kind')!='veth' or sender.get('alias')!=tag:
+            raise RuntimeError('sender ownership admission failed')
+        ns = os.fstat(self.namespace_fds[0])
+        self.sender_owner = (ns.st_dev,ns.st_ino,sender['index'],tag)
+        receiver = next((row for row in self.network(1)['interfaces'] if row['name']=='fc1'),{})
+        if receiver.get('kind')!='veth':
+            raise RuntimeError('receiver ownership admission failed')
+        self.receiver_index = receiver['index']
+
+    def assert_owned_sender(self):
+        if not getattr(self,'sender_owner',None) or len(self.namespace_fds)<2:
+            raise RuntimeError('sender ownership unavailable')
+        ns = os.fstat(self.namespace_fds[0])
+        sender = next((row for row in self.network(0)['interfaces'] if row['name']=='fc0'),{})
+        actual = (ns.st_dev,ns.st_ino,sender.get('index'),sender.get('alias'))
+        if sender.get('kind')!='veth' or actual!=self.sender_owner:
+            raise RuntimeError('sender ownership drift')
 
     ingress = None
     topology_dirty = False
@@ -79,6 +106,7 @@ class ServiceLab(Lab):
                 self.sender_index, self.sender_addresses = link['index'], addresses
 
     def install_policy(self, policy, profile):
+        self.assert_owned_sender()
         capacity = profile['bandwidth_kbit']
         rate = f'{capacity}kbit'
         self.command(1, ['ip', '-6', 'addr', 'add', 'fd42:203::2/64', 'dev', 'fc1', 'nodad'])

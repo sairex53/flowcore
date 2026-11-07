@@ -39,6 +39,11 @@ class Helper(unittest.TestCase):
             act.run(12, create)
         self.assertTrue(act.failed)
         self.assertEqual(act.revision, 0)
+        self.assertFalse(act.view()['verified'])
+        self.assertIsNone(act.view()['lab_up'])
+        with self.assertRaisesRegex(Rejected, 'network_failed'):
+            act.run(12, create)
+        net.create.assert_called_once()
         net.remove.assert_not_called()
 
     def test_config_and_paths(self):
