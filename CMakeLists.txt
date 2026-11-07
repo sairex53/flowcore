@@ -139,7 +139,7 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp)
 target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -257,3 +257,6 @@ install(FILES BOTTLENECK_ENGINE.md DIRECTIONAL_QOS.md BOTTLENECK_RESULTS.md DEST
 add_test(NAME causal_diagnostics COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/causal_diagnostics_test.py")
 
 install(FILES CAUSAL_DIAGNOSTICS.md INCIDENT_ENGINE.md DIAGNOSTIC_VALIDATION.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME optimizer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/optimizer_test.py")
+set_tests_properties(optimizer_unit PROPERTIES ENVIRONMENT "FLOWCORE_TEST_OPTIMIZER=$<TARGET_FILE:flowcore_intelligence>")

@@ -352,6 +352,9 @@ class Service:
         if op == 'controller_stop':
             controller.stop('operator stop')
             return controller.status()
+        if op == 'policy_optimize':
+            keys(request, ('op','algorithm'))
+            return controller.optimization_preview(request['algorithm'])
         if op == 'policy_evaluate':
             return controller.evaluate()
         if op in ('policy_explain', 'policy_history'):

@@ -27,10 +27,24 @@ def read(lab, capacity, policy):
     return values
 
 
-def change(lab, capacity, policy, expected, desired):
-    if sum(rate for rate, _ in desired.values()) > capacity or any(
-            not 0 < rate <= ceil <= capacity for rate, ceil in desired.values()):
+def validate(capacity, allocation):
+    if (type(capacity) is not int or not 100 <= capacity <= 1000000 or set(allocation) != set(CLASSES)
+            or any(type(rate) is not int or type(ceil) is not int or not 0 < rate <= ceil <= capacity
+                   for rate,ceil in allocation.values())
+            or sum(rate for rate,_ in allocation.values()) > capacity):
         raise ValueError('unsafe HTB allocation')
+
+
+def diff(before, after):
+    ordered = sorted(CLASSES,key=lambda cls: after[cls][0]-before[cls][0])
+    return [dict(traffic_class=cls,handle=f'1:{CLASSES[cls]}',before=before[cls],after=after[cls])
+            for cls in ordered if before[cls] != after[cls]]
+
+
+def change(lab, capacity, policy, expected, desired):
+    validate(capacity,expected)
+    validate(capacity,desired)
+    changes = diff(expected,desired)
     start = time.monotonic_ns()
     if read(lab, capacity, policy) != expected:
         raise RuntimeError('class allocation drift, refusing to overwrite')
@@ -45,9 +59,8 @@ def change(lab, capacity, policy, expected, desired):
         current[name] = value
 
     def apply(target):
-        for name in sorted(current, key=lambda key: target[key][0] - current[key][0]):
-            if current[name] != target[name]:
-                write(name, target[name])
+        for item in diff(current,target):
+            write(item['traffic_class'],item['after'])
 
     try:
         apply_start = time.monotonic_ns()
@@ -57,7 +70,8 @@ def change(lab, capacity, policy, expected, desired):
             raise RuntimeError('HTB readback differs from desired allocation')
         verified_ns = time.monotonic_ns()
         return dict(pre_read_ns=pre_read_ns, apply_ns=verify_start-apply_start,
-                    verify_ns=verified_ns-verify_start, verified_ns=verified_ns)
+                    verify_ns=verified_ns-verify_start, verified_ns=verified_ns,
+                    transaction='VERIFIED', diff=changes)
     except Exception as failure:
         try:
             observed = read(lab, capacity, policy)

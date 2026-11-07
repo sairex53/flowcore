@@ -373,8 +373,8 @@ def trial(directory, m, rep, mode, seed=None):
                 request('controller_shadow',strategy='predictive')
             elif mode == 'slo-shadow':
                 request('controller_shadow',strategy='slo')
-            elif mode in ('threshold','queue-aware','slo-aware','hybrid','predictive') or mode.startswith('slo'):
-                request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive') else 'slo')
+            elif mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') or mode.startswith('slo'):
+                request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') else 'slo')
             plan = directory/'workload.json'
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services,

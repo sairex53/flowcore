@@ -1,5 +1,6 @@
 """Deterministic, single-writer adaptive controller for the owned HTB lab."""
 import json
+import subprocess
 import time
 import uuid
 from collections import deque
@@ -8,6 +9,7 @@ import adaptive_tc
 from intents import Registry
 from predictive import Predictor, HORIZON
 from intelligence import Allocator, State, estimate, score
+import policy_optimizer
 
 NANO = 10**9
 LATENCY_MIN_SAMPLES = 100
@@ -26,7 +28,7 @@ def slo_aware(slo, pressure, _intent):
 
 
 STRATEGIES = {'static': static, 'threshold': threshold, 'slo': slo_aware,
-              'queue-aware': threshold, 'slo-aware': slo_aware, 'hybrid': slo_aware, 'predictive': slo_aware}
+              'queue-aware': threshold, 'slo-aware': slo_aware, 'hybrid': slo_aware, 'predictive': slo_aware, 'optimizer': slo_aware}
 DEFAULT = dict(window_seconds=4, minimum_samples=20, enter_windows=2, cooldown_seconds=4,
                background_floor_pct=20, step_pct=5, maximum_boost_pct=15, maximum_actions=8, recovery_windows=3, maximum_reversals=2)
 
@@ -58,6 +60,7 @@ class Controller:
         self.session = uuid.uuid4().hex
         self.registry = Registry(service.observer)
         self.allocator = Allocator()
+        self.optimizer = policy_optimizer.Solver()
         self.state = State()
         self.last_plan = None
         self.predictor = Predictor()
@@ -125,7 +128,12 @@ class Controller:
             raise ValueError('controller requires observability')
         if mode == 'shadow' and self.mode == 'active':
             raise ValueError('stop the active controller before entering shadow mode')
-        shared = strategy in ('queue-aware','slo-aware','hybrid','predictive')
+        if strategy == 'optimizer':
+            self.service.lab.validate()
+            model = policy_optimizer.contracts(self,time.monotonic())
+            if model['conflicts']:
+                raise ValueError('infeasible optimizer contracts: '+json.dumps(model['conflicts']))
+        shared = strategy in ('queue-aware','slo-aware','hybrid','predictive','optimizer')
         classes = [row['intent']['priority'] for row in self.registry.rows.values()]
         if not shared and len(classes) != len(set(classes)):
             raise ValueError('legacy strategy requires exclusive traffic classes')
@@ -137,12 +145,13 @@ class Controller:
         installed = adaptive_tc.read(self.service.lab, capacity, self.policy())
         configured = {name: (capacity*cls['min_pct']//100, capacity*cls['max_pct']//100)
                       for name, cls in self.policy()['classes'].items()}
-        if installed != configured:
-            raise ValueError('installed HTB allocation differs from operator baseline')
-        self.base = installed
+        allowed = (configured,model['fallback']) if strategy == 'optimizer' else (configured,)
+        if installed not in allowed:
+            raise ValueError('installed HTB allocation differs from authorized baseline')
+        self.base = configured
         if self.base['background'][0] < self.capacity()*self.cfg['background_floor_pct']//100:
             raise ValueError('operator background floor exceeds installed reservation')
-        self.current = dict(self.base)
+        self.current = dict(installed)
         self.mode, self.strategy = mode, strategy
         self.revision = self.registry.revision
         self.last_tick = time.monotonic()
@@ -156,6 +165,10 @@ class Controller:
         self.timing = {}
 
     def write(self, target):
+        if self.strategy == 'optimizer':
+            # Own the exact veth topology through admission and readback. A
+            # dirty topology or an external class edit is never repaired blindly.
+            self.service.lab.validate()
         timing = adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target)
         changed = self.current != target
         self.current = dict(target)
@@ -168,9 +181,12 @@ class Controller:
 
     def stop(self, reason):
         self.freeze_until = 0
-        if self.mode == 'active' and self.current != self.base and self.service.lab:
-            self.write(self.base)
-            self.record(result='restored_baseline', reason=reason, allocation=self.base)
+        if self.mode == 'active' and self.service.lab:
+            fallback = (policy_optimizer.contracts(self,time.monotonic())['fallback']
+                        if self.strategy == 'optimizer' else self.base)
+            if fallback is not None and self.current != fallback:
+                self.write(fallback)
+                self.record(result='restored_baseline', reason=reason, allocation=fallback)
         self.mode = 'off'
         self.pending = None
         self.state.move('DISABLED',reason)
@@ -238,6 +254,9 @@ class Controller:
             self.predictor.invalidate(str(error))
 
     def plan(self, window, current):
+        if self.strategy == 'optimizer':
+            observer = self.service.observer
+            return policy_optimizer.plan(self,window,current,objective,allow_adaptive=not observer.truncated)
         cfg, capacity = self.cfg, self.capacity()
         root = window['queue'].get('root', {})
         bg = window['queue'].get('background', {})
@@ -372,6 +391,31 @@ class Controller:
         finally:
             self.base = original
 
+    def optimization_preview(self, algorithm):
+        if algorithm not in policy_optimizer.ALGORITHMS:
+            raise ValueError('unknown optimization algorithm')
+        lab = self.service.lab
+        if not lab or self.policy()['scheduler'] != 'htb':
+            return dict(dry_run=True,feasible=False,optimizer=dict(schema=1,stage='REJECTED',
+                conflicts=[dict(code='OWNED_HTB_REQUIRED')]))
+        try:
+            lab.validate()
+            current = adaptive_tc.read(lab,self.capacity(),self.policy())
+            adaptive_tc.validate(self.capacity(),current)
+            if self.mode != 'off' and current != self.current:
+                raise RuntimeError('actual allocation differs from the verified controller state')
+        except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
+            return dict(dry_run=True,feasible=False,optimizer=dict(schema=1,stage='REJECTED',
+                conflicts=[dict(code='KERNEL_OR_OWNERSHIP_MISMATCH',detail=str(error))]))
+        now = time.monotonic_ns()
+        observer = self.service.observer
+        window = observer.window(now,self.cfg['window_seconds'],complete=True)
+        fresh = (observer.sampled_ns is not None and not observer.errors
+                 and not observer.truncated and 0 <= now-observer.sampled_ns <= NANO*max(self.cfg['window_seconds'],2*self.service.config['telemetry_seconds']))
+        planned = policy_optimizer.plan(self,window,current,objective,algorithm,allow_adaptive=fresh)
+        return dict(self.qualify(planned),dry_run=True,actual=current,actual_verified=True,
+                    telemetry_fresh=fresh,registry_revision=self.registry.revision)
+
     def tick(self):
         self.registry.expire()
         if self.mode == 'off':
@@ -379,9 +423,12 @@ class Controller:
         now = time.monotonic()
         seconds = self.cfg['window_seconds']
         if self.registry.revision != self.revision:
-            if self.mode == 'active' and self.current != self.base:
-                self.write(self.base)
-                self.record(result='restored_baseline', reason='intent set changed', allocation=self.base)
+            fallback = self.base
+            if self.strategy == 'optimizer':
+                fallback = policy_optimizer.contracts(self,now)['fallback']
+            if self.mode == 'active' and fallback is not None and self.current != fallback:
+                self.write(fallback)
+                self.record(result='restored_baseline', reason='intent set changed', allocation=fallback)
             self.revision = self.registry.revision
             self.pending = None
             self.service.observer.probe_start_ns = None
@@ -410,12 +457,20 @@ class Controller:
         window_end = time.monotonic_ns()
         plan = self.qualify(self.plan(window, self.current))
         self.last_plan = plan
-        if self.strategy in ('queue-aware','slo-aware','hybrid','predictive') and plan['action'] == 'hold':
+        if self.strategy in ('queue-aware','slo-aware','hybrid','predictive','optimizer') and plan['action'] == 'hold':
             self.record(result='hold', **plan)
         self.timing = dict(time_ns=began, aggregation_ns=window_end-began,
                            policy_ns=time.monotonic_ns()-window_end,
                            telemetry_age_ns=max(0, began-observer.sampled_ns),
                            attribution=plan['attribution'],feasible=plan.get('feasible',True))
+        if self.strategy == 'optimizer' and not plan['feasible']:
+            # No authorized solution. Clear the probe and stop new writes
+            # without trying to install a stale or now-infeasible baseline.
+            self.pending = None
+            observer.probe_start_ns = None
+            self.mode = 'off'
+            self.error = 'optimizer rejected infeasible active contracts'
+            return
         bg = plan['background_throughput_kbit']
         leaf = next((q for q in self.service.telemetry.get('qdisc', [])
                      if q.get('parent') == '1:20'), {})
@@ -544,8 +599,10 @@ class Controller:
             raise ValueError('restore verification requires owned HTB')
         expected = {name:(capacity*row['min_pct']//100,capacity*row['max_pct']//100)
                     for name,row in policy['classes'].items()}
-        if adaptive_tc.read(self.service.lab,capacity,policy) != expected:
-            raise RuntimeError('kernel allocation differs from configured baseline')
+        if self.strategy == 'optimizer':
+            expected = policy_optimizer.contracts(self,time.monotonic())['fallback']
+        if expected is None or adaptive_tc.read(self.service.lab,capacity,policy) != expected:
+            raise RuntimeError('kernel allocation differs from authorized baseline')
 
     def freeze_for_lab(self, seconds):
         if not self.service.research or self.mode != 'active' or self.pending or self.freeze_until or not self.service.lab:

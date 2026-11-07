@@ -75,7 +75,7 @@ def main():
             sub.add_argument('--token', required=True)
         else:
             sub.add_argument('--deadline-ms', type=float)
-    groups = dict(policy=('list', 'apply', 'inspect', 'evaluate', 'explain', 'history'), daemon=('status',),
+    groups = dict(policy=('list', 'apply', 'inspect', 'evaluate', 'optimize', 'explain', 'history'), daemon=('status',),
                   intent=('register', 'list', 'inspect', 'remove', 'revoke'),
                   controller=('start', 'stop', 'status', 'shadow', 'observe', 'fallback'),
                   lab=('up', 'down', 'status', 'configure', 'inspect'))
@@ -91,9 +91,12 @@ def main():
             if (name == 'intent' and action in ('inspect', 'remove', 'revoke')):
                 command.add_argument('name')
             if (name == 'controller' and action in ('start', 'shadow', 'observe')):
-                command.add_argument('--strategy', choices=('static', 'threshold', 'slo', 'queue-aware', 'slo-aware', 'hybrid', 'predictive'), default='slo')
+                command.add_argument('--strategy', choices=('static', 'threshold', 'slo', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'optimizer'), default='slo')
             if (name, action) == ('policy', 'evaluate'):
                 command.add_argument('--dry-run', action='store_true', help='evaluation never writes tc')
+            if (name, action) == ('policy', 'optimize'):
+                from policy_optimizer import ALGORITHMS
+                command.add_argument('--algorithm', choices=ALGORITHMS, default='adaptive')
             if (name, action) == ('policy', 'apply'):
                 command.add_argument('name')
             if name in ('bottleneck', 'capacity', 'qos', 'path'):
@@ -223,6 +226,8 @@ def main():
                 result = request('policies')
             elif args.action == 'apply':
                 result = request('policy_apply', name=args.name)
+            elif args.action == 'optimize':
+                result = request('policy_optimize', algorithm=args.algorithm)
             elif args.action in ('evaluate', 'explain', 'history'):
                 result = request('policy_' + args.action)
             else:
