@@ -65,6 +65,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Network allocation | [Policy optimizer](POLICY_OPTIMIZER.md), [allocation results](OPTIMIZATION_RESULTS.md), [autotuning](AUTOTUNING.md), [experiment method](OPTIMIZATION_EXPERIMENTS.md), [autotuning results](AUTOTUNING_RESULTS.md) |
 | Current architecture | [NATIVE_CORE.md](NATIVE_CORE.md), [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
+| Application-intent packet scheduling | [Design](KERNEL_SCHEDULER_DESIGN.md), [reproduce](SCHEDULER_PROTOTYPE.md), [results](SCHEDULER_BENCHMARKS.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |
 | Distributed coordination | [FABRIC_ARCHITECTURE.md](FABRIC_ARCHITECTURE.md) |
 | Audited policy rollout | [FLEET_MANAGEMENT.md](FLEET_MANAGEMENT.md) |

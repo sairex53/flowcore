@@ -324,3 +324,9 @@ add_test(NAME flowid_session COMMAND /usr/bin/python3 -B
 set_tests_properties(flowid_session PROPERTIES TIMEOUT 45)
 install(FILES FLOWID_PROTOCOL.md FLOWID_SECURITY.md FLOWID_EXPERIMENTS.md FLOWID_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME scheduler_research COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/scheduler_experiment_test.py")
+set_tests_properties(scheduler_research PROPERTIES TIMEOUT 15)
+install(FILES KERNEL_SCHEDULER_DESIGN.md SCHEDULER_PROTOTYPE.md SCHEDULER_BENCHMARKS.md
+    KERNEL_UPSTREAM_PLAN.md DESTINATION "${FLOWCORE_DATA}/docs")
