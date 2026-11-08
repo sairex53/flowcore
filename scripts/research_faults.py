@@ -114,7 +114,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
         if ecn is not None:
             endpoints = ecn_policy.configure(lab, ecn, mode)
             service.research_ecn = ecn
-        if mode in ('linux', 'linux-default', 'fifo', 'fq_codel', *FQ_MODES):
+        if mode in ('linux', 'linux-default', 'fifo', 'fq_codel', 'deadline-unaware', *FQ_MODES):
             installed = service.config['policies'][service.active]
             if adaptive_tc.read(lab, service.profile['bandwidth_kbit'], installed) != {
                     name: (service.profile['bandwidth_kbit']*cls['min_pct']//100,
@@ -146,7 +146,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
                    'bandwidth', f'{cap}kbit', 'besteffort', 'flows', 'rtt', '100ms')
         if root(json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0')), 'cake')['options']['bandwidth'] != cap*125:
             raise RuntimeError('CAKE capacity readback failed')
-    elif mode in ('linux', 'fifo', 'fq_codel', *FQ_MODES):
+    elif mode in ('linux', 'fifo', 'fq_codel', 'deadline-unaware', *FQ_MODES):
         root(qdiscs, 'htb')
         classes = lambda: [row for row in json.loads(lab.tc('-j','class','show','dev','fc0'))
                            if row.get('class') == 'htb']

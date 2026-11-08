@@ -318,6 +318,10 @@ class Service:
                                        ('offloads-fc0.txt', 'offloads-fc1.txt', 'tcp.txt')}
                 return result
             view = self.observer.snapshot()
+            extras = {}
+            if request.get('deadline') is True:
+                from deadline_runtime import evidence
+                extras['deadline_evidence'] = evidence(self, time.monotonic_ns())
             return dict(time_ns=view['time_ns'], tc=self.telemetry, overhead=view['overhead'],
                         telemetry_timing=self.telemetry_timing,
                         backend=view['bpf'], state=self.controller.status(),
@@ -326,7 +330,7 @@ class Service:
                             self.controller.cfg['window_seconds'])['application'],
                         buckets={str(tick): dict(bucket.counters)
                                  for tick,bucket in self.observer.windows.buckets.items()
-                                 if tick >= view['time_ns']//1000000000-5})
+                                 if tick >= view['time_ns']//1000000000-5}, **extras)
         controller = self.controller
         registry = controller.registry
         if op == 'intent_register':

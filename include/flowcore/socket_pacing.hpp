@@ -87,14 +87,15 @@ private:
     bool active_ = false;
 };
 
-enum class Strategy { Static, Queue, Slo, Hybrid, Ecn };
+enum class Strategy { Static, Queue, Slo, Hybrid, Ecn, Deadline };
 enum class Decision { Hold, Adjust, Rollback, Fallback, ClassOnly };
 struct Observation {
     Rate capacity = 0, throughput = 0, background_demand = 0;
     std::uint64_t backlog_bytes = 0;
     std::uint32_t rtt_us = 0, request_p99_us = 0, requests = 0;
     unsigned active_sockets = 0;
-    bool valid = false, class_controller_active = false, class_transition = false, ecn_pre_loss = false;
+    bool valid = false, class_controller_active = false, class_transition = false, ecn_pre_loss = false,
+         deadline_pressure = false;
 };
 struct Proposal { Decision decision; Rate rate; };
 

@@ -54,7 +54,13 @@ def account(path, offered, start, end, deadline_ms, payload):
         raise RuntimeError('request ledger does not match offered schedule')
     outcomes = Counter(row['outcome'] for row in rows)
     successful = [row for row in rows if row['outcome'] == 'ok']
-    attained = None if deadline_ms is None else sum(float(row['latency_ms']) <= deadline_ms for row in successful)
+    def on_time(row):
+        budget = float(row.get('deadline_ms') or deadline_ms)
+        if not 0 < budget <= 600000:
+            raise RuntimeError('invalid deadline in request ledger')
+        return row['outcome'] == 'ok' and float(row['latency_ms']) <= budget
+
+    attained = None if deadline_ms is None else sum(map(on_time, rows))
     in_window = sum(float(row['completed']) <= end for row in successful)
     services = {}
     for service in sorted({row['service'] for row in rows}):
@@ -64,8 +70,11 @@ def account(path, offered, start, end, deadline_ms, payload):
                                  p99_ms=percentile(latencies, .99),
                                  failure_ratio=1-len(latencies)/len(cohort),
                                  deadline_attainment=None if deadline_ms is None else
-                                 sum(latency <= deadline_ms for latency in latencies)/len(cohort))
+                                 sum(map(on_time, cohort))/len(cohort))
     return dict(outcomes=dict(outcomes), timeout_requests=outcomes['TimeoutError'],
+                admission_rejected=outcomes['admission_rejected'], admission_deferred=outcomes['admission_deferred'],
+                sent_request_failures=offered-len(successful)-outcomes['admission_rejected']-
+                                      outcomes['admission_deferred']-outcomes['inflight_limit'],
                 failed_requests=offered-len(successful), completion_ratio=len(successful)/offered,
                 failure_ratio=(offered-len(successful))/offered, offered_rps=offered/(end-start),
                 deadline_ms=deadline_ms, deadline_attainment=None if attained is None else attained/offered,

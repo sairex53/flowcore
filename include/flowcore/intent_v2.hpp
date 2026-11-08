@@ -1,4 +1,6 @@
 #pragma once
+#include "flowcore/deadline.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -38,14 +40,34 @@ public:
     std::uint64_t id() const noexcept { return id_; }
 private:
     friend class Service;
+    friend class DeadlineRequest;
+    bool finish_at(Outcome, std::uint64_t) noexcept;
     Request(std::shared_ptr<detail::Channel>, std::uint32_t, std::uint64_t,
-            std::uint64_t stream = 0, unsigned priority = 0, bool logical = false);
+            std::uint64_t stream = 0, unsigned priority = 0, bool logical = false, std::uint64_t absolute_ns = 0);
     std::shared_ptr<detail::Channel> channel_;
     std::uint64_t id_=0, start_=0, generation_=0, cookie_=0;
     std::uint32_t deadline_=0;
-    std::uint64_t stream_=0;
+    std::uint64_t stream_=0, absolute_ns_=0;
     unsigned priority_=0;
     bool logical_=false;
+};
+struct DeadlineCompletion { bool missed, telemetry_queued; };
+class DeadlineRequest {
+public:
+    DeadlineRequest(DeadlineRequest&&) noexcept;
+    std::uint64_t id() const noexcept { return request_.id(); }
+    std::chrono::nanoseconds remaining() const noexcept;
+    bool should_cancel() const noexcept;
+    bool progress(std::uint64_t completed_egress_bytes) noexcept;
+    deadline::Work remaining_work() const noexcept;
+    std::optional<DeadlineCompletion> complete(Outcome = Outcome::Ok) noexcept;
+private:
+    friend class Service;
+    DeadlineRequest(Request request, deadline::Work work) noexcept;
+    Request request_;
+    deadline::Work work_;
+    std::uint64_t completed_ = 0;
+    bool finished_ = false;
 };
 class Service {
 public:
@@ -53,6 +75,11 @@ public:
     Request begin_request(std::uint32_t deadline_us = 0, std::uint64_t cookie = 0) const;
     Request begin_stream_request(std::uint64_t stream_id, unsigned priority,
                                  std::uint32_t deadline_us = 0, std::uint64_t cookie = 0) const;
+    DeadlineRequest begin_deadline_request(const deadline::Work&, std::uint64_t cookie = 0) const;
+    DeadlineRequest begin_deadline_stream(const deadline::Work&, std::uint64_t stream_id,
+                                          unsigned advisory_priority, std::uint64_t cookie = 0) const;
+    // Bounded IPC for an optional advisory query. Use deadline::estimate for cached local evidence.
+    deadline::Admission admit(const deadline::Work&, std::uint64_t cookie = 0) const;
     bool wait_ready(std::chrono::milliseconds timeout) const;
     bool flush(std::chrono::milliseconds timeout) const;
     bool ready() const noexcept;

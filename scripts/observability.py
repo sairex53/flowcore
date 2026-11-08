@@ -91,7 +91,7 @@ class Observer:
         self.events.append(dict(sequence=self.event_sequence, time_ns=ts, generation=self.generation,
                                 kind=kind, scope=self.scope, **detail))
 
-    def ingest(self, request, uid, *, record=True):
+    def ingest(self, request, uid, *, record=True, deadline_missed=None):
         if not self.cfg['enabled']:
             raise ValueError('observability disabled')
         name = request.get('service')
@@ -149,7 +149,8 @@ class Observer:
             bucket.observe(key, duration)
         if deadline is not None:
             bucket.counters[f'{key}.deadline_reported'] += 1
-            if duration > deadline * 1000 or outcome != 'ok':
+            missed = (duration > deadline * 1000 or outcome != 'ok') if deadline_missed is None else deadline_missed
+            if missed:
                 bucket.counters[f'{key}.deadline_miss'] += 1
         if record and self.on_request and source == 'application':
             self.on_request(service=name, traffic_class=cls, stamp=stamp, start=max(0,stamp-int(duration*1000)),

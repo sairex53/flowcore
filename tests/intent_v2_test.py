@@ -66,6 +66,34 @@ class API(unittest.TestCase):
             self.call(action='status',lease=token)
         self.assertNotIn('v2_demo',self.service.controller.registry.rows)
 
+    def test_deadline_absolute_and_admission(self):
+        token=self.register()
+        now=time.monotonic_ns()-20_000
+        start=dict(id=2,phase='start',start_ns=now,end_ns=0,deadline_us=2,
+                   deadline_ns=now+1001,cookie=None)
+        self.assertEqual(self.call(action='batch',lease=token,events=[start])['accepted'],1)
+        forged=dict(start,phase='ok',end_ns=now+1002,deadline_ns=now+1003)
+        self.assertEqual(self.call(action='batch',lease=token,events=[forged])['rejected'],1)
+        completed=dict(start,phase='ok',end_ns=now+1002)
+        self.assertEqual(self.call(action='batch',lease=token,events=[completed])['accepted'],1)
+        view=self.service.observer.window(time.monotonic_ns(),2)['application']['v2_demo']['application']
+        self.assertEqual((view['deadline_miss'],view['deadline_reported']),(1,1))
+
+        work=dict(deadline_ns=time.monotonic_ns()+1_000_000_000,egress_bytes=4096,
+                  processing_us=None,connect_us=None,remote_us=None,reliability=0,expiration=0,cookie=None)
+        self.assertEqual(self.call(action='admission',lease=token,work=work)['decision'],'INSUFFICIENT_DATA')
+        for bogus in (dict(work,priority='critical'),dict(work,egress_bytes=True),
+                      dict(work,deadline_ns=2**100),dict(work,remote_us=-1)):
+            with self.assertRaises(ValueError):
+                self.call(action='admission',lease=token,work=bogus)
+        with self.assertRaises(PermissionError):
+            self.call(action='admission',lease=token,work=dict(work,cookie=1))
+        lease=self.api.leases[token]
+        lease['deadline_credit']=(0,time.monotonic_ns())
+        self.assertEqual(self.call(action='admission',lease=token,work=work)['reason'],'throttled')
+        expired=dict(work,deadline_ns=time.monotonic_ns()-1)
+        self.assertEqual(self.call(action='admission',lease=token,work=expired)['reason'],'expired')
+
     def test_revocation_and_versions(self):
         token=self.register()
         self.api.revoke('v2_demo')
@@ -215,6 +243,7 @@ def live():
                 assert len(list(Path(f'/proc/{proc.pid}/fd').iterdir()))<=baseline
                 session_output=subprocess.check_output([BUILD/'intent_session_native',path],text=True,timeout=12)
                 assert json.loads(session_output)['connections']==1
+                subprocess.run([BUILD/"deadline_test",path],check=True,timeout=5)
                 output=subprocess.check_output([BUILD/'intent_v2_native',path],text=True,timeout=8)
                 assert int(output.split()[0])>0
                 subprocess.run([BUILD/'flowcore-intent-c-demo',path],check=True,timeout=5)

@@ -20,6 +20,7 @@ from benchmark import ROOT, owned_directory, receiver_metrics, run, TC
 from cli import request
 import benchmark_v2 as v2
 import ecn_policy
+import deadline_runtime
 from ecn_feedback import aqm_counters
 from ipc_security import private_directory, private_lock
 from daemon import SOCKET
@@ -301,8 +302,8 @@ def trial(directory, m, rep, mode, seed=None):
     if mode == 'slo-long':
         cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
         cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
-    if mode in ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED) or (mode.startswith('static') and mode != 'static-step'):
-        reserve = m['static_critical_pct'] if mode in ('static','pacing-hybrid', *ecn_policy.CLASSIFIED) else int(mode.removeprefix('static'))
+    if mode in ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]) or (mode.startswith('static') and mode != 'static-step'):
+        reserve = m['static_critical_pct'] if mode in ('static','pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]) else int(mode.removeprefix('static'))
         cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
         cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
     if mode in ('cake','ecn-cake'):
@@ -377,7 +378,9 @@ def trial(directory, m, rep, mode, seed=None):
                 return child(['nsenter', f'--net=/proc/self/fd/{fd}', '--', *argv[4:]],
                              pass_fds=(fd,), stdout=log, stderr=log)
 
-            if mode == 'ecn-queue':
+            if mode == 'deadline-existing':
+                request('controller_start',strategy='hybrid')
+            elif mode == 'ecn-queue':
                 request('controller_start',strategy='queue-aware')
             elif mode == 'predictive-shadow':
                 request('controller_shadow',strategy='predictive')
@@ -389,7 +392,12 @@ def trial(directory, m, rep, mode, seed=None):
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services,
                             server_address=('fd42:203::2' if workload.get('address_family')=='ipv6' else '10.203.0.2'))
-            pacing = ecn_profile or any(mode in PACING_MODES for mode in m['modes'])
+            deadline_profile = m.get('deadline')
+            pacing = deadline_profile or ecn_profile or any(mode in PACING_MODES for mode in m['modes'])
+            if deadline_profile:
+                settings['deadline_admission'] = deadline_profile
+                settings['deadline_mode'] = mode
+                settings['deadline_pacing_floor'] = deadline_runtime.pacing_floor(m)
             pacing_lock = None
             if mode == 'ecn-dctcp':
                 settings['ecn_socket_algorithm'] = 'dctcp'
@@ -416,6 +424,8 @@ def trial(directory, m, rep, mode, seed=None):
                            backlog_bytes=root(value.get('tc', {})).get('backlog', 0),
                            class_active=value.get('state', {}).get('mode', 'off') != 'off',
                            transition=transition)
+                if deadline_profile:
+                    row['deadline_evidence'] = value.get('deadline_evidence', {})
                 if ecn_profile:
                     scope = next((q for q in value.get('tc', {}).get('qdisc', [])
                                   if q.get('parent') == '1:20' or mode == 'ecn-cake' and q.get('root')), {})
@@ -452,7 +462,7 @@ def trial(directory, m, rep, mode, seed=None):
 
             def sample():
                 begin = time.monotonic_ns()
-                value = request('research_sample')
+                value = request('research_sample', **({'deadline': True} if deadline_profile else {}))
                 value['runner_ipc_ns'] = time.monotonic_ns()-begin
                 samples.append(value)
                 pacing_feedback(value)

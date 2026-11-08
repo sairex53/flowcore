@@ -81,7 +81,7 @@ class IntentAPI:
         self.expire()
         number(request.get('version'),2,2,True)
         try:
-            shared_clock=(os.stat(f'/proc/{pid}/ns/time').st_ino==os.stat('/proc/self/ns/time').st_ino)
+            shared_clock=os.path.samestat(os.stat(f'/proc/{pid}/ns/time'),os.stat('/proc/self/ns/time'))
         except OSError:
             shared_clock=False
         if not shared_clock:
@@ -123,13 +123,17 @@ class IntentAPI:
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='registered',uid=uid,service=intent['name'],pid=pid,process_start=start))
             self.service.log('intent_v2_registered',uid=uid,service=intent['name'],pid=pid,process_start=start)
             return dict(version=2,lease=token,renewable=True,
-                        features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality','transport_sessions_v1'],
+                        features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality','transport_sessions_v1','deadline_admission_v1'],
                         isolation='preference_only',identity='SO_PEERCRED+process_start',
                         constraints='class contracts require admitted HTB lab',notifications={})
         token=request.get('lease')
         lease=self.leases.get(token) if isinstance(token,str) else None
         if not lease or (lease['uid'],lease['pid'])!=(uid,pid) or identity(pid)[0]!=lease['process_start']:
             raise UnknownLease('unknown, revoked or foreign lease')
+        if action == 'admission':
+            keys(request, ('op', 'version', 'action', 'lease', 'work'))
+            from deadline_runtime import query
+            return dict(version=2, **query(self.service, lease, request['work']))
         if action=='transport_declare':
             keys(request,('op','version','action','lease','transport'))
             from transport_model import declare
@@ -199,11 +203,16 @@ class IntentAPI:
                         (socket.SOCK_STREAM,6),(socket.SOCK_STREAM,262),(socket.SOCK_DGRAM,17)):
                     raise ValueError('association requires an Internet TCP or UDP socket')
                 cookie=int.from_bytes(sock.getsockopt(socket.SOL_SOCKET,57,8),os.sys.byteorder)
+                if cookie not in lease['cookies'] and len(lease['cookies']) >= 64:
+                    raise ValueError('socket association quota exhausted')
+                from deadline_runtime import netns_cookie
+                namespace_cookie = netns_cookie(sock)
                 local=sock.getsockname()
                 try:
                     peer=sock.getpeername()
                 except OSError:
                     peer=None
+                lease.get('socket_identities', {}).pop(cookie, None)
                 if peer:
                     import ipaddress
                     lease.setdefault('socket_identities',{})[cookie] = (
@@ -215,11 +224,9 @@ class IntentAPI:
                         is_mptcp=bool(int.from_bytes(sock.getsockopt(socket.IPPROTO_TCP,43,4),os.sys.byteorder))
                     except OSError:
                         pass
-            if cookie not in lease['cookies'] and len(lease['cookies'])>=64:
-                raise ValueError('socket association quota exhausted')
             lease['cookies'].add(cookie)
             lease.setdefault('socket_capabilities',{})[cookie]=dict(cookie=str(cookie),protocol=protocol,
-                is_mptcp=is_mptcp,source='received_socket_descriptor',quic_observed=False)
+                is_mptcp=is_mptcp,source='received_socket_descriptor',quic_observed=False, netns_cookie=namespace_cookie)
             return dict(version=2,cookie=str(cookie),protocol=protocol,association='received_socket_descriptor',
                         local=local,classification='none')
         if action!='batch':
@@ -267,10 +274,19 @@ class IntentAPI:
             number(event.get('stream_priority'),0,7,True)
         if 'timings_us' in event and event.get('phase') != 'start':
             fields.add('timings_us')
+        absolute = event.get('deadline_ns')
+        if 'deadline_ns' in event:
+            fields.add('deadline_ns')
         keys(event,fields)
         number(event['id'],1,2**63-1,True)
         number(event['start_ns'],1,time.monotonic_ns(),True)
         number(event['deadline_us'],0,600_000_000,True)
+        if 'deadline_ns' in event:
+            number(absolute, event['start_ns']+1, event['start_ns']+600_000_000_000, True)
+            if event['deadline_us'] != (absolute-event['start_ns']+999)//1000:
+                raise ValueError('absolute deadline and compatibility budget differ')
+        metadata = (event['start_ns'],event['deadline_us'],event['cookie'],event.get('stream_id'),
+                    event.get('stream_priority'),absolute)
         if event['cookie'] is not None:
             number(event['cookie'],1,2**64-1,True)
             if event['cookie'] not in lease['cookies']:
@@ -280,12 +296,12 @@ class IntentAPI:
         if event['phase']=='start':
             if request in lease['requests'] or request in lease['completed'] or len(lease['requests'])>=256 or event['end_ns']!=0:
                 raise ValueError('duplicate request or inflight quota')
-            lease['requests'][request]=(event['start_ns'],event['deadline_us'],event['cookie'],event.get('stream_id'),event.get('stream_priority'))
+            lease['requests'][request]=metadata
             return
         if event['phase'] not in ('ok','timeout','failure','cancelled'):
             raise ValueError('invalid terminal outcome')
         entry=lease['requests'].get(request)
-        if entry!=(event['start_ns'],event['deadline_us'],event['cookie'],event.get('stream_id'),event.get('stream_priority')):
+        if entry != metadata:
             raise ValueError('request identity or metadata mismatch')
         number(event['end_ns'],event['start_ns'],time.monotonic_ns(),True)
         duration=(event['end_ns']-event['start_ns'])/1000
@@ -296,7 +312,8 @@ class IntentAPI:
         accepted = self.service.observer.ingest(dict(op='request_sample',service=lease['name'],
             outcome='failure' if event['phase']=='cancelled' else event['phase'],
             duration_us=duration,completed_ns=event['end_ns'],
-            deadline_ms=deadline/1000 if deadline is not None else None),uid,record=False)
+            deadline_ms=deadline/1000 if deadline is not None else None),uid,record=False,
+            deadline_missed=(event['end_ns'] > absolute or event['phase'] != 'ok') if absolute is not None else None)
         cookie = event['cookie']
         capabilities = lease.get('socket_capabilities',{}).get(cookie,{})
         protocol = 'mptcp' if capabilities.get('is_mptcp') else {6:'tcp',17:'udp'}.get(capabilities.get('protocol'))

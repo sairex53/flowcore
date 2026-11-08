@@ -88,21 +88,26 @@ void* fc_pacing_controller(unsigned strategy, std::uint64_t floor, std::uint64_t
 }
 void fc_pacing_delete_controller(void* handle) noexcept { delete static_cast<p::Controller*>(handle); }
 static unsigned evaluate_fields(void* handle, const std::uint64_t* fields, std::uint64_t current,
-                                std::uint64_t* proposed, bool extended) noexcept {
+                                std::uint64_t* proposed, unsigned count) noexcept {
     const p::Observation o{fields[0], fields[1], fields[2], fields[3], static_cast<std::uint32_t>(fields[4]),
                            static_cast<std::uint32_t>(fields[5]), static_cast<std::uint32_t>(fields[6]),
-                           static_cast<unsigned>(fields[7]), fields[8]!=0, fields[9]!=0, fields[10]!=0, extended && fields[11]!=0};
+                           static_cast<unsigned>(fields[7]), fields[8]!=0, fields[9]!=0, fields[10]!=0,
+                           count >= 12 && fields[11]!=0, count >= 13 && fields[12]!=0};
     const auto result = static_cast<p::Controller*>(handle)->evaluate(o, current, p::Clock::now());
     *proposed = result.rate;
     return static_cast<unsigned>(result.decision);
 }
 unsigned fc_pacing_evaluate(void* handle, const std::uint64_t* fields, std::uint64_t current,
                             std::uint64_t* proposed) noexcept {
-    return evaluate_fields(handle, fields, current, proposed, false);
+    return evaluate_fields(handle, fields, current, proposed, 11);
 }
 unsigned fc_pacing_evaluate_v2(void* handle, const std::uint64_t* fields, std::uint64_t current,
                                std::uint64_t* proposed) noexcept {
-    return evaluate_fields(handle, fields, current, proposed, true);
+    return evaluate_fields(handle, fields, current, proposed, 12);
+}
+unsigned fc_pacing_evaluate_v3(void* handle, const std::uint64_t* fields, std::uint64_t current,
+                               std::uint64_t* proposed) noexcept {
+    return evaluate_fields(handle, fields, current, proposed, 13);
 }
 void fc_pacing_confirm(void* handle, bool success) noexcept {
     static_cast<p::Controller*>(handle)->confirm(success);

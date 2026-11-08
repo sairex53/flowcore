@@ -3,7 +3,6 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
-#include <ctime>
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
@@ -19,11 +18,6 @@ std::string exchange(const std::string&, std::string, int);
 }
 namespace flowcore::v2 {
 namespace {
-std::uint64_t now() noexcept {
-    timespec value{};
-    clock_gettime(CLOCK_MONOTONIC, &value);
-    return static_cast<std::uint64_t>(value.tv_sec)*1000000000ULL+value.tv_nsec;
-}
 std::string field(std::string_view text, std::string_view key) {
     auto pos=text.find(key);
     if (pos==std::string_view::npos) throw std::runtime_error("missing protocol field");
@@ -49,6 +43,7 @@ struct Event {
     std::uint64_t stream=0;
     unsigned priority=0;
     bool logical=false;
+    std::uint64_t absolute_ns=0;
 };
 struct Channel {
     const pid_t owner=getpid();
@@ -61,7 +56,7 @@ struct Channel {
     std::size_t head=0, count=0;
     bool stopping=false, busy=false;
     std::string lease;
-    std::atomic<bool> connected{false};
+    std::atomic<bool> connected{false}, absolute_deadlines{false};
     std::atomic<std::uint64_t> sequence{0}, generation{0}, queued{0}, accepted{0}, dropped{0}, rejected{0}, errors{0};
     std::atomic<std::uint32_t> notifications{0};
     std::atomic<Error> last_error{Error::None};
@@ -134,16 +129,17 @@ struct Channel {
                         throw std::runtime_error("invalid lease");
                     { std::lock_guard lock(mutex); lease=next; token=next; }
                     can_renew=reply.find("\"renewable\": true")!=std::string::npos;
+                    absolute_deadlines=reply.find("\"deadline_admission_v1\"")!=std::string::npos;
                     notifications=0;notification_time=0;
                     ++generation;
                     connected=true;
-                    renew_after=now()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
+                    renew_after=deadline::monotonic_ns()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
                     last_error=Error::None;
                     dropped+=size;
                 } else {
-                    if (can_renew && now()>=renew_after) {
+                    if (can_renew && deadline::monotonic_ns()>=renew_after) {
                         transport.exchange(envelope("renew",token)+"}");
-                        renew_after=now()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
+                        renew_after=deadline::monotonic_ns()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
                     }
                     std::string message=envelope("batch",token)+",\"events\":[";
                     std::size_t sent=0;
@@ -155,6 +151,7 @@ struct Channel {
                         message+="{\"id\":"+std::to_string(e.id)+",\"phase\":\""+phases[e.phase]+
                             "\",\"start_ns\":"+std::to_string(e.start)+",\"end_ns\":"+std::to_string(e.end)+
                             ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null");
+                        if (e.absolute_ns) message+=",\"deadline_ns\":"+std::to_string(e.absolute_ns);
                         if (e.logical) message+=",\"stream_id\":"+std::to_string(e.stream)+",\"stream_priority\":"+std::to_string(e.priority);
                         message+="}";
                     }
@@ -282,23 +279,134 @@ Request Service::begin_stream_request(std::uint64_t stream, unsigned priority,
                                       std::uint32_t deadline, std::uint64_t cookie) const {
     return Request(channel_,deadline,cookie,stream,priority,true);
 }
+deadline::Admission Service::admit(const deadline::Work& work, std::uint64_t cookie) const {
+    const auto current = deadline::monotonic_ns();
+    const auto fallback = deadline::estimate(work, {}, current);
+    if (fallback.reason != deadline::Reason::MissingEvidence) return fallback;
+    const auto unavailable = [&] {
+        auto outcome = deadline::estimate(work, {}, deadline::monotonic_ns());
+        if (outcome.reason == deadline::Reason::MissingEvidence) outcome.reason = deadline::Reason::Offline;
+        return outcome;
+    };
+    std::string token;
+    {
+        const std::lock_guard lock(channel_->mutex);
+        if (!ready() || !channel_->absolute_deadlines) return unavailable();
+        token = channel_->lease;
+    }
+    try {
+        const auto optional_us = [](std::optional<std::uint32_t> value) {
+            return value ? std::to_string(*value) : std::string("null");
+        };
+        auto message = channel_->envelope("admission", token)+
+            ",\"work\":{\"deadline_ns\":"+std::to_string(work.deadline_ns)+
+            ",\"egress_bytes\":"+std::to_string(work.egress_bytes)+
+            ",\"processing_us\":"+optional_us(work.processing_us)+
+            ",\"connect_us\":"+optional_us(work.connect_us)+
+            ",\"remote_us\":"+optional_us(work.remote_us)+
+            ",\"reliability\":"+std::to_string(static_cast<unsigned>(work.reliability))+
+            ",\"expiration\":"+std::to_string(static_cast<unsigned>(work.expiration))+
+            ",\"cookie\":"+(cookie ? std::to_string(cookie) : "null")+"}}";
+        detail::Transport transport(channel_->path);
+        const auto reply = transport.exchange(std::move(message));
+        auto number = [&](std::string_view key) { return integer(reply, key); };
+        const auto decision = number("\"deadline_decision\": ");
+        const auto reason = number("\"deadline_reason\": ");
+        const auto quality = number("\"deadline_quality\": ");
+        if (decision > static_cast<unsigned>(deadline::Decision::InsufficientData) ||
+            reason > static_cast<unsigned>(deadline::Reason::Throttled) ||
+            quality > static_cast<unsigned>(deadline::Quality::Observed)) return unavailable();
+        auto result = deadline::estimate(work, {}, deadline::monotonic_ns());
+        if (result.decision == deadline::Decision::RejectInfeasible) return result;
+        result.decision = static_cast<deadline::Decision>(decision);
+        result.reason = static_cast<deadline::Reason>(reason);
+        result.quality = static_cast<deadline::Quality>(quality);
+        auto read = [&](std::string_view key) -> std::optional<std::uint64_t> {
+            auto value = number(key);
+            return value == UINT64_MAX ? std::nullopt : std::optional{value};
+        };
+        result.capacity_bound_us = read("\"capacity_bound_us\": ");
+        result.queue_us = read("\"queue_us\": ");
+        result.network_p50_us = read("\"network_p50_us\": ");
+        result.network_p95_us = read("\"network_p95_us\": ");
+        // Account for time spent obtaining advice before returning it to the caller.
+        if (result.network_p95_us && result.decision == deadline::Decision::Accept &&
+            *result.network_p95_us > result.remaining_ns/1000 - result.reserved_us) {
+            result.decision = deadline::Decision::AcceptWithRisk;
+            result.reason = deadline::Reason::Tight;
+        }
+        return result;
+    } catch (const detail::RpcError& error) {
+        auto result = unavailable();
+        if (result.reason != deadline::Reason::Expired && error.code == Error::AuthorizationDenied)
+            result.reason = deadline::Reason::Unauthorized;
+        return result;
+    } catch (const std::exception&) {
+        return unavailable();
+    }
+}
+
+DeadlineRequest Service::begin_deadline_request(const deadline::Work& work, std::uint64_t cookie) const {
+    if (!deadline::valid(work)) throw std::invalid_argument("invalid deadline work");
+    return DeadlineRequest(Request(channel_, 0, cookie, 0, 0, false, work.deadline_ns), work);
+}
+DeadlineRequest Service::begin_deadline_stream(const deadline::Work& work, std::uint64_t stream,
+                                                unsigned priority, std::uint64_t cookie) const {
+    if (!deadline::valid(work)) throw std::invalid_argument("invalid deadline work");
+    return DeadlineRequest(Request(channel_, 0, cookie, stream, priority, true, work.deadline_ns), work);
+}
+DeadlineRequest::DeadlineRequest(Request request, deadline::Work work) noexcept
+    : request_(std::move(request)), work_(work) {}
+DeadlineRequest::DeadlineRequest(DeadlineRequest&& other) noexcept
+    : request_(std::move(other.request_)), work_(other.work_), completed_(other.completed_),
+      finished_(std::exchange(other.finished_, true)) {}
+std::chrono::nanoseconds DeadlineRequest::remaining() const noexcept {
+    const auto current = deadline::monotonic_ns();
+    return std::chrono::nanoseconds(work_.deadline_ns > current ? work_.deadline_ns-current : 0);
+}
+bool DeadlineRequest::should_cancel() const noexcept {
+    return !finished_ && work_.expiration == deadline::Expiration::CancelCooperatively && remaining().count() == 0;
+}
+bool DeadlineRequest::progress(std::uint64_t bytes) noexcept {
+    if (finished_ || bytes < completed_ || bytes > work_.egress_bytes) return false;
+    completed_ = bytes;
+    return true;
+}
+deadline::Work DeadlineRequest::remaining_work() const noexcept {
+    auto work = work_;
+    work.egress_bytes -= completed_;
+    return work;
+}
+std::optional<DeadlineCompletion> DeadlineRequest::complete(Outcome outcome) noexcept {
+    if (std::exchange(finished_, true)) return {};
+    const auto end = deadline::monotonic_ns();
+    return DeadlineCompletion{outcome != Outcome::Ok || end > work_.deadline_ns, request_.finish_at(outcome, end)};
+}
+
 Request::Request(std::shared_ptr<detail::Channel> channel, std::uint32_t deadline, std::uint64_t cookie,
-                 std::uint64_t stream, unsigned priority, bool logical)
-    : channel_(std::move(channel)), start_(now()), generation_(channel_->generation), cookie_(cookie),
+                 std::uint64_t stream, unsigned priority, bool logical, std::uint64_t absolute)
+    : channel_(std::move(channel)), start_(deadline::monotonic_ns()), generation_(channel_->generation), cookie_(cookie),
       deadline_(deadline ? deadline : channel_->default_deadline),stream_(stream),priority_(priority),logical_(logical) {
     if (priority>7 || stream>=(1ULL<<62)) throw std::invalid_argument("invalid logical stream metadata");
+    if (absolute) {
+        if (absolute <= start_ || absolute-start_ > deadline::maximum_budget_ns)
+            throw std::invalid_argument("absolute deadline must be in the supported future window");
+        deadline_=static_cast<std::uint32_t>((absolute-start_+999)/1000);
+        if (channel_->absolute_deadlines) absolute_ns_=absolute;
+    }
     if (deadline_>600000000) throw std::invalid_argument("deadline outside supported range");
     id_=++channel_->sequence;
-    if (!channel_->push({id_,start_,0,generation_,cookie_,deadline_,0,stream_,priority_,logical_})) channel_.reset();
+    if (!channel_->push({id_,start_,0,generation_,cookie_,deadline_,0,stream_,priority_,logical_,absolute_ns_})) channel_.reset();
 }
 Request::Request(Request&& other) noexcept
     : channel_(std::move(other.channel_)),id_(other.id_),start_(other.start_),
-      generation_(other.generation_),cookie_(other.cookie_),deadline_(other.deadline_),stream_(other.stream_),priority_(other.priority_),logical_(other.logical_) {}
+      generation_(other.generation_),cookie_(other.cookie_),deadline_(other.deadline_),stream_(other.stream_),absolute_ns_(other.absolute_ns_),priority_(other.priority_),logical_(other.logical_) {}
 Request::~Request() { if (channel_) static_cast<void>(complete(Outcome::Cancelled)); }
-bool Request::complete(Outcome outcome) noexcept {
+bool Request::complete(Outcome outcome) noexcept { return finish_at(outcome, deadline::monotonic_ns()); }
+bool Request::finish_at(Outcome outcome, std::uint64_t end) noexcept {
     auto channel=std::move(channel_);
     if (!channel) return false;
     unsigned phase=outcome==Outcome::Ok?1:outcome==Outcome::Timeout?2:outcome==Outcome::Failure?3:4;
-    return channel->push({id_,start_,now(),generation_,cookie_,deadline_,phase,stream_,priority_,logical_});
+    return channel->push({id_,start_,end,generation_,cookie_,deadline_,phase,stream_,priority_,logical_,absolute_ns_});
 }
 }

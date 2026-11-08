@@ -94,7 +94,7 @@ endif()
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
 add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp
-    src/socket_pacing.cpp src/pacing_controller.cpp)
+    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -107,7 +107,7 @@ add_executable(flowcore-sdk-request examples/sdk_request.cpp)
 target_link_libraries(flowcore-sdk-request PRIVATE flowcore_sdk)
 install(TARGETS flowcore_sdk EXPORT FlowcoreTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(EXPORT FlowcoreTargets FILE flowcore-targets.cmake NAMESPACE flowcore:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
-install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp include/flowcore/deadline.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
@@ -140,7 +140,7 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp)
 target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -351,3 +351,10 @@ add_test(NAME ecn_feedback COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_D
 set_tests_properties(ecn_feedback PROPERTIES TIMEOUT 15
     ENVIRONMENT "FLOWCORE_ECN_PACING_BRIDGE=$<TARGET_FILE:flowcore_pacing_lab>")
 install(FILES ECN_ENGINE.md CONGESTION_FEEDBACK.md ECN_BENCHMARKS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_executable(deadline_test tests/deadline_test.cpp)
+target_link_libraries(deadline_test PRIVATE flowcore_sdk)
+target_compile_options(deadline_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME deadline_native COMMAND deadline_test)
+set_tests_properties(deadline_native PROPERTIES TIMEOUT 15)
+install(FILES DEADLINE_ENGINE.md ADMISSION_CONTROL.md DEADLINE_EXPERIMENTS.md DESTINATION "${FLOWCORE_DATA}/docs")

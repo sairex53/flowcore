@@ -16,11 +16,11 @@ class Reporter:
         self.ipc_latency = Histogram()
         self.task = asyncio.create_task(self.run())
 
-    def submit(self, duration_us, status):
+    def submit(self, duration_us, status, deadline_ms=None):
         outcome = 'ok' if status == 'ok' else 'timeout' if status == 'TimeoutError' else 'failure'
         try:
             self.queue.put_nowait(dict(op='request_sample', service=self.service, outcome=outcome,
-                                       duration_us=duration_us, deadline_ms=self.deadline_ms,
+                                       duration_us=duration_us, deadline_ms=self.deadline_ms if deadline_ms is None else deadline_ms,
                                        completed_ns=time.monotonic_ns()))
         except asyncio.QueueFull:
             self.dropped += 1

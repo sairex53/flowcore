@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import ecn_policy
+import deadline_runtime
 from service_config import keys, number, profile, unique
 
 LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
@@ -12,9 +13,9 @@ STATIC_MODES = tuple(f'static{pct}' for pct in range(20, 41))
 FQ_MODES = ('tcp-fq', 'pacing-static', 'pacing-queue', 'pacing-slo', 'pacing-lowat',
             'tcp-cubic', 'tcp-reno', 'tcp-bbr')
 PACING_MODES = (*FQ_MODES, 'pacing-hybrid')
-MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', *PACING_MODES, *ecn_policy.MODES)
+MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', *PACING_MODES, *ecn_policy.MODES, *deadline_runtime.MODES)
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'pacing-hybrid', *ecn_policy.CLASSIFIED))
+CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)
@@ -41,7 +42,7 @@ def validate(value):
     fields = ('version', 'topology', 'network', 'workload', 'duration_seconds', 'repetitions',
               'seed', 'modes', 'static_critical_pct', 'controller', 'faults', 'regression')
     keys(value, fields + (('gates',) if v2 else ()) +
-         (('stages', 'events') if v3 else ()) + (('ecn',) if 'ecn' in value else ()))
+         (('stages', 'events') if v3 else ()) + (('ecn',) if 'ecn' in value else ()) + (('deadline',) if 'deadline' in value else ()))
     number(version, 1, 3, True)
     if value['topology'] != 'veth-pair':
         raise ValueError('only the owned veth-pair topology is supported')
@@ -57,6 +58,13 @@ def validate(value):
         raise ValueError('ECN comparisons require a versioned profile and exclusively ECN modes')
     if ecn_modes:
         ecn_policy.validate(value['ecn'])
+    deadline_modes = set(modes) & set(deadline_runtime.MODES)
+    if bool(deadline_modes) != ('deadline' in value) or (deadline_modes and deadline_modes != set(modes)):
+        raise ValueError('deadline comparisons require an exclusive versioned deadline profile')
+    if deadline_modes:
+        if not v2:
+            raise ValueError('deadline experiments require a version 2 or 3 manifest')
+        deadline_runtime.profile(value['deadline'])
     network = value['network']
     keys(network, (*NETWORK_FIELDS, *(OPTIONAL_NETWORK_FIELDS if v3 else ())))
     net_profile(network)
@@ -83,6 +91,8 @@ def validate(value):
             raise ValueError('version 2 supports a new connection per request')
         if workload['deadline_ms'] is not None:
             number(workload['deadline_ms'], .001, 5000)
+        if deadline_modes and (workload['deadline_ms'] is None or workload['deadline_ms'] <= value['deadline']['tight_deadline_ms']):
+            raise ValueError('deadline experiments require a regular budget larger than the tight budget')
         if workload['warmup_seconds'] and workload['bulk_bytes_per_stream']:
             raise ValueError('finite background transfers require zero warmup')
         gates = value['gates']
@@ -133,6 +143,8 @@ def validate(value):
     number(controller['minimum_samples'], 1, 10000, True)
     if controller['bpf'] not in ('auto', 'off'):
         raise ValueError('bpf must be auto or off')
+    if deadline_modes and not any(phase['background_streams'] for phase in phases):
+        raise ValueError('deadline experiments require background flows')
     faults = value['faults']
     if not isinstance(faults, list) or len(faults) > 32:
         raise ValueError('at most 32 legacy network transitions')
@@ -220,6 +232,8 @@ def validate(value):
     keys(limits, DEFAULT_LIMITS)
     for threshold in limits.values():
         number(threshold, 0, 10000)
+    if deadline_modes and deadline_runtime.pacing_floor(value) > deadline_runtime.PACING_BASELINE:
+        raise ValueError('configured background share exceeds the deadline laboratory socket baseline')
     return copy.deepcopy(value)
 
 

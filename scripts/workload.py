@@ -158,7 +158,11 @@ async def client(output, duration, rate, payload, request_port, background_port,
     pacing = None
     if research and 'socket_pacing_mode' in research:
         from pacing_workload import PacingWorkload
-        pacing = PacingWorkload(output, research['socket_pacing_mode'])
+        pacing = PacingWorkload(output, research['socket_pacing_mode'], research.get('deadline_pacing_floor'))
+    admission = None
+    if research and 'deadline_admission' in research:
+        from deadline_workload import AdmissionWorkload
+        admission = AdmissionWorkload(output, research['deadline_admission'], research['deadline_mode'], deadline_ms, payload)
 
     async def background(flow):
         budget = research['bulk_bytes_per_stream'] if research else 0
@@ -221,19 +225,31 @@ async def client(output, duration, rate, payload, request_port, background_port,
         writer = None
         outcome = 'ok'
         direct_socket = None
+        network_begin_ns = None
+        budget = admission.budget_ms(index) if admission else None
+        advice = ''
+        if admission:
+            advice = admission.admission(scheduled, index, traffic_class)['decision']
+            if admission.gating:
+                if advice == 'DEFER':
+                    await asyncio.sleep(admission.profile['defer_us']/1e6)
+                    advice = admission.admission(scheduled, index, traffic_class, first=False)['decision']
+                outcome = {'REJECT_INFEASIBLE': 'admission_rejected', 'DEFER': 'admission_deferred'}.get(advice, 'ok')
         try:
-            remaining = 5 - (time.monotonic() - scheduled)
-            if remaining <= 0:
-                raise TimeoutError('late request')
-            async with asyncio.timeout(remaining):
-                host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
-                reader, writer = await research_connect(host, port, socket_algorithm)
-                direct_socket = writer.get_extra_info('socket')
-                direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                writer.write(request_data)
-                await writer.drain()
-                if await reader.readexactly(64) != b'R' * 64:
-                    raise ValueError('invalid response')
+            if outcome == 'ok':
+                remaining = 5 - (time.monotonic() - scheduled)
+                if remaining <= 0:
+                    raise TimeoutError('late request')
+                async with asyncio.timeout(remaining):
+                    host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
+                    reader, writer = await research_connect(host, port, socket_algorithm)
+                    direct_socket = writer.get_extra_info('socket')
+                    direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    network_begin_ns = time.monotonic_ns() if admission else None
+                    writer.write(request_data)
+                    await writer.drain()
+                    if await reader.readexactly(64) != b'R' * 64:
+                        raise ValueError('invalid response')
         except Exception as error:
             outcome = type(error).__name__
         finally:
@@ -246,12 +262,16 @@ async def client(output, duration, rate, payload, request_port, background_port,
             if writer:
                 writer.transport.abort()
         latency = (ended - scheduled) * 1000
-        rows.append((index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms))
-        window.append((latency, outcome))
-        if pacing and traffic_class == 'critical':
-            pacing_window.append((latency, outcome))
-        if reporter:
-            reporter.submit(latency * 1000, outcome)
+        row = (index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms)
+        rows.append(row + ((budget, advice) if admission else ()))
+        if outcome == 'ok' and network_begin_ns is not None:
+            admission.completed(traffic_class, network_begin_ns, round(ended*1e9))
+        if not outcome.startswith('admission_'):
+            window.append((latency, outcome))
+            if pacing and traffic_class == 'critical':
+                pacing_window.append((latency, outcome))
+            if reporter:
+                reporter.submit(latency * 1000, outcome, budget)
 
     async def feedback():
         while True:
@@ -262,7 +282,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 tail = percentile([value for value, _ in pacing_window], .99) or 0
                 if any(status != 'ok' for _, status in pacing_window):
                     tail = max(tail, 5000)
-                pacing.tick(tail, len(pacing_window))
+                pacing.tick(tail, len(pacing_window), admission.pressure() if admission else False)
                 pacing_window.clear()
             if batch:
                 tail = percentile([value for value, _ in batch], .99)
@@ -365,12 +385,13 @@ async def client(output, duration, rate, payload, request_port, background_port,
         reporter = reporters.get(traffic_class)
         if len(pending) >= cap:
             ended = time.monotonic()
-            rows.append((index, scheduled, ended, (ended - scheduled) * 1000, 'inflight_limit', traffic_class, name, (ended - scheduled) * 1000))
+            row = (index, scheduled, ended, (ended - scheduled) * 1000, 'inflight_limit', traffic_class, name, (ended - scheduled) * 1000)
+            rows.append(row + ((admission.budget_ms(index), '') if admission else ()))
             window.append((5000, 'inflight_limit'))
             if pacing and traffic_class == 'critical':
                 pacing_window.append((5000, 'inflight_limit'))
             if reporter:
-                reporter.submit((ended - scheduled) * 1e6, 'inflight_limit')
+                reporter.submit((ended - scheduled) * 1e6, 'inflight_limit', admission.budget_ms(index) if admission else None)
             continue
         task = asyncio.create_task(request(index, scheduled, traffic_class, name))
         pending.add(task)
@@ -392,7 +413,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
                             if isinstance(item, BaseException) and not isinstance(item, asyncio.CancelledError)})
     with (output / 'requests.csv').open('w') as stream:
         writer = csv.writer(stream)
-        writer.writerow(['id', 'scheduled', 'completed', 'latency_ms', 'outcome', 'traffic_class', 'service', 'dispatch_lag_ms'])
+        columns = ['id', 'scheduled', 'completed', 'latency_ms', 'outcome', 'traffic_class', 'service', 'dispatch_lag_ms']
+        writer.writerow(columns + (['deadline_ms', 'admission'] if admission else []))
         writer.writerows(sorted(rows))
     successes = [row[3] for row in rows if row[4] == 'ok']
     summary = {'start': started, 'end': measurement_end, 'offered': offered,
@@ -401,6 +423,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
                'p99_ms': percentile(successes, .99), 'max_ms': max(successes, default=None),
                'background_errors': background_errors,'udp_send_errors':len(udp_send_errors),
                'worker_errors': worker_errors}
+    if admission:
+        summary['deadline_admission'] = admission.summary()
     if pacing:
         summary['socket_pacing'] = pacing.finish()
     if reporters:
