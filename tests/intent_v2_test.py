@@ -1,8 +1,10 @@
 """API v2 contracts and live non-root native/bridge/network validation."""
 import array
+from contextlib import contextmanager
 import json
 import os
 import random
+import select
 import signal
 import shutil
 import socket
@@ -157,6 +159,21 @@ class Multiplex(socketserver.BaseRequestHandler):
             self.request.sendall(struct.pack('!I',identifier))
 
 
+@contextmanager
+def pacing_restart(path):
+    with subprocess.Popen([BUILD/'socket_pacing_test', path], stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, text=True) as child:
+        try:
+            assert select.select([child.stdout], [], [], 5)[0] and child.stdout.readline().strip() == 'ready'
+            yield
+            output, _ = child.communicate('resume\n', timeout=8)
+            assert child.returncode == 0 and output.strip() == 'reattested', output
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+
+
 def live():
     with tempfile.TemporaryDirectory(dir=BUILD,prefix='v2-live-') as directory:
         directory=Path(os.path.relpath(directory))
@@ -263,7 +280,7 @@ def live():
                     server.shutdown()
                     thread.join()
                 # Keep the same native client alive through daemon termination and restart.
-                with Bridge(BUILD/'libflowcore_intent.so',path,'recovery') as client:
+                with Bridge(BUILD/'libflowcore_intent.so',path,'recovery') as client, pacing_restart(path):
                     assert client.ready()
                     with client.request(): pass
                     assert client.flush()

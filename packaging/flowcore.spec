@@ -70,6 +70,7 @@ DESTDIR=%{buildroot} cmake --install build
 
 %{_libdir}/libflowcore_intent.so
 %{_libdir}/libflowcore_flowid.so
+%{_libdir}/libflowcore_pacing_lab.so
 
 
 %post

@@ -5,7 +5,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from research_manifest import CLASSIFIED
+from research_manifest import CLASSIFIED, FQ_MODES
 from service_config import CLASSES
 from workload import percentile
 
@@ -120,8 +120,10 @@ def verify(snapshot, mode, expected_capacity, configured_ports):
             children = {f'1:{minor}' for minor in CLASSES.values()}
             if filters != expected or leaf != dict.fromkeys(children, 'fq_codel') or set(rates) != children | {'1:1'}:
                 raise RuntimeError('classified HTB hierarchy or flower readback mismatch')
-        elif filters or leaf != {'1:20': 'pfifo' if mode == 'fifo' else 'fq_codel'} or set(rates) != {'1:20'}:
-            raise RuntimeError('single-class baseline hierarchy mismatch')
+        else:
+            expected_leaf = 'fq' if mode in FQ_MODES else 'pfifo' if mode == 'fifo' else 'fq_codel'
+            if filters or leaf != {'1:20': expected_leaf} or set(rates) != {'1:20'}:
+                raise RuntimeError('single-class baseline hierarchy mismatch')
         readback = rate/125
     elif want == 'cake':
         options = qdisc['options']

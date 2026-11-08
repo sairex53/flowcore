@@ -22,7 +22,7 @@ import benchmark_v2 as v2
 from ipc_security import private_directory, private_lock
 from daemon import SOCKET
 from observer_perf import await_service, command, stop, cpu_ticks
-from research_manifest import FAULTS, net_profile, validate
+from research_manifest import FAULTS, PACING_MODES, net_profile, validate
 from service_config import load
 from workload import percentile
 
@@ -299,8 +299,8 @@ def trial(directory, m, rep, mode, seed=None):
     if mode == 'slo-long':
         cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
         cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
-    if mode.startswith('static') and mode != 'static-step':
-        reserve = m['static_critical_pct'] if mode == 'static' else int(mode.removeprefix('static'))
+    if mode in ('static', 'pacing-hybrid') or (mode.startswith('static') and mode != 'static-step'):
+        reserve = m['static_critical_pct'] if mode in ('static','pacing-hybrid') else int(mode.removeprefix('static'))
         cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
         cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
     if mode == 'cake':
@@ -381,6 +381,11 @@ def trial(directory, m, rep, mode, seed=None):
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services,
                             server_address=('fd42:203::2' if workload.get('address_family')=='ipv6' else '10.203.0.2'))
+            pacing = any(mode in PACING_MODES for mode in m['modes'])
+            pacing_lock = None
+            if pacing:
+                settings['socket_pacing_mode'] = mode
+                pacing_lock = resources.enter_context(private_lock(directory/'pacing.lock'))
             save(plan,settings)
             options = ['--duration',str(m['duration_seconds']), '--payload',str(workload['payload_bytes']),
                        '--streams',str(max(p['background_streams'] for p in workload['phases'])),
@@ -394,11 +399,48 @@ def trial(directory, m, rep, mode, seed=None):
             client = worker(0, 'client', directory, options, cl)
             samples = []
             begin_ticks = cpu_ticks()
+            def pacing_feedback(value, transition=False):
+                if not pacing:
+                    return
+                row = dict(time_ns=time.monotonic_ns(), capacity_bytes_s=(expected_capacity or 0)*125,
+                           backlog_bytes=root(value.get('tc', {})).get('backlog', 0),
+                           class_active=value.get('state', {}).get('mode', 'off') != 'off',
+                           transition=transition)
+                with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.pacing-', delete=False) as stream:
+                    temporary = Path(stream.name)
+                    try:
+                        json.dump(row, stream)
+                        stream.close()
+                        temporary.replace(directory/'pacing-input.json')
+                    finally:
+                        temporary.unlink(missing_ok=True)
+
+            @contextlib.contextmanager
+            def class_update():
+                if pacing_lock is None:
+                    yield
+                    return
+                deadline = time.monotonic()+1
+                while True:
+                    try:
+                        fcntl.flock(pacing_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('socket actuator did not release class transition lock')
+                        time.sleep(.01)
+                try:
+                    pacing_feedback({}, transition=True)
+                    yield
+                finally:
+                    fcntl.flock(pacing_lock, fcntl.LOCK_UN)
+
             def sample():
                 begin = time.monotonic_ns()
                 value = request('research_sample')
                 value['runner_ipc_ns'] = time.monotonic_ns()-begin
                 samples.append(value)
+                pacing_feedback(value)
                 timeline.write(json.dumps(value)+'\n')
                 timeline.flush()
             if version2:
@@ -469,8 +511,10 @@ def trial(directory, m, rep, mode, seed=None):
                     target_link = all(item['effects'].get('link_up', True) for item in active.values())
                     begun = time.monotonic_ns()
                     try:
-                        applied = request('research_conditions', network=target, mode=mode,
-                                          seed=(seed+index-1)%(2**32-1)+1, link_up=target_link)
+                        with class_update():
+                            begun = time.monotonic_ns()
+                            applied = request('research_conditions', network=target, mode=mode,
+                                              seed=(seed+index-1)%(2**32-1)+1, link_up=target_link)
                     except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
                         failed = dict(scheduled_ns=round(deadline*NANO), actual_application_ns=begun,
                                       operations=[dict(kind=item['kind'], id=item['event']['id']) for item in event_ops],
@@ -538,6 +582,7 @@ def trial(directory, m, rep, mode, seed=None):
                         continue
                     network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
                     link_up = fault.get('link_up',link_up)
+                    pacing_feedback({}, transition=True)
                     begun = time.monotonic_ns()
                     applied = request('research_conditions',network=network,mode=mode,
                                       seed=(seed+index-1)%(2**32-1)+1,link_up=link_up)
@@ -564,6 +609,11 @@ def trial(directory, m, rep, mode, seed=None):
                 raise RuntimeError(f'namespace holder identity changed: expected {[sender,receiver]}, got {final_inspect["namespaces"]}')
             result = summarize(directory,m,rep,mode,samples,history,start,end,
                                tuple(b-a for a,b in zip(begin_ticks,finish_ticks)))
+            if pacing:
+                report = result.get('socket_pacing', {})
+                if report.get('mode') != mode or not report.get('background_attaches'):
+                    raise RuntimeError('pacing workload instrumentation did not attach any background socket')
+                result['socket_updates_per_minute'] = report['socket_actions']*60/(end-start)
             if version2:
                 metrics = v2.account(directory/'requests.csv', result['offered'], start, end,
                                      workload['deadline_ms'], workload['payload_bytes'])

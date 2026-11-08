@@ -93,21 +93,42 @@ async def client(output, duration, rate, payload, request_port, background_port,
     own_tcp_info = {}
     rows = []
     window = []
+    pacing_window = []
     background_errors = []
     udp_send_errors = []
     stopping = False
     paced_kbit = research.get('background_kbit_per_stream', 0) if research else 0
+    pacing = None
+    if research and 'socket_pacing_mode' in research:
+        from pacing_workload import PacingWorkload
+        pacing = PacingWorkload(output, research['socket_pacing_mode'])
 
     async def background(flow):
         budget = research['bulk_bytes_per_stream'] if research else 0
         sent = 0
         while True:
             writer = None
+            attached = False
             try:
                 host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
-                _, writer = await asyncio.open_connection(host, background_port)
+                if pacing and pacing.algorithm:
+                    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+                    owned = socket.socket(family, socket.SOCK_STREAM)
+                    try:
+                        pacing.configure_new(owned)
+                        owned.setblocking(False)
+                        await asyncio.get_running_loop().sock_connect(owned, (host, background_port))
+                        _, writer = await asyncio.open_connection(sock=owned)
+                    except BaseException:
+                        owned.close()
+                        raise
+                else:
+                    _, writer = await asyncio.open_connection(host, background_port)
                 writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
+                if pacing:
+                    pacing.add(flow, writer.get_extra_info('socket'))
+                    attached = True
                 writer.write(struct.pack('!I', flow))
                 while not budget or sent < budget:
                     chunk = 1200 if paced_kbit else 16384
@@ -115,11 +136,19 @@ async def client(output, duration, rate, payload, request_port, background_port,
                     if paced_kbit:
                         await asyncio.sleep(count * 8 / (paced_kbit * 1000))
                     writer.write(b'B' * count)
-                    await writer.drain()
+                    if pacing:
+                        start_drain = time.monotonic_ns()
+                        await writer.drain()
+                        pacing.drain(time.monotonic_ns()-start_drain)
+                    else:
+                        await writer.drain()
                     sent += count
                     # drain() can complete synchronously on a fast veth.
                     # Give request timers and reporters a turn even then.
                     await asyncio.sleep(0)
+                if attached:
+                    attached = False
+                    pacing.remove(flow)
                 writer.close()
                 await writer.wait_closed()
                 return
@@ -132,8 +161,12 @@ async def client(output, duration, rate, payload, request_port, background_port,
                     return
                 await asyncio.sleep(.2)
             finally:
-                if writer:
-                    writer.transport.abort()
+                try:
+                    if attached:
+                        pacing.remove(flow)
+                finally:
+                    if writer:
+                        writer.transport.abort()
 
     async def request(index, scheduled, traffic_class, name):
         reporter = reporters.get(traffic_class)
@@ -169,6 +202,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
         latency = (ended - scheduled) * 1000
         rows.append((index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms))
         window.append((latency, outcome))
+        if pacing and traffic_class == 'critical':
+            pacing_window.append((latency, outcome))
         if reporter:
             reporter.submit(latency * 1000, outcome)
 
@@ -177,6 +212,12 @@ async def client(output, duration, rate, payload, request_port, background_port,
             await asyncio.sleep(1)
             batch = window.copy()
             window.clear()
+            if pacing:
+                tail = percentile([value for value, _ in pacing_window], .99) or 0
+                if any(status != 'ok' for _, status in pacing_window):
+                    tail = max(tail, 5000)
+                pacing.tick(tail, len(pacing_window))
+                pacing_window.clear()
             if batch:
                 tail = percentile([value for value, _ in batch], .99)
                 if any(status != 'ok' for _, status in batch):
@@ -280,6 +321,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
             ended = time.monotonic()
             rows.append((index, scheduled, ended, (ended - scheduled) * 1000, 'inflight_limit', traffic_class, name, (ended - scheduled) * 1000))
             window.append((5000, 'inflight_limit'))
+            if pacing and traffic_class == 'critical':
+                pacing_window.append((5000, 'inflight_limit'))
             if reporter:
                 reporter.submit((ended - scheduled) * 1e6, 'inflight_limit')
             continue
@@ -312,6 +355,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
                'p99_ms': percentile(successes, .99), 'max_ms': max(successes, default=None),
                'background_errors': background_errors,'udp_send_errors':len(udp_send_errors),
                'worker_errors': worker_errors}
+    if pacing:
+        summary['socket_pacing'] = pacing.finish()
     if reporters:
         per_class = {name: await reporter.close() for name, reporter in reporters.items()}
         summary['application_reports'] = {key: sum(row[key] for row in per_class.values())

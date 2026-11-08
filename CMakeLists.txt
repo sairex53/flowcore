@@ -93,7 +93,8 @@ endif()
 
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
-add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp)
+add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp
+    src/socket_pacing.cpp src/pacing_controller.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -106,7 +107,7 @@ add_executable(flowcore-sdk-request examples/sdk_request.cpp)
 target_link_libraries(flowcore-sdk-request PRIVATE flowcore_sdk)
 install(TARGETS flowcore_sdk EXPORT FlowcoreTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(EXPORT FlowcoreTargets FILE flowcore-targets.cmake NAMESPACE flowcore:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
-install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
@@ -330,3 +331,18 @@ add_test(NAME scheduler_research COMMAND /usr/bin/python3 -B
 set_tests_properties(scheduler_research PROPERTIES TIMEOUT 15)
 install(FILES KERNEL_SCHEDULER_DESIGN.md SCHEDULER_PROTOTYPE.md SCHEDULER_BENCHMARKS.md
     KERNEL_UPSTREAM_PLAN.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_library(flowcore_pacing_lab SHARED src/pacing_lab_c.cpp)
+target_link_libraries(flowcore_pacing_lab PRIVATE flowcore_sdk)
+target_compile_options(flowcore_pacing_lab PRIVATE -Wall -Wextra -Wpedantic -Werror)
+install(TARGETS flowcore_pacing_lab LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+file(RELATIVE_PATH FLOWCORE_LIB_FROM_DATA "${CMAKE_INSTALL_FULL_DATADIR}/flowcore" "${CMAKE_INSTALL_FULL_LIBDIR}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/installed-lib-layout" "${FLOWCORE_LIB_FROM_DATA}\n")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/installed-lib-layout" DESTINATION "${FLOWCORE_DATA}")
+
+add_executable(socket_pacing_test tests/socket_pacing_test.cpp)
+target_link_libraries(socket_pacing_test PRIVATE flowcore_sdk)
+target_compile_options(socket_pacing_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME socket_pacing_native COMMAND socket_pacing_test)
+set_tests_properties(socket_pacing_native PROPERTIES TIMEOUT 15)
+install(FILES TCP_PACING_ENGINE.md SOCKET_INTELLIGENCE.md TCP_PACING_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

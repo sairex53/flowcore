@@ -1,6 +1,7 @@
 """Nonprivileged contract tests. Generated numbers here are fixtures, never measurements."""
 import copy
 import csv
+import fcntl
 import json
 import subprocess
 import sys
@@ -13,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 from benchmark import receiver_metrics
 from benchmark_v2 import account, observed
+from ipc_security import private_lock
+from pacing_workload import PacingWorkload
 from research_faults import apply_conditions
 from research_manifest import load_manifest, validate
 from research_report import report
@@ -42,6 +45,24 @@ class Research(unittest.TestCase):
                     measure(invalid)
             with self.assertRaises(ValueError):
                 measure([(0,[0]),(1,[1])], 1, 1)
+
+    def test_class_transition_holds_socket_actuator(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as work:
+            path = Path(work)
+            with private_lock(path/'pacing.lock') as runner, patch('pacing_workload.library') as library:
+                library.return_value.fc_pacing_controller.return_value = 1
+                worker = PacingWorkload(path, 'pacing-hybrid')
+                try:
+                    with patch.object(worker, 'observe') as observe:
+                        fcntl.flock(runner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        worker.tick(50, 20)
+                        observe.assert_not_called()
+                        self.assertEqual(worker.transition_holds, 1)
+                        fcntl.flock(runner, fcntl.LOCK_UN)
+                        worker.tick(50, 20)
+                        observe.assert_called_once()
+                finally:
+                    worker.finish()
 
     def test_failed_fault_removes_lab(self):
         service = Mock(lab=Mock(namespace_fds=[10,11]), research_mode='fq_codel')

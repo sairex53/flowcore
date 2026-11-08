@@ -97,12 +97,12 @@ def apply_conditions(service, settings, mode, seed, link_up):
 
 def update_conditions(service, lab, profile, mode, seed, link_up, settings=None):
     from benchmark import TC
-    from research_manifest import CLASSIFIED
+    from research_manifest import CLASSIFIED, FQ_MODES
     lab.assert_owned_sender()
     settings = settings or {}
     cap = profile['bandwidth_kbit']
     if service.research_mode is None:
-        if mode in ('linux', 'linux-default', 'fifo', 'fq_codel'):
+        if mode in ('linux', 'linux-default', 'fifo', 'fq_codel', *FQ_MODES):
             installed = service.config['policies'][service.active]
             if adaptive_tc.read(lab, service.profile['bandwidth_kbit'], installed) != {
                     name: (service.profile['bandwidth_kbit']*cls['min_pct']//100,
@@ -117,7 +117,8 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None)
                 lab.tc('class','add','dev','fc0','parent','1:', 'classid','1:20', *rate_args(cap, cap))
                 if mode != 'linux':
                     lab.tc('qdisc','add','dev','fc0','parent','1:20',
-                           'pfifo' if mode=='fifo' else 'fq_codel','limit','1000')
+                           'fq' if mode in FQ_MODES else 'pfifo' if mode=='fifo' else 'fq_codel',
+                           'limit','1000')
         service.research_mode = mode
     qdiscs = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
     if mode == 'linux-default':
@@ -133,7 +134,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None)
                    'bandwidth', f'{cap}kbit', 'besteffort', 'flows', 'rtt', '100ms')
         if root(json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0')), 'cake')['options']['bandwidth'] != cap*125:
             raise RuntimeError('CAKE capacity readback failed')
-    elif mode in ('linux', 'fifo', 'fq_codel'):
+    elif mode in ('linux', 'fifo', 'fq_codel', *FQ_MODES):
         root(qdiscs, 'htb')
         classes = lambda: [row for row in json.loads(lab.tc('-j','class','show','dev','fc0'))
                            if row.get('class') == 'htb']
