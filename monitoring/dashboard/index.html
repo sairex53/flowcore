@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>FLOWCORE | Network Intelligence</title>
+  <link rel="icon" href="/flowcore.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/dashboard.css">
+  <script defer src="/dashboard.js"></script>
+</head>
+<body>
+  <section id="login" class="login">
+    <div class="login-card">
+      <div class="brand"><img src="/flowcore.svg" alt=""><div><strong>FLOWCORE</strong><span>NETWORK INTELLIGENCE</span></div></div>
+      <h1>Open the dashboard</h1>
+      <p>Enter the bearer token from your operator. It stays in this tab until you lock or reload it.</p>
+      <form id="login-form">
+        <label for="token">Bearer token</label>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" required maxlength="128">
+        <button type="submit" class="primary">Unlock dashboard <span aria-hidden="true">→</span></button>
+        <p class="feedback" id="login-message" role="status"></p>
+      </form>
+    </div>
+  </section>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar">
+      <div class="brand"><img src="/flowcore.svg" alt=""><div><strong>FLOWCORE</strong><span>NETWORK INTELLIGENCE</span></div></div>
+      <nav aria-label="Dashboard">
+        <div class="nav-label">MONITOR</div>
+        <a href="#overview" data-view="overview"><span aria-hidden="true">◈</span> Overview</a>
+        <a href="#slo" data-view="slo"><span aria-hidden="true">◎</span> Service SLOs</a>
+        <a href="#controller" data-view="controller"><span aria-hidden="true">⇄</span> Controller</a>
+        <a href="#bottlenecks" data-view="bottlenecks"><span aria-hidden="true">⌗</span> Bottlenecks</a>
+        <a href="#incidents" data-view="incidents"><span aria-hidden="true">◷</span> Incidents</a>
+        <div class="nav-label">RESEARCH</div>
+        <a href="#multipath" data-view="multipath"><span aria-hidden="true">⤨</span> Multipath</a>
+        <a href="#benchmarks" data-view="benchmarks"><span aria-hidden="true">▤</span> Experiments</a>
+      </nav>
+      <div class="sidebar-footer"><span class="shield" aria-hidden="true">◇</span><div><strong>Read-only access</strong><small>Monitoring API v1</small></div></div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div class="breadcrumb"><span>WORKSPACE</span><span aria-hidden="true">/</span><strong id="crumb">Overview</strong></div>
+        <div class="toolbar">
+          <span class="status" id="live-status" role="status"><i></i><span>Connecting</span></span>
+          <button type="button" class="quiet" id="refresh">Refresh</button>
+          <button type="button" class="quiet" id="pause" aria-pressed="false">Pause</button>
+          <button type="button" class="quiet" id="lock">Lock</button>
+        </div>
+      </header>
+      <div class="content">
+        <div class="intro">
+          <div><span class="eyebrow" id="eyebrow">NETWORK OPERATIONS</span><h1 id="page-title">Network overview</h1><p id="page-subtitle"></p></div>
+          <div id="sample-meta" class="sample-meta"></div>
+        </div>
+        <div id="banner" class="banner" role="status" hidden></div>
+        <div id="view" aria-label="Current dashboard view"></div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

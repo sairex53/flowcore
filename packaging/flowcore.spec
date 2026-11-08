@@ -56,9 +56,11 @@ DESTDIR=%{buildroot} cmake --install build
 %{_libdir}/cmake/flowcore/
 %{_prefix}/lib/systemd/system/flowcored.service
 %{_prefix}/lib/systemd/system/flowcore-monitor.service
+%{_prefix}/lib/systemd/system/flowcore-dashboard.service
 %{_prefix}/lib/systemd/system/flowcore-network.service
 %{_prefix}/lib/systemd/system/flowcore-network.socket
 %{_prefix}/lib/sysusers.d/flowcore-operator.conf
+%{_prefix}/lib/sysusers.d/flowcore-dashboard.conf
 %{_bindir}/libflowcore_intelligence.so
 %{_bindir}/libflowcore_telemetry.so*
 
@@ -71,11 +73,11 @@ DESTDIR=%{buildroot} cmake --install build
 
 %preun
 if [ "$1" -eq 0 ]; then
-    /usr/bin/systemctl stop flowcored.service flowcore-monitor.service flowcore-network.socket flowcore-network.service >/dev/null 2>&1 || :
+    /usr/bin/systemctl stop flowcore-dashboard.service flowcored.service flowcore-monitor.service flowcore-network.socket flowcore-network.service >/dev/null 2>&1 || :
 fi
 
 %postun
 /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
 if [ "$1" -ge 1 ]; then
-    /usr/bin/systemctl try-restart flowcored.service flowcore-monitor.service >/dev/null 2>&1 || :
+    /usr/bin/systemctl try-restart flowcored.service flowcore-monitor.service flowcore-dashboard.service >/dev/null 2>&1 || :
 fi

@@ -285,3 +285,10 @@ install(FILES FABRIC_ARCHITECTURE.md DISTRIBUTED_PROTOCOL.md FABRIC_SECURITY.md 
 
 add_test(NAME fleet_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/fleet_test.py")
 install(FILES FLEET_MANAGEMENT.md POLICY_ROLLOUT.md FLEET_SECURITY.md ROLLOUT_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME dashboard_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/dashboard_test.py")
+install(FILES DASHBOARD.md MONITORING_API.md UI_ARCHITECTURE.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(DIRECTORY monitoring/dashboard DESTINATION "${FLOWCORE_DATA}/monitoring")
+install(FILES monitoring/dashboard-nginx.conf DESTINATION "${FLOWCORE_DATA}/monitoring")
+install(FILES packaging/flowcore-dashboard.service DESTINATION lib/systemd/system)
+install(FILES packaging/flowcore-dashboard.conf DESTINATION lib/sysusers.d)

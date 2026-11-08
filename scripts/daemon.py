@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import json
 import os
+import pwd
 import select
 import shutil
 import signal
@@ -25,6 +26,7 @@ from platform_policy import PolicyStore, merged
 from adaptive import Controller
 from bottleneck_diagnostics import Diagnostics
 from incident_runtime import IncidentRuntime
+from dashboard_model import MONITOR_OPS, monitor_listener, request as monitor_request
 from directional_qos import Ingress
 from service_config import keys, load, profile
 from service_lab import ServiceLab
@@ -184,6 +186,8 @@ class Service:
         if not isinstance(op,str):
             raise ValueError('expected operation name')
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
+        if op in MONITOR_OPS:
+            return monitor_request(self, request)
         if op in ('diagnose', 'incident_list', 'incident_inspect', 'incident_export'):
             return self.incident.command(request)
         if op == 'diagnostic_intervention':
@@ -525,19 +529,25 @@ def receive(connection, descriptors=None, expected_peer=None):
     return decode(data)
 
 
-def handle(server, service):
+def handle(server, service, monitoring_uid=None):
     conn, _ = server.accept()
     with conn:
         peer = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         pid, uid, _ = peer
-        if uid not in (0,os.geteuid()):
+        if uid not in ((monitoring_uid,) if monitoring_uid is not None else (0, os.geteuid())):
             return
         descriptors=[]
         try:
             request=receive(conn,descriptors,peer)
-            if descriptors and not (request.get('op')=='intent_v2' and request.get('action')=='associate'):
-                raise ValueError('descriptors forbidden for this operation')
-            result = dict(ok=True, result=service.command(request, uid, pid, descriptors[0] if descriptors else None))
+            if monitoring_uid is not None:
+                if descriptors:
+                    raise PermissionError('monitoring cannot receive descriptors')
+                value = monitor_request(service, request)
+            else:
+                if descriptors and not (request.get('op')=='intent_v2' and request.get('action')=='associate'):
+                    raise ValueError('descriptors forbidden for this operation')
+                value = service.command(request, uid, pid, descriptors[0] if descriptors else None)
+            result = dict(ok=True, result=value)
         except (OSError, ValueError, RuntimeError, RecursionError, TypeError, KeyError, OverflowError, struct.error, subprocess.SubprocessError) as error:
             detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) and error.stderr else str(error)
             service.log('error', detail=detail)
@@ -561,11 +571,23 @@ def main():
     parser = argparse.ArgumentParser(prog='flowcored', description=__doc__)
     parser.add_argument('--config', type=Path, default=ROOT / 'config/service.json')
     parser.add_argument('--research', action='store_true', help='enable owned lab fault controls')
+    parser.add_argument('--monitor-socket', help='optional abstract Unix socket name for read-only dashboard projections')
+    parser.add_argument('--monitor-user', help='sole local UID or account allowed to use --monitor-socket')
     parser.add_argument('--monitor-only',action='store_true',help='disable all mutations')
     parser.add_argument('--check-config',action='store_true',help='validate configuration without opening sockets')
     parser.add_argument('--version',action='version',version=VERSION)
     args = parser.parse_args()
     try:
+        if bool(args.monitor_socket) != bool(args.monitor_user):
+            raise ValueError('monitor socket and monitor user must be configured together')
+        monitoring_uid = None
+        if args.monitor_user is not None:
+            try:
+                monitoring_uid = int(args.monitor_user) if args.monitor_user.isdecimal() else pwd.getpwnam(args.monitor_user).pw_uid
+            except KeyError as error:
+                raise ValueError('unknown monitoring account') from error
+            if not 1 <= monitoring_uid <= 2**31-1:
+                raise ValueError('monitoring UID must be nonroot')
         config=load(args.config)
         if args.check_config:
             print(json.dumps(dict(valid=True,host_mutations_enabled=False)))
@@ -600,7 +622,8 @@ def main():
                 if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.geteuid():
                     raise PermissionError('refusing non-owned socket path')
                 SOCKET.unlink()
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host, Sessions(service,RUNTIME/'intent.sock') as sessions:
+            with (socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host,
+                  Sessions(service,RUNTIME/'intent.sock') as sessions, monitor_listener(args.monitor_socket) as monitor):
                 server.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
                 server.bind(str(SOCKET))
                 socket_inode=SOCKET.lstat().st_ino
@@ -628,6 +651,8 @@ def main():
                         watchers = [host, *service.watches]
                         observer_fd = service.observer.bpf.fd()
                         inputs = [server, *watchers, *sessions.inputs()] + ([observer_fd] if observer_fd is not None else [])
+                        if monitor is not None:
+                            inputs.append(monitor)
                         ready, _, _ = select.select(inputs, [], [], .25 if service.lab else 1)
                         if observer_fd is not None:
                             service.observer.drain()
@@ -636,6 +661,8 @@ def main():
                                 service.event(watcher, ('host', 'sender', 'receiver')[index])
                         if server in ready:
                             handle(server, service)
+                        if monitor in ready:
+                            handle(monitor, service, monitoring_uid)
                         sessions.poll(ready)
                         if service.lab and time.monotonic()-service.sampled >= service.config['telemetry_seconds']:
                             service.poll_metrics()

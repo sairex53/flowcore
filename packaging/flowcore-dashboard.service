@@ -1,0 +1,39 @@
+[Unit]
+Description=FLOWCORE authenticated network intelligence dashboard
+After=flowcore-monitor.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=flowcore-dashboard
+Group=flowcore-dashboard
+StateDirectory=flowcore-dashboard
+StateDirectoryMode=0700
+LoadCredential=dashboard-token:/etc/flowcore/dashboard.token
+ExecStart=/usr/bin/python3 -E -B /usr/share/flowcore/scripts/dashboard.py --socket @flowcore.dashboard --daemon-user flowcore-monitor --token-file %d/dashboard-token --state /var/lib/flowcore-dashboard
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=256M
+TasksMax=32
+LimitNOFILE=256
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
