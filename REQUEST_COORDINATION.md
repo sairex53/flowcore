@@ -1,0 +1,26 @@
+# Request coordination protocol
+
+## Scope and trust
+
+The experimental application RPC is a bounded, length-prefixed JSON protocol over mutually authenticated TLS 1.3. Clients verify the service DNS identity against the configured CA. Servers additionally map the caller's certificate pin to one local role. A gateway request only comes from an enrolled client. The backend accepts only a gateway, and the database accepts the gateway or backend. This establishes the immediate caller's role. Descendant spans are the authenticated peer's reports, with identity bound to its response. They do not independently attest the original requester or every downstream process. See [Python TLS configuration](https://docs.python.org/3/library/ssl.html).
+
+A caller sends a random 128-bit trace ID, a random child span ID, the parent span ID, a relative budget and an explicit bounded payload. No client field can change kernel priority. The service uses the operator's enrollment and its own application policy. Each connection carries one invocation. The receiver accepts a fresh random challenge only on that connection. Its bounded replay window also rejects duplicate caller-pin, trace and span triples across connections for 20 seconds. A full window rejects new invocations until entries expire. Process restart clears this in-memory cache, so it provides no durable business-operation deduplication.
+
+The parser limits frames to 32 KiB, checks the version and field schema and bounds nesting. The application accepts at most 16 KiB of ASCII payload within that frame. Reply trees have at most eight spans and three hops per span. The lab limits active connections before TLS handshakes and bounds handshake and invocation times. A request budget is limited to ten seconds and the demo transport timeout is three seconds. These limits bound work per process. A separate production ingress limiter is outside the experiment. [Python asynchronous streams](https://docs.python.org/3/library/asyncio-stream.html)
+
+## Budget transfer
+
+1. The initiating application sets its local monotonic deadline. Before transmission it computes the remaining microseconds, after connection setup and after receiving the receiver's challenge.
+2. The receiver timestamps challenge emission and completion of the invocation frame with its own monotonic clock. It subtracts the entire elapsed challenge interval from the advertised budget, saturating at zero. That interval includes the transmission of the incoming budget. It can also include return travel and application scheduling.
+3. The receiver reconstructs a local deadline from the remaining duration. A nested call repeats the procedure. Parallel branches share the parent's deadline and consume time concurrently.
+4. An opted-in application can expire a request, limit concurrency, or defer when the active request count and risk forecast exceed its configured limits. The fixture uses a stricter concurrency limit when the forecast is at risk. An authenticated cancel frame or EOF on the invocation stream cancels the local task and its descendant tasks. Cancellation is cooperative and cannot undo completed external effects.
+
+No absolute clock value crosses a service boundary. Challenge charging is intentionally pessimistic and assumes monotonic clocks run at comparable rates over short intervals. It avoids a wall-clock offset estimate and does not bound oscillator drift or VM suspension. Host clock disagreement is not used to assign one-way latency. The client alone computes end-to-end deadline attainment from the original scheduled timestamp and final outcome. An expired, deferred, cancelled or partial request cannot attain the deadline.
+
+## Local integration
+
+The native functions are declared in flowcore/cooperative_slo.hpp and available through the existing C++23 SDK library. An application with its own transport can implement the same challenge timing and pass up to 32 stages to the forecast. The runnable transport and application are scripts/cooperative_rpc.py and scripts/cooperative_app.py. The namespace harness writes explicit endpoint and TLS configurations, then invokes the same application entry points for every mode.
+
+A Fabric agent enables the extension with a private local **cooperative** configuration containing **service**, **summary_path** and optionally **advice_path**. The local application and agent must share a trust domain and monotonic time namespace. Keep both files in an owner-controlled private directory. The app's summary is atomically replaced and the agent rejects stale, oversized or untrusted files. Files exchanged within the same UID are cooperative inputs and can be misreported by another process with the same account privileges. Fabric exports only the configured service, bounded counts, sample age and latency aggregate. It does not send trace IDs, payloads, IP tuples or request-level timestamps to the coordinator.
+
+The coordinator enables cooperative planning through an optional versioned **cooperative** section with minimum offered samples, risk percentage, bounded weight multiplier and a host-to-service allowlist. An administrator still uses the existing Fabric preview and apply operations. A missing capability or stale signal leaves existing Fabric behavior in effect.

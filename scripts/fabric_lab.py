@@ -58,19 +58,20 @@ def openssl(*args):
     subprocess.run(['openssl', *map(str, args)], check=True, capture_output=True, timeout=10)
 
 
-def private_pki(directory):
+def private_pki(directory, applications=()):
     """Short-lived test identities. Parent cleanup removes all private keys."""
     ca, key = directory / 'ca.pem', directory / 'ca.key'
     openssl('req', '-x509', '-newkey', 'ed25519', '-noenc', '-days', 1, '-subj',
             '/CN=FlowcoreFixtureCA', '-out', ca, '-keyout', key, '-addext',
             'basicConstraints=critical,CA:TRUE')
     identities, pins = {}, {}
-    for name in ('coordinator', 'operator', 'other', *HOSTS):
+    for name in ('coordinator', 'operator', 'other', *HOSTS, *applications):
         crt, private = directory / f'{name}.pem', directory / f'{name}.key'
         csr, ext = directory / 'request.csr', directory / 'extensions'
         ext.write_text('basicConstraints=critical,CA:FALSE\n' + (
             'extendedKeyUsage=serverAuth\nsubjectAltName=DNS:fabric.test\n' if name == 'coordinator'
-            else 'extendedKeyUsage=clientAuth\n'))
+            else f'extendedKeyUsage=serverAuth,clientAuth\nsubjectAltName=DNS:{name}.test\n'
+            if name in applications else 'extendedKeyUsage=clientAuth\n'))
         openssl('req', '-newkey', 'ed25519', '-noenc', '-subj', f'/CN={name}', '-keyout', private, '-out', csr)
         openssl('x509', '-req', '-in', csr, '-CA', ca, '-CAkey', key, '-CAcreateserial',
                 '-days', 1, '-extfile', ext, '-out', crt)

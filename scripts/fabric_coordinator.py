@@ -35,7 +35,7 @@ def pins(value):
 
 
 def config(value):
-    fields(value, ('cluster', 'listen', 'tls', 'admins', 'agents', 'resources', 'intents'), ('fleet',))
+    fields(value, ('cluster', 'listen', 'tls', 'admins', 'agents', 'resources', 'intents'), ('fleet', 'cooperative'))
     ident(value['cluster'])
     fields(value['listen'], ('host', 'port'))
     if not isinstance(value['listen']['host'], str) or not 1 <= len(value['listen']['host']) <= 253:
@@ -100,12 +100,28 @@ def config(value):
         integer(rule['weight'], 1, 32)
         integer(rule['desired_kbit'], 0, MAX_RATE)
         integer(rule['target_p99_us'], 1, 60_000_000)
+    if 'cooperative' in value:
+        policy = fields(value['cooperative'], ('version', 'minimum_offered', 'risk_percent', 'boost', 'services'))
+        integer(policy['version'], 1, 1)
+        integer(policy['minimum_offered'], 8, 1000)
+        integer(policy['risk_percent'], 10, 100)
+        integer(policy['boost'], 1, 2)
+        selected = policy['services']
+        if not isinstance(selected, dict) or not 1 <= len(selected) <= len(agents):
+            raise ValueError('invalid cooperative enrollment')
+        for host, name in selected.items():
+            if (host not in agents or 'egress' not in agents[host] or
+                    agents[host]['services'].get(ident(name)) not in ('critical', 'interactive')):
+                raise ValueError('cooperative influence requires an enrolled egress service')
     return value
 
 
 def telemetry(value):
     fields(value, ('age_ms', 'interfaces', 'services', 'daemon_healthy', 'controller', 'bottleneck',
-                   'egress_kbit', 'decision'), ('sample_end_ns', 'controller_actions', 'controller_session'))
+                   'egress_kbit', 'decision'), ('sample_end_ns', 'controller_actions', 'controller_session', 'cooperative'))
+    if 'cooperative' in value:
+        from cooperative_slo import aggregate
+        aggregate(value['cooperative'])
     for key in ('sample_end_ns', 'controller_actions'):
         if value.get(key) is not None:
             integer(value[key], 0, 2**63-1)
@@ -273,7 +289,7 @@ class Coordinator:
             raise ValueError('invalid boot identity')
         hexdigest(message['boot_id'].replace('-', ''), 32)
         caps = names(message['capabilities'])
-        if set(caps) - {'telemetry_v1', 'cap_v1', 'fleet_metrics_v1'} or 'telemetry_v1' not in caps:
+        if set(caps) - {'telemetry_v1', 'cap_v1', 'fleet_metrics_v1', 'cooperative_slo_v1'} or 'telemetry_v1' not in caps:
             raise Rejected('capability_mismatch')
         self.sessions[host] = dict(token=secrets.token_hex(24), seq=0, report=None,
                                    capabilities=caps, boot_id=message['boot_id'], received=None)
@@ -297,12 +313,27 @@ class Coordinator:
         allowed = self.cfg['agents'][host]['services']
         if any(service['name'] not in allowed for service in data['services']):
             raise Rejected('service_scope')
+        if 'cooperative' in data and ('cooperative_slo_v1' not in row['capabilities'] or
+                                       data['cooperative']['service'] not in allowed):
+            raise Rejected('cooperative_scope')
         old = row['report']
         row.update(seq=seq, received=self.clock(), report=dict(telemetry=data, ack=ack))
         self.counters['reports'] += 1
         if ack is not None and (old is None or old['ack'] != ack):
             audit('agent_ack', host=host, **ack)
         return dict(desired=self.desired(host, row))
+
+    def cooperative_pressure(self, host, data, observed_rate):
+        policy = self.cfg.get('cooperative')
+        row = data.get('cooperative')
+        if not policy or not row or policy['services'].get(host) != row['service']:
+            return False
+        from cooperative_slo import STALE_US
+        age = row['age_us'] + data['age_ms']*1000 + int((self.clock()-self.sessions[host]['received'])*1e6)
+        return (0 <= age <= STALE_US and observed_rate is not None and
+                observed_rate*5 >= self.state['quotas'][host]*4 and
+                row['offered'] >= policy['minimum_offered'] and
+                max(row['risk'], row['misses'])*100 >= policy['risk_percent']*row['offered'])
 
     def plan(self):
         rules = sorted(self.cfg['intents'], key=lambda rule: (-rule['precedence'], rule['id']))
@@ -327,10 +358,13 @@ class Coordinator:
                     weight = max(weight, rule['weight'] * (2 if missed else 1))
                     selected[str(name)] = dict(rule=rule['id'], slo_pressure=missed)
                 observed_rate = data['egress_kbit'] if data['age_ms'] <= 3000 else None
+                pressure = self.cooperative_pressure(host, data, observed_rate)
+                if pressure:
+                    weight = min(64, weight*self.cfg['cooperative']['boost'])
                 demand = max(local['floor_kbit'], offered, observed_rate or 0)
                 bounds[host] = (local['floor_kbit'], min(local['max_kbit'], demand), weight)
                 detail[host] = dict(intent=selected, demand_kbit=demand, observed_kbit=observed_rate,
-                                    floor_kbit=bounds[host][0], bounded_demand_kbit=bounds[host][1], weight=weight)
+                                    floor_kbit=bounds[host][0], bounded_demand_kbit=bounds[host][1], weight=weight, cooperative_pressure=pressure)
             allocations.update(allocate(shared['capacity_kbit'], bounds))
         return allocations, detail
 

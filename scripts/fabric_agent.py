@@ -20,7 +20,7 @@ from network_state import snapshot
 
 def config(value):
     fields(value, ('cluster', 'host', 'coordinator', 'tls', 'interfaces', 'services'),
-           ('egress', 'daemon_socket', 'poll_ms'))
+           ('egress', 'daemon_socket', 'poll_ms', 'cooperative'))
     ident(value['cluster'])
     ident(value['host'])
     endpoint(value['coordinator'])
@@ -31,6 +31,15 @@ def config(value):
     integer(value.setdefault('poll_ms', 650), 250, 1500)
     if 'daemon_socket' in value:
         absolute(value['daemon_socket'])
+    if 'cooperative' in value:
+        row = fields(value['cooperative'], ('summary_path', 'service'), ('advice_path',))
+        absolute(row['summary_path'])
+        if 'advice_path' in row:
+            absolute(row['advice_path'])
+            if row['advice_path'] == row['summary_path'] or 'egress' not in value:
+                raise ValueError('advice requires a distinct path and an egress actuator')
+        if row['service'] not in value['services']:
+            raise ValueError('cooperative service is outside the local inventory')
     if 'egress' in value:
         row = fields(value['egress'], ('resource', 'interface', 'floor_kbit', 'max_kbit', 'socket'))
         ident(row['resource'])
@@ -142,12 +151,14 @@ class Agent:
         self.context = tls(cfg['tls'])
         self.session, self.seq = None, 0
         self.fleet_metrics = False
+        self.cooperative = False
         self.boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         self.local = cfg.get('egress')
         self.ack = None
         self.durability_failed = False
         self.capabilities = ['telemetry_v1', *(['cap_v1'] if self.local else []),
-                             *(['fleet_metrics_v1'] if 'daemon_socket' in cfg else [])]
+                             *(['fleet_metrics_v1'] if 'daemon_socket' in cfg else []),
+                             *(['cooperative_slo_v1'] if 'cooperative' in cfg else [])]
         try:
             self.state = read_json(path)
             fields(self.state, ('cluster', 'host', 'epoch', 'generation', 'rate_kbit'))
@@ -195,11 +206,14 @@ class Agent:
             try:
                 reply = self.call('hello', boot_id=self.boot, capabilities=caps)
             except Rejected as error:
-                if error.code != 'capability_mismatch' or 'fleet_metrics_v1' not in caps:
+                if error.code != 'capability_mismatch':
                     raise
-                caps = [cap for cap in caps if cap != 'fleet_metrics_v1']
+                caps = [cap for cap in caps if cap in ('telemetry_v1', 'cap_v1')]
+                if caps == self.capabilities:
+                    raise
                 reply = self.call('hello', boot_id=self.boot, capabilities=caps)
             self.fleet_metrics = 'fleet_metrics_v1' in caps
+            self.cooperative = 'cooperative_slo_v1' in caps
             hexdigest(reply['session'], 48)
             if self.state and reply['epoch'] != self.state['epoch']:
                 raise Rejected('epoch_changed')
@@ -212,6 +226,13 @@ class Agent:
                 pass
         self.seq += 1
         data = self.collector.sample()
+        if self.cooperative:
+            from cooperative_slo import read_aggregate
+            source = self.cfg['cooperative']
+            try:
+                data['cooperative'] = read_aggregate(source['summary_path'], source['service'])
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
         if not self.fleet_metrics:
             for key in ('sample_end_ns', 'controller_actions', 'controller_session'):
                 data.pop(key, None)
@@ -224,6 +245,13 @@ class Agent:
             raise
         if reply['desired'] is not None:
             self.apply(reply['desired'])
+        path = self.cfg['cooperative'].get('advice_path') if self.cooperative else None
+        if path and self.ack and self.ack['verified'] and self.ack['state']=='applied':
+            try:
+                atomic_json(Path(path), dict(sample_ns=time.monotonic_ns(), cap_kbit=self.ack['rate_kbit'],
+                                            observed_kbit=data['egress_kbit']))
+            except (OSError, ValueError) as error:
+                audit('cooperative_advice_error', host=self.cfg['host'], reason=type(error).__name__)
 
 
 def main():

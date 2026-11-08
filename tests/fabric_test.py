@@ -44,17 +44,18 @@ class FabricTest(unittest.TestCase):
             message.update(host=host, cluster='cluster')
         return self.controller.dispatch(host*64, message)
 
-    def enroll(self, host):
-        return self.request(host, 'hello', boot_id='1'*32, capabilities=['telemetry_v1', 'cap_v1'])['session']
+    def enroll(self, host, *extensions):
+        return self.request(host, 'hello', boot_id='1'*32,
+                            capabilities=['telemetry_v1', 'cap_v1', *extensions])['session']
 
-    def report(self, host, session, sequence=1, acknowledge=True):
+    def report(self, host, session, sequence=1, acknowledge=True, **telemetry):
         state = self.controller.state
         ack = (dict(epoch=state['epoch'], generation=state['generation'], resource='link',
                     rate_kbit=state['quotas'][host], verified=True, state='applied')
                if acknowledge else None)
         data = dict(age_ms=0, interfaces=[], services=[], daemon_healthy=None,
                     controller=None, decision=None, bottleneck=None, egress_kbit=None)
-        return self.request(host, 'heartbeat', session=session, seq=sequence, telemetry=data, ack=ack)
+        return self.request(host, 'heartbeat', session=session, seq=sequence, telemetry=dict(data, **telemetry), ack=ack)
 
     def test_lower_before_increases_and_recover_pending_state(self):
         sessions = {host: self.enroll(host) for host in 'abc'}
@@ -109,6 +110,32 @@ class FabricTest(unittest.TestCase):
         self.controller = Coordinator(self.cfg, self.path)
         with self.assertRaisesRegex(Rejected, 'unauthorized'):
             self.enroll('a')
+
+    def test_cooperative_scope_and_staleness(self):
+        self.cfg['cooperative'] = dict(version=1, minimum_offered=12, risk_percent=30, boost=2, services={'a':'api'})
+        self.cfg['intents'] = [rule(host, 900) for host in 'abc']
+        self.controller = Coordinator(self.cfg, self.path, lambda: self.now)
+        a = self.enroll('a', 'cooperative_slo_v1')
+        b = self.enroll('b')
+        c = self.enroll('c')
+        aggregate = dict(service='api', age_us=0, offered=40, risk=30, misses=18, errors=2, deferred=0, p95_us=120000)
+        with self.assertRaisesRegex(Rejected, 'cooperative_scope'):
+            self.report('b', b, cooperative=aggregate)
+        with self.assertRaisesRegex(Rejected, 'cooperative_scope'):
+            self.report('a', a, cooperative=dict(aggregate,service='foreign'))
+        self.report('a', a, cooperative=aggregate, egress_kbit=80)
+        self.report('b', b)
+        self.report('c', c)
+        preview = self.request('d', 'reconcile')
+        self.assertTrue(preview['evidence']['a']['cooperative_pressure'])
+        self.assertGreater(preview['target']['a'], preview['target']['b'])
+        self.assertEqual(sum(preview['target'].values()), 1000)
+        self.assertEqual(self.controller.state['quotas'], dict.fromkeys('abc',100))
+        self.now += 3
+        stale = self.request('d', 'reconcile')
+        self.assertFalse(stale['evidence']['a']['cooperative_pressure'])
+        self.now += 2
+        self.assertEqual(self.request('d', 'reconcile',apply=True)['state'], 'waiting_for_verified')
 
     def test_local_generation_conflict_and_lease_expiry(self):
         cfg = dict(cluster='cluster', host='a', interface='data0', resource='link',

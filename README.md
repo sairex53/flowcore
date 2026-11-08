@@ -67,6 +67,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
 | ECN and congestion feedback | [Engine](ECN_ENGINE.md), [feedback](CONGESTION_FEEDBACK.md), [measurements](ECN_BENCHMARKS.md) |
 | Deadline-aware networking | [Engine](DEADLINE_ENGINE.md), [admission](ADMISSION_CONTROL.md), [experiments](DEADLINE_EXPERIMENTS.md) |
+| Cooperative SLO | [Distributed engine](DISTRIBUTED_SLO.md), [request coordination](REQUEST_COORDINATION.md), [experiments](COOPERATIVE_RESULTS.md) |
 | TCP socket intelligence | [Engine](TCP_PACING_ENGINE.md), [SDK](SOCKET_INTELLIGENCE.md), [results](TCP_PACING_RESULTS.md) |
 | Application-intent packet scheduling | [Design](KERNEL_SCHEDULER_DESIGN.md), [reproduce](SCHEDULER_PROTOTYPE.md), [results](SCHEDULER_BENCHMARKS.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |

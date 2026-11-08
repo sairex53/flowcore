@@ -94,7 +94,7 @@ endif()
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
 add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp
-    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp)
+    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp src/cooperative_slo.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -140,7 +140,7 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp)
 target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -358,3 +358,8 @@ target_compile_options(deadline_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME deadline_native COMMAND deadline_test)
 set_tests_properties(deadline_native PROPERTIES TIMEOUT 15)
 install(FILES DEADLINE_ENGINE.md ADMISSION_CONTROL.md DEADLINE_EXPERIMENTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME cooperative_slo COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/cooperative_slo_test.py")
+set_tests_properties(cooperative_slo PROPERTIES TIMEOUT 20)
+install(FILES include/flowcore/cooperative_slo.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+install(FILES DISTRIBUTED_SLO.md REQUEST_COORDINATION.md COOPERATIVE_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
