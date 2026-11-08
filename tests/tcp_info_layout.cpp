@@ -105,6 +105,14 @@ void check_layout() {
     if constexpr (requires(T value) { value.tcpi_total_rto_time; }) {
         static_assert(offsetof(T, tcpi_total_rto_time) == 244);
     }
+    if constexpr (requires(T value) { value.tcpi_received_ce; }) {
+        static_assert(offsetof(T, tcpi_received_ce) == 248);
+    }
+    if constexpr (requires(T value) { value.tcpi_received_ce_bytes; }) {
+        static_assert(offsetof(T, tcpi_delivered_e1_bytes) == 252);
+        static_assert(offsetof(T, tcpi_received_ce_bytes) == 272);
+        static_assert(sizeof(T) >= 280);
+    }
 }
 
 int main() {

@@ -4,6 +4,7 @@ import struct
 import subprocess
 import time
 import adaptive_tc
+import ecn_policy
 from service_config import CLASSES, keys, number
 
 
@@ -66,7 +67,7 @@ def root(rows, kind):
     return value
 
 
-def apply_conditions(service, settings, mode, seed, link_up):
+def apply_conditions(service, settings, mode, seed, link_up, ecn=None):
     """Operate only on interfaces owned by the daemon's ephemeral veth lab."""
     from research_manifest import FAULTS, MODES, OPTIONAL_NETWORK_FIELDS, net_profile
     if not service.lab:
@@ -76,6 +77,10 @@ def apply_conditions(service, settings, mode, seed, link_up):
         raise ValueError('invalid research network settings')
     if mode not in MODES:
         raise ValueError('unknown research mode')
+    if (mode in ecn_policy.MODES) != (ecn is not None):
+        raise ValueError('ECN mode and profile must be supplied together')
+    if ecn is not None:
+        ecn = ecn_policy.validate(ecn)
     profile = net_profile(settings)
     number(seed, 1, 2**32-1, True)
     if type(link_up) is not bool:
@@ -83,10 +88,12 @@ def apply_conditions(service, settings, mode, seed, link_up):
     lab = service.lab
     if not lab.namespace_fds:
         raise RuntimeError('research namespace handles are not pinned')
+    if ecn is not None and service.research_mode is not None and ecn != getattr(service, 'research_ecn', None):
+        raise ValueError('ECN profile cannot change during an experiment')
     if service.research_mode is not None and mode != service.research_mode:
         raise ValueError('research mode cannot change within a trial')
     try:
-        return update_conditions(service, lab, profile, mode, seed, link_up, settings)
+        return update_conditions(service, lab, profile, mode, seed, link_up, settings, ecn)
     except (OSError, ValueError, RuntimeError, KeyError, struct.error, subprocess.SubprocessError) as error:
         # qdisc, class and netem updates are separate kernel operations. An
         # uncertain partial update invalidates the trial and its disposable lab.
@@ -95,13 +102,18 @@ def apply_conditions(service, settings, mode, seed, link_up):
         raise RuntimeError(service.error) from error
 
 
-def update_conditions(service, lab, profile, mode, seed, link_up, settings=None):
+def update_conditions(service, lab, profile, mode, seed, link_up, settings=None, ecn=None):
     from benchmark import TC
     from research_manifest import CLASSIFIED, FQ_MODES
     lab.assert_owned_sender()
     settings = settings or {}
     cap = profile['bandwidth_kbit']
-    if service.research_mode is None:
+    first = service.research_mode is None
+    endpoints = None
+    if first:
+        if ecn is not None:
+            endpoints = ecn_policy.configure(lab, ecn, mode)
+            service.research_ecn = ecn
         if mode in ('linux', 'linux-default', 'fifo', 'fq_codel', *FQ_MODES):
             installed = service.config['policies'][service.active]
             if adaptive_tc.read(lab, service.profile['bandwidth_kbit'], installed) != {
@@ -127,7 +139,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None)
             root(rows, 'noqueue')
         return dict(applied_ns=time.monotonic_ns(), kernel_confirmed_ns=time.monotonic_ns(),
                     capacity_kbit=None, netem=None, link_up=True)
-    if mode == 'cake':
+    if mode in ('cake','ecn-cake'):
         root(qdiscs, 'cake')
         if cap != service.profile['bandwidth_kbit']:
             lab.tc('qdisc', 'change', 'dev', 'fc0', 'root', 'handle', '1:', 'cake',
@@ -150,6 +162,8 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None)
         resize_htb(service, cap)
     else:
         raise ValueError('unknown research mode')
+    if ecn is not None:
+        ecn_policy.verify(qdiscs, ecn, mode)
     receiver = [TC, '-j', 'qdisc', 'show', 'dev', 'fc1']
     root(json.loads(lab.command(1, receiver)), 'netem')
     correlation = settings.get('loss_correlation_pct', 0)
@@ -195,6 +209,8 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None)
     confirmed = time.monotonic_ns()
     result = dict(applied_ns=confirmed, kernel_confirmed_ns=confirmed, capacity_kbit=cap,
                   netem=observed, link_up=link_up)
+    if endpoints is not None:
+        result['ecn_endpoints'] = endpoints
     if reverse is not None:
         result['reverse_capacity_kbit'] = reverse
     return result

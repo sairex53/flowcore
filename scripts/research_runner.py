@@ -19,6 +19,8 @@ from adaptive_experiment import await_ready
 from benchmark import ROOT, owned_directory, receiver_metrics, run, TC
 from cli import request
 import benchmark_v2 as v2
+import ecn_policy
+from ecn_feedback import aqm_counters
 from ipc_security import private_directory, private_lock
 from daemon import SOCKET
 from observer_perf import await_service, command, stop, cpu_ticks
@@ -299,11 +301,11 @@ def trial(directory, m, rep, mode, seed=None):
     if mode == 'slo-long':
         cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
         cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
-    if mode in ('static', 'pacing-hybrid') or (mode.startswith('static') and mode != 'static-step'):
-        reserve = m['static_critical_pct'] if mode in ('static','pacing-hybrid') else int(mode.removeprefix('static'))
+    if mode in ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED) or (mode.startswith('static') and mode != 'static-step'):
+        reserve = m['static_critical_pct'] if mode in ('static','pacing-hybrid', *ecn_policy.CLASSIFIED) else int(mode.removeprefix('static'))
         cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
         cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
-    if mode == 'cake':
+    if mode in ('cake','ecn-cake'):
         cfg['policies']['default'] = cfg['policies']['fair']
     config = directory/'config.json'
     save(config,cfg)
@@ -328,7 +330,9 @@ def trial(directory, m, rep, mode, seed=None):
                 request('intent_register', intent=dict(name=cls, priority=cls,
                     target_p99_ms=m['controller']['target_p99_ms'],
                     ttl_seconds=m['duration_seconds']+workload.get('warmup_seconds', 0)+60))
-            applied = request('research_conditions',network=network,mode=mode,seed=seed,link_up=True)
+            ecn_profile = m.get('ecn')
+            ecn_options = {'ecn': ecn_profile} if ecn_profile else {}
+            applied = request('research_conditions',network=network,mode=mode,seed=seed,link_up=True,**ecn_options)
             transitions.write(json.dumps(dict(at_seconds=0,initial=True,requested=network,**applied))+'\n')
             transitions.flush()
             expected_capacity = applied['capacity_kbit']
@@ -341,6 +345,8 @@ def trial(directory, m, rep, mode, seed=None):
                 value['label'] = label
                 value['configured_kbit'] = expected_capacity
                 value['readback'] = v2.verify(value, mode, expected_capacity, ports)
+                if ecn_profile:
+                    ecn_policy.verify(value['tc']['qdisc'], ecn_profile, mode)
                 if initial_namespace_ids is None:
                     initial_namespace_ids = value['namespaces']
                 elif value['namespaces'] != initial_namespace_ids:
@@ -371,7 +377,9 @@ def trial(directory, m, rep, mode, seed=None):
                 return child(['nsenter', f'--net=/proc/self/fd/{fd}', '--', *argv[4:]],
                              pass_fds=(fd,), stdout=log, stderr=log)
 
-            if mode == 'predictive-shadow':
+            if mode == 'ecn-queue':
+                request('controller_start',strategy='queue-aware')
+            elif mode == 'predictive-shadow':
                 request('controller_shadow',strategy='predictive')
             elif mode == 'slo-shadow':
                 request('controller_shadow',strategy='slo')
@@ -381,8 +389,10 @@ def trial(directory, m, rep, mode, seed=None):
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services,
                             server_address=('fd42:203::2' if workload.get('address_family')=='ipv6' else '10.203.0.2'))
-            pacing = any(mode in PACING_MODES for mode in m['modes'])
+            pacing = ecn_profile or any(mode in PACING_MODES for mode in m['modes'])
             pacing_lock = None
+            if mode == 'ecn-dctcp':
+                settings['ecn_socket_algorithm'] = 'dctcp'
             if pacing:
                 settings['socket_pacing_mode'] = mode
                 pacing_lock = resources.enter_context(private_lock(directory/'pacing.lock'))
@@ -406,6 +416,11 @@ def trial(directory, m, rep, mode, seed=None):
                            backlog_bytes=root(value.get('tc', {})).get('backlog', 0),
                            class_active=value.get('state', {}).get('mode', 'off') != 'off',
                            transition=transition)
+                if ecn_profile:
+                    scope = next((q for q in value.get('tc', {}).get('qdisc', [])
+                                  if q.get('parent') == '1:20' or mode == 'ecn-cake' and q.get('root')), {})
+                    row['ecn_aqm'] = aqm_counters(scope)
+                    row['ecn_sample_ns'] = value.get('sample_ns')
                 with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.pacing-', delete=False) as stream:
                     temporary = Path(stream.name)
                     try:
@@ -514,7 +529,7 @@ def trial(directory, m, rep, mode, seed=None):
                         with class_update():
                             begun = time.monotonic_ns()
                             applied = request('research_conditions', network=target, mode=mode,
-                                              seed=(seed+index-1)%(2**32-1)+1, link_up=target_link)
+                                              seed=(seed+index-1)%(2**32-1)+1, link_up=target_link, **ecn_options)
                     except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
                         failed = dict(scheduled_ns=round(deadline*NANO), actual_application_ns=begun,
                                       operations=[dict(kind=item['kind'], id=item['event']['id']) for item in event_ops],
@@ -582,10 +597,10 @@ def trial(directory, m, rep, mode, seed=None):
                         continue
                     network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
                     link_up = fault.get('link_up',link_up)
-                    pacing_feedback({}, transition=True)
-                    begun = time.monotonic_ns()
-                    applied = request('research_conditions',network=network,mode=mode,
-                                      seed=(seed+index-1)%(2**32-1)+1,link_up=link_up)
+                    with class_update():
+                        begun = time.monotonic_ns()
+                        applied = request('research_conditions',network=network,mode=mode,
+                                          seed=(seed+index-1)%(2**32-1)+1,link_up=link_up,**ecn_options)
                     transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),begun_ns=begun,
                                                       requested=fault, **applied))+'\n')
                     transitions.flush()
@@ -600,6 +615,10 @@ def trial(directory, m, rep, mode, seed=None):
             if code not in (0,2) or server.poll() is not None:
                 raise RuntimeError(f'workload infrastructure failed, exit={code}')
             time.sleep(.15)
+            if mode == 'ecn-dctcp':
+                records = (directory/'receiver.jsonl').read_text().splitlines()
+                if not records or json.loads(records[-1])['algorithm_fallbacks']:
+                    raise RuntimeError('DCTCP server observed congestion-control fallback')
             history = session_history(request('policy_history'),controller_session,round(start*NANO))
             save(directory/'decisions.json',history)
             final_inspect = request('inspect')

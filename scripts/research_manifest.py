@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+import ecn_policy
 from service_config import keys, number, profile, unique
 
 LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
@@ -11,9 +12,9 @@ STATIC_MODES = tuple(f'static{pct}' for pct in range(20, 41))
 FQ_MODES = ('tcp-fq', 'pacing-static', 'pacing-queue', 'pacing-slo', 'pacing-lowat',
             'tcp-cubic', 'tcp-reno', 'tcp-bbr')
 PACING_MODES = (*FQ_MODES, 'pacing-hybrid')
-MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', *PACING_MODES)
+MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', *PACING_MODES, *ecn_policy.MODES)
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'pacing-hybrid'))
+CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'pacing-hybrid', *ecn_policy.CLASSIFIED))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)
@@ -40,7 +41,7 @@ def validate(value):
     fields = ('version', 'topology', 'network', 'workload', 'duration_seconds', 'repetitions',
               'seed', 'modes', 'static_critical_pct', 'controller', 'faults', 'regression')
     keys(value, fields + (('gates',) if v2 else ()) +
-         (('stages', 'events') if v3 else ()))
+         (('stages', 'events') if v3 else ()) + (('ecn',) if 'ecn' in value else ()))
     number(version, 1, 3, True)
     if value['topology'] != 'veth-pair':
         raise ValueError('only the owned veth-pair topology is supported')
@@ -51,6 +52,11 @@ def validate(value):
     modes = value['modes']
     if not isinstance(modes, list) or not modes or any(not isinstance(mode, str) or mode not in (V2_MODES if v2 else LEGACY_MODES) for mode in modes) or len(set(modes)) != len(modes):
         raise ValueError('modes must be unique supported comparisons')
+    ecn_modes = set(modes) & set(ecn_policy.MODES)
+    if bool(ecn_modes) != ('ecn' in value) or (ecn_modes and ecn_modes != set(modes)):
+        raise ValueError('ECN comparisons require a versioned profile and exclusively ECN modes')
+    if ecn_modes:
+        ecn_policy.validate(value['ecn'])
     network = value['network']
     keys(network, (*NETWORK_FIELDS, *(OPTIONAL_NETWORK_FIELDS if v3 else ())))
     net_profile(network)

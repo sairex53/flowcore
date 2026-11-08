@@ -53,7 +53,7 @@ int fc_pacing_cc(int fd, const char* name) noexcept {
     try { return p::select_congestion(fd, name).value(); }
     catch (...) { return EIO; }
 }
-int fc_pacing_inspect(int fd, std::uint64_t* out) noexcept {
+static int inspect_fields(int fd, std::uint64_t* out, bool extended) noexcept {
     try {
         auto result = p::inspect(fd);
         if (!result) return result.error().value();
@@ -70,23 +70,39 @@ int fc_pacing_inspect(int fd, std::uint64_t* out) noexcept {
         out[9] = v.total_retransmits.value_or(UINT32_MAX);
         out[10] = v.output_queue_bytes.value_or(UINT32_MAX);
         out[11] = v.send_buffer_bytes.value_or(UINT32_MAX);
+        if (extended) {
+            out[12] = v.ecn_negotiated ? static_cast<unsigned>(*v.ecn_negotiated) : UINT32_MAX;
+            out[13] = v.delivered_segments.value_or(UINT32_MAX);
+            out[14] = v.delivered_ce_segments.value_or(UINT32_MAX);
+            out[15] = v.ecn_mode.value_or(UINT32_MAX);
+        }
         return 0;
     } catch (...) { return EIO; }
 }
+int fc_pacing_inspect(int fd, std::uint64_t* out) noexcept { return inspect_fields(fd, out, false); }
+int fc_pacing_inspect_v2(int fd, std::uint64_t* out) noexcept { return inspect_fields(fd, out, true); }
 void* fc_pacing_controller(unsigned strategy, std::uint64_t floor, std::uint64_t ceiling,
                            std::uint64_t fallback, std::uint32_t target_us) noexcept {
     try { return new p::Controller(static_cast<p::Strategy>(strategy), floor, ceiling, fallback, target_us); }
     catch (...) { return nullptr; }
 }
 void fc_pacing_delete_controller(void* handle) noexcept { delete static_cast<p::Controller*>(handle); }
-unsigned fc_pacing_evaluate(void* handle, const std::uint64_t* fields, std::uint64_t current,
-                            std::uint64_t* proposed) noexcept {
+static unsigned evaluate_fields(void* handle, const std::uint64_t* fields, std::uint64_t current,
+                                std::uint64_t* proposed, bool extended) noexcept {
     const p::Observation o{fields[0], fields[1], fields[2], fields[3], static_cast<std::uint32_t>(fields[4]),
                            static_cast<std::uint32_t>(fields[5]), static_cast<std::uint32_t>(fields[6]),
-                           static_cast<unsigned>(fields[7]), fields[8]!=0, fields[9]!=0, fields[10]!=0};
+                           static_cast<unsigned>(fields[7]), fields[8]!=0, fields[9]!=0, fields[10]!=0, extended && fields[11]!=0};
     const auto result = static_cast<p::Controller*>(handle)->evaluate(o, current, p::Clock::now());
     *proposed = result.rate;
     return static_cast<unsigned>(result.decision);
+}
+unsigned fc_pacing_evaluate(void* handle, const std::uint64_t* fields, std::uint64_t current,
+                            std::uint64_t* proposed) noexcept {
+    return evaluate_fields(handle, fields, current, proposed, false);
+}
+unsigned fc_pacing_evaluate_v2(void* handle, const std::uint64_t* fields, std::uint64_t current,
+                               std::uint64_t* proposed) noexcept {
+    return evaluate_fields(handle, fields, current, proposed, true);
 }
 void fc_pacing_confirm(void* handle, bool success) noexcept {
     static_cast<p::Controller*>(handle)->confirm(success);

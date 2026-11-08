@@ -136,6 +136,13 @@ std::expected<Snapshot, Error> read(int fd) {
     copy(offsetof(tcp_info, tcpi_notsent_bytes), info.tcpi_notsent_bytes, out.notsent_bytes);
     copy(offsetof(tcp_info, tcpi_snd_cwnd), info.tcpi_snd_cwnd, out.cwnd_segments);
     copy(offsetof(tcp_info, tcpi_rtt), info.tcpi_rtt, out.rtt_us);
+    if (size > offsetof(tcp_info, tcpi_options)) out.ecn_negotiated = (info.tcpi_options & TCPI_OPT_ECN) != 0;
+#ifdef TCPI_ECN_MODE_ACCECN
+    if (size >= offsetof(tcp_info, tcpi_received_ce_bytes)+8)
+        out.ecn_mode = static_cast<unsigned>(info.tcpi_ecn_mode);
+#endif
+    copy(offsetof(tcp_info, tcpi_delivered), info.tcpi_delivered, out.delivered_segments);
+    copy(offsetof(tcp_info, tcpi_delivered_ce), info.tcpi_delivered_ce, out.delivered_ce_segments);
     copy(offsetof(tcp_info, tcpi_total_retrans), info.tcpi_total_retrans, out.total_retransmits);
     int queued = 0;
     if (!ioctl(fd, SIOCOUTQ, &queued) && queued >= 0) out.output_queue_bytes = queued;

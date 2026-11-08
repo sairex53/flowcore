@@ -15,7 +15,7 @@ constexpr auto cooldown = 1s;
 Controller::Controller(Strategy strategy, Rate floor, Rate ceiling, Rate fallback,
                        std::uint32_t target_us)
     : strategy_(strategy), floor_(floor), ceiling_(ceiling), fallback_(fallback), target_us_(target_us) {
-    if (strategy > Strategy::Hybrid || !floor || floor > fallback || fallback > ceiling ||
+    if (strategy > Strategy::Ecn || !floor || floor > fallback || fallback > ceiling ||
         ceiling > maximum_supported_rate || !target_us || target_us > 30'000'000)
         throw std::invalid_argument("invalid pacing controller bounds");
 }
@@ -64,14 +64,15 @@ Proposal Controller::evaluate(const Observation& o, Rate current, Clock::time_po
     const bool demand = o.background_demand >= o.capacity/4;
     const bool rtt_pressure = o.rtt_us >= 12'000;
     const bool slo_risk = o.requests >= 12 && o.request_p99_us > target_us_;
-    const bool congested = backlog && demand &&
-        (strategy_ == Strategy::Queue || (strategy_ == Strategy::Slo ? slo_risk : slo_risk || rtt_pressure));
+    const bool early = strategy_ == Strategy::Ecn && o.ecn_pre_loss && !regime_changed;
+    const bool congested = demand && (early || (backlog &&
+        (strategy_ == Strategy::Queue || (strategy_ == Strategy::Slo ? slo_risk : slo_risk || rtt_pressure))));
     pressure_ = congested ? std::min(pressure_+1, 2U) : 0;
     quiet_ = !backlog && !slo_risk && o.throughput < o.capacity*3/4 ? std::min(quiet_+1, 3U) : 0;
     Rate desired = current;
-    if (pressure_ >= 2) {
-        const Rate budget = o.capacity*(strategy_ == Strategy::Hybrid ? 70 : 60)/100;
-        desired = std::max(current-current/4, std::min(current, budget/o.active_sockets));
+    if (pressure_ >= 2 || (early && pressure_ >= 1)) {
+        const Rate budget = o.capacity*((strategy_ == Strategy::Hybrid || strategy_ == Strategy::Ecn) ? 70 : 60)/100;
+        desired = std::max(current-current/(early ? 8 : 4), std::min(current, budget/o.active_sockets));
     } else if (quiet_ >= 3 && o.background_demand > o.throughput) {
         desired = std::min(fallback_, current+current/4);
     }

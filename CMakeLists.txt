@@ -346,3 +346,8 @@ target_compile_options(socket_pacing_test PRIVATE -Wall -Wextra -Wpedantic -Werr
 add_test(NAME socket_pacing_native COMMAND socket_pacing_test)
 set_tests_properties(socket_pacing_native PROPERTIES TIMEOUT 15)
 install(FILES TCP_PACING_ENGINE.md SOCKET_INTELLIGENCE.md TCP_PACING_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME ecn_feedback COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/ecn_test.py")
+set_tests_properties(ecn_feedback PROPERTIES TIMEOUT 15
+    ENVIRONMENT "FLOWCORE_ECN_PACING_BRIDGE=$<TARGET_FILE:flowcore_pacing_lab>")
+install(FILES ECN_ENGINE.md CONGESTION_FEEDBACK.md ECN_BENCHMARKS.md DESTINATION "${FLOWCORE_DATA}/docs")

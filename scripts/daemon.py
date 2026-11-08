@@ -289,7 +289,7 @@ class Service:
             if op == 'research_conditions':
                 from research_faults import apply_conditions
                 try:
-                    applied = apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'))
+                    applied = apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'), request.get('ecn'))
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                     self.incident.recorder.record('fault', time.monotonic_ns(), action='research_conditions', status='failed')
                     raise

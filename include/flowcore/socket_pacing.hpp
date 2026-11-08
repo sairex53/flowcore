@@ -40,6 +40,9 @@ struct Snapshot {
     std::optional<Rate> pacing_rate, delivery_rate;
     std::optional<std::uint64_t> bytes_acked;
     std::optional<std::uint32_t> notsent_bytes, cwnd_segments, rtt_us, total_retransmits;
+    std::optional<bool> ecn_negotiated;
+    std::optional<unsigned> ecn_mode;
+    std::optional<std::uint32_t> delivered_segments, delivered_ce_segments;
     std::optional<std::uint32_t> output_queue_bytes, send_buffer_bytes;
 };
 
@@ -84,14 +87,14 @@ private:
     bool active_ = false;
 };
 
-enum class Strategy { Static, Queue, Slo, Hybrid };
+enum class Strategy { Static, Queue, Slo, Hybrid, Ecn };
 enum class Decision { Hold, Adjust, Rollback, Fallback, ClassOnly };
 struct Observation {
     Rate capacity = 0, throughput = 0, background_demand = 0;
     std::uint64_t backlog_bytes = 0;
     std::uint32_t rtt_us = 0, request_p99_us = 0, requests = 0;
     unsigned active_sockets = 0;
-    bool valid = false, class_controller_active = false, class_transition = false;
+    bool valid = false, class_controller_active = false, class_transition = false, ecn_pre_loss = false;
 };
 struct Proposal { Decision decision; Rate rate; };
 

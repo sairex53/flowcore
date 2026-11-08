@@ -3,6 +3,7 @@ import errno
 import ipaddress
 import socket
 import struct
+import sys
 import time
 from pathlib import Path
 
@@ -24,6 +25,10 @@ INFO = {
     'bytes_retrans': (208, 'Q'), 'peer_receive_window_bytes': (228, 'I'),
     'local_receive_window_bytes': (232, 'I'), 'total_rto': (240, 'H'),
     'total_rto_recoveries': (242, 'H'), 'total_rto_time_ms': (244, 'I'),
+    'received_ce_segments': (248, 'I'), 'accecn_delivered_ect1_bytes': (252, 'I'),
+    'accecn_delivered_ect0_bytes': (256, 'I'), 'accecn_delivered_ce_bytes': (260, 'I'),
+    'accecn_received_ect1_bytes': (264, 'I'), 'accecn_received_ect0_bytes': (268, 'I'),
+    'accecn_received_ce_bytes': (272, 'I'),
 }
 STATES = {1: 'established', 2: 'syn_sent', 3: 'syn_recv', 4: 'fin_wait_1',
           5: 'fin_wait_2', 6: 'time_wait', 7: 'closed', 8: 'close_wait',
@@ -31,8 +36,17 @@ STATES = {1: 'established', 2: 'syn_sent', 3: 'syn_recv', 4: 'fin_wait_1',
 
 
 def tcp_info(data):
-    return {key: struct.unpack_from('=' + fmt, data, offset)[0]
-            for key, (offset, fmt) in INFO.items() if len(data) >= offset + struct.calcsize(fmt)}
+    fields = {key: struct.unpack_from('=' + fmt, data, offset)[0]
+              for key, (offset, fmt) in INFO.items() if len(data) >= offset + struct.calcsize(fmt)}
+    if len(data) >= 6:
+        fields.update(ecn_negotiated=bool(data[5] & 8), received_ect=bool(data[5] & 16))
+    if len(data) >= 280:
+        flags = struct.unpack_from('=I', data, 276)[0]
+        shift = 0 if sys.byteorder == 'little' else 30
+        fields['ecn_mode'] = ('disabled', 'classic', 'accurate', 'pending')[(flags >> shift) & 3]
+        fields['accecn_option_state'] = (flags >> (2 if shift == 0 else 28)) & 3
+        fields['accecn_fail_flags'] = (flags >> (4 if shift == 0 else 24)) & 15
+    return fields
 
 
 def decode(body):

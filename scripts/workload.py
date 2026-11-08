@@ -18,13 +18,56 @@ def percentile(values, fraction):
     return sorted(values)[max(0, math.ceil(len(values) * fraction) - 1)] if values else None
 
 
+def research_tcp_socket(host, algorithm):
+    owned = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        owned.setsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, algorithm.encode())
+        check_algorithm(owned, algorithm)
+        owned.setblocking(False)
+        return owned
+    except BaseException:
+        owned.close()
+        raise
+
+
+def check_algorithm(sock, algorithm):
+    actual = sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_CONGESTION, 16).split(b'\0', 1)[0].decode()
+    if actual != algorithm:
+        raise RuntimeError(f'TCP congestion control fell back from {algorithm} to {actual}')
+
+
+async def research_connect(host, port, algorithm=None):
+    if algorithm is None:
+        return await asyncio.open_connection(host, port)
+    owned = research_tcp_socket(host, algorithm)
+    try:
+        await asyncio.get_running_loop().sock_connect(owned, (host, port))
+        check_algorithm(owned, algorithm)
+        return await asyncio.open_connection(sock=owned)
+    except BaseException:
+        owned.close()
+        raise
+
+
 async def server(output, payload, request_port, background_port, streams, udp_port=9002, research=None):
     counters = [0] * streams
+    algorithm = research.get('ecn_socket_algorithm') if research else None
+    algorithm_fallbacks = 0
+
+    def check_peer(writer):
+        nonlocal algorithm_fallbacks
+        if algorithm:
+            try:
+                check_algorithm(writer.get_extra_info('socket'), algorithm)
+            except RuntimeError:
+                algorithm_fallbacks += 1
+                raise ConnectionError('server-side TCP congestion fallback')
     udp_count = max((phase.get('udp_streams',0) for phase in research['phases']),default=0) if research else 0
     udp_counters = [0] * udp_count
 
     async def critical(reader, writer):
         try:
+            check_peer(writer)
             await reader.readexactly(payload)
             writer.write(b'R' * 64)
             await writer.drain()
@@ -39,6 +82,7 @@ async def server(output, payload, request_port, background_port, streams, udp_po
 
     async def background(reader, writer):
         try:
+            check_peer(writer)
             flow = struct.unpack('!I', await reader.readexactly(4))[0]
             if flow >= len(counters):
                 return
@@ -55,8 +99,20 @@ async def server(output, payload, request_port, background_port, streams, udp_po
 
     ports = research['ports'].values() if research else [request_port]
     host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
-    listeners = [await asyncio.start_server(critical, host, port) for port in ports]
-    listeners.append(await asyncio.start_server(background, host, background_port))
+    async def listen(handler, port):
+        if algorithm is None:
+            return await asyncio.start_server(handler, host, port)
+        owned = research_tcp_socket(host, algorithm)
+        try:
+            owned.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            owned.bind((host, port))
+            return await asyncio.start_server(handler, sock=owned)
+        except BaseException:
+            owned.close()
+            raise
+
+    listeners = [await listen(critical, port) for port in ports]
+    listeners.append(await listen(background, background_port))
     udp_transport = None
     if udp_count:
         class DatagramCounters(asyncio.DatagramProtocol):
@@ -74,7 +130,7 @@ async def server(output, payload, request_port, background_port, streams, udp_po
     with output.open('w') as stream:
         while True:
             stream.write(json.dumps({'time': time.monotonic(), 'bytes': counters.copy(),
-                                     'udp_bytes': udp_counters.copy()}) + '\n')
+                                     'udp_bytes': udp_counters.copy(), 'algorithm_fallbacks': algorithm_fallbacks}) + '\n')
             stream.flush()
             await asyncio.sleep(0.1)
 
@@ -97,6 +153,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
     background_errors = []
     udp_send_errors = []
     stopping = False
+    socket_algorithm = research.get('ecn_socket_algorithm') if research else None
     paced_kbit = research.get('background_kbit_per_stream', 0) if research else 0
     pacing = None
     if research and 'socket_pacing_mode' in research:
@@ -111,19 +168,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
             attached = False
             try:
                 host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
-                if pacing and pacing.algorithm:
-                    family = socket.AF_INET6 if ':' in host else socket.AF_INET
-                    owned = socket.socket(family, socket.SOCK_STREAM)
-                    try:
-                        pacing.configure_new(owned)
-                        owned.setblocking(False)
-                        await asyncio.get_running_loop().sock_connect(owned, (host, background_port))
-                        _, writer = await asyncio.open_connection(sock=owned)
-                    except BaseException:
-                        owned.close()
-                        raise
-                else:
-                    _, writer = await asyncio.open_connection(host, background_port)
+                algorithm = socket_algorithm or (pacing.algorithm if pacing else None)
+                _, writer = await research_connect(host, background_port, algorithm)
                 writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
                 if pacing:
@@ -181,7 +227,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 raise TimeoutError('late request')
             async with asyncio.timeout(remaining):
                 host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
-                reader, writer = await asyncio.open_connection(host, port)
+                reader, writer = await research_connect(host, port, socket_algorithm)
                 direct_socket = writer.get_extra_info('socket')
                 direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 writer.write(request_data)

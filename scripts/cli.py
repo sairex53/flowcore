@@ -4,6 +4,7 @@ import json
 import socket
 import sys
 import time
+from pathlib import Path
 
 from daemon import SOCKET
 from network_state import snapshot
@@ -37,6 +38,9 @@ def main():
             command.add_argument('--local', action='store_true', help='query current namespace directly')
         if name in ('observe', 'connections', 'congestion', 'events', 'health', 'metrics', 'lifecycles'):
             command.add_argument('--watch', type=float, metavar='SECONDS', help='emit successive JSON lines')
+        if name == 'congestion':
+            command.add_argument('signal_action', nargs='?', choices=('signals',))
+            command.add_argument('--artifact', type=Path)
         if name == 'observe':
             command.add_argument('--interface', help='controlled sender interface')
         if name in ('connections','lifecycles'):
@@ -120,6 +124,8 @@ def main():
     add_fabric(commands)
     from fleet_cli import add_commands as add_fleet
     add_fleet(commands)
+    from ecn_cli import add_commands as add_ecn
+    add_ecn(commands)
     args = parser.parse_args()
     watch = getattr(args, 'watch', None)
     if watch is not None and not .1 <= watch <= 60:
@@ -127,6 +133,13 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command == 'ecn':
+            from ecn_cli import dispatch
+            return dispatch(args)
+        if args.command == 'congestion' and args.signal_action == 'signals':
+            from ecn_cli import signals
+            print(json.dumps(signals(args.artifact), indent=None if args.json else 2))
+            return 0
         if args.command in ('diagnose','incident'):
             if args.command == 'diagnose':
                 if args.lab_intervention:

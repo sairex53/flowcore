@@ -8,6 +8,7 @@ import time
 
 from durable_state import read_json
 from ipc_security import private_lock
+from ecn_feedback import estimate
 from paths import BINDIR, INSTALLED, ROOT
 
 FLOOR = 50_000
@@ -15,10 +16,11 @@ CEILING = 1_500_000
 FALLBACK = 400_000
 STATIC = 180_000
 SLO_TARGET = 30_000
-STRATEGIES = {'pacing-queue': 1, 'pacing-slo': 2, 'pacing-hybrid': 3}
+STRATEGIES = {'pacing-queue': 1, 'pacing-slo': 2, 'pacing-hybrid': 3, 'ecn-pacing-control': 3, 'ecn-aware': 4}
 SETTINGS = ('cookie', 'cap_bytes_s', 'tcp_pacing_bytes_s', 'delivery_bytes_s', 'bytes_acked',
             'notsent_lowat', 'notsent_bytes', 'rtt_us', 'cwnd_segments', 'total_retransmits',
-            'output_queue_bytes', 'send_buffer_bytes')
+            'output_queue_bytes', 'send_buffer_bytes', 'ecn_negotiated',
+            'delivered_segments', 'delivered_ce_segments', 'ecn_mode')
 WIDE_MISSING = 2**64-1
 NARROW_MISSING = 2**32-1
 U64 = c.c_uint64
@@ -32,11 +34,10 @@ def library():
         'open': (P, [c.c_int, U64, U64, U64, c.c_uint32, c.POINTER(c.c_int)]),
         'rate': (c.c_int, [P, U64]),
         'close': (c.c_int, [P]),
-        'cc': (c.c_int, [c.c_int, c.c_char_p]),
-        'inspect': (c.c_int, [c.c_int, c.POINTER(U64)]),
+        'inspect_v2': (c.c_int, [c.c_int, c.POINTER(U64)]),
         'controller': (P, [c.c_uint, U64, U64, U64, c.c_uint32]),
         'delete_controller': (None, [P]),
-        'evaluate': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
+        'evaluate_v2': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
         'confirm': (None, [P, c.c_bool]),
     }
     for name, (restype, argtypes) in signatures.items():
@@ -68,6 +69,8 @@ class PacingWorkload:
                 raise RuntimeError('cannot create native pacing controller')
         self.sockets = {}
         self.previous = {}
+        self.previous_ecn = {}
+        self.previous_aqm = {}
         self.last_sample_ns = 0
         self.last_feedback_ns = 0
         self.polls = 0
@@ -83,9 +86,6 @@ class PacingWorkload:
         self.peak_notsent = 0
         self.observed_notsent = 0
         self.background_attaches = 0
-
-    def configure_new(self, sock):
-        checked(self.lib.fc_pacing_cc(sock.fileno(), self.algorithm.encode()), 'TCP_CONGESTION')
 
     def add(self, flow, sock):
         if flow in self.sockets or len(self.sockets) >= 32:
@@ -116,7 +116,7 @@ class PacingWorkload:
         info = []
         for flow, (sock, _) in self.sockets.items():
             values = (U64*len(SETTINGS))()
-            if self.lib.fc_pacing_inspect(sock.fileno(), values):
+            if self.lib.fc_pacing_inspect_v2(sock.fileno(), values):
                 continue  # The transport may already have closed.
             result = dict(zip(SETTINGS, values))
             for field in ('tcp_pacing_bytes_s', 'delivery_bytes_s', 'bytes_acked'):
@@ -125,6 +125,10 @@ class PacingWorkload:
             for field in SETTINGS[6:]:
                 if result[field] == NARROW_MISSING:
                     result[field] = None
+            if result['ecn_negotiated'] is not None:
+                result['ecn_negotiated'] = bool(result['ecn_negotiated'])
+            if result['ecn_mode'] is not None:
+                result['ecn_mode'] = ('disabled', 'classic', 'accurate', 'pending')[result['ecn_mode']]
             result['flow'] = flow
             if result['notsent_bytes'] is not None:
                 self.peak_notsent = max(self.peak_notsent, result['notsent_bytes'])
@@ -144,6 +148,7 @@ class PacingWorkload:
             feed = {}
         when = feed.get('time_ns', 0)
         fresh = 0 <= now-when <= 2_500_000_000 and when != self.last_feedback_ns
+        earlier = self.last_feedback_ns
         if fresh:
             self.last_feedback_ns = when
         capacity = feed.get('capacity_bytes_s', 0)
@@ -152,13 +157,26 @@ class PacingWorkload:
         rtts = [row['rtt_us'] for row in info if row['rtt_us'] is not None]
         valid = fresh and bool(common) and len(info) == len(self.sockets)
         decision, proposed, verified = 'hold', self.rate, None
+        congestion = None
+        if self.mode.startswith('ecn-'):
+            current_ecn = {row['cookie']: row for row in info}
+            aqm = feed.get('ecn_aqm', {})
+            sample_ns = feed.get('ecn_sample_ns')
+            ecn_fresh = valid and type(sample_ns) is int and 0 <= now-sample_ns <= 2_500_000_000
+            congestion = estimate(previous=self.previous_ecn, current=current_ecn,
+                before_aqm=self.previous_aqm, after_aqm=aqm, fresh=ecn_fresh,
+                capacity=capacity, delivery_rate=throughput, rtt_us=max(rtts, default=0),
+                p99_us=round(p99_ms*1000), requests=requests, elapsed_ns=when-earlier,
+                scope_matches=self.mode != 'ecn-cake')
+            if fresh:
+                self.previous_ecn, self.previous_aqm = current_ecn, aqm
         if self.controller and (fresh or not when or now-when > 2_500_000_000):
-            inputs = (U64*11)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
+            inputs = (U64*12)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
                               max(rtts, default=0), min(round(p99_ms*1000), 30_000_000),
                               requests, len(info), valid, feed.get('class_active', False),
-                              feed.get('transition', False))
+                              feed.get('transition', False), bool(congestion and congestion['early']))
             next_rate = U64()
-            answer = self.lib.fc_pacing_evaluate(self.controller, inputs, self.rate, c.byref(next_rate))
+            answer = self.lib.fc_pacing_evaluate_v2(self.controller, inputs, self.rate, c.byref(next_rate))
             decision = ('hold', 'adjust', 'rollback', 'fallback', 'class-only')[answer]
             proposed = next_rate.value
             if decision in ('adjust', 'rollback', 'fallback'):
@@ -170,7 +188,7 @@ class PacingWorkload:
                 verified_ns=time.monotonic_ns() if verified else None, applied_bytes_s=self.rate, capacity_bytes_s=capacity,
                 throughput_bytes_s=throughput, background_demand_bytes_s=demand, backlog_bytes=feed.get('backlog_bytes'),
                 class_active=feed.get('class_active'), transition=feed.get('transition'),
-                request_p99_ms=p99_ms, requests=requests, sockets=info))+'\n')
+                request_p99_ms=p99_ms, requests=requests, congestion=congestion, sockets=info))+'\n')
         self.polls += 1
 
     def apply(self, rate, decision):
@@ -183,7 +201,7 @@ class PacingWorkload:
                         rollback_ok = False
                 values = (U64*len(SETTINGS))()
                 for sock, _ in self.sockets.values():
-                    if self.lib.fc_pacing_inspect(sock.fileno(), values) or values[1] != self.rate:
+                    if self.lib.fc_pacing_inspect_v2(sock.fileno(), values) or values[1] != self.rate:
                         rollback_ok = False
                 self.lib.fc_pacing_confirm(self.controller, False)
                 if not rollback_ok:

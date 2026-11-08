@@ -168,6 +168,17 @@ void decision_logic() {
     observation.backlog_bytes = 0;
     CHECK(slo.evaluate(observation, 400'000, t).decision == p::Decision::Hold);
     CHECK(slo.evaluate(observation, 400'000, t+1s).decision == p::Decision::Hold);
+    p::Controller ecn(p::Strategy::Ecn, 50'000, 500'000, 400'000);
+    observation.backlog_bytes = 3500; // Enough for the ECN estimator, below the reactive threshold.
+    observation.request_p99_us = 10'000;
+    observation.rtt_us = 8000;
+    observation.ecn_pre_loss = true;
+    CHECK(ecn.evaluate(observation, 400'000, t).decision == p::Decision::Hold); // new cohort
+    auto early = ecn.evaluate(observation, 400'000, t+1s);
+    CHECK(early.decision == p::Decision::Adjust && early.rate == 350'000);
+    ecn.confirm(true);
+    observation.class_transition = true;
+    CHECK(ecn.evaluate(observation, 350'000, t+2s).decision == p::Decision::Hold);
 }
 
 void intent_attestation(const char* path) {
