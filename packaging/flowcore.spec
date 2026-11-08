@@ -9,6 +9,8 @@ BuildRequires:  gcc-c++ >= 13
 BuildRequires:  cmake
 BuildRequires:  ninja-build
 BuildRequires:  python3
+BuildRequires:  openssl-devel
+BuildRequires:  openssl
 Requires:       python3 >= 3.12
 Requires(post): systemd
 Requires(preun): systemd
@@ -49,9 +51,11 @@ DESTDIR=%{buildroot} cmake --install build
 %{_bindir}/flowcore
 %{_bindir}/flowcored
 %{_bindir}/flowcore-sdk-request
+%{_bindir}/flowid-client
 %{_bindir}/flowcore-container-request
 %{_datadir}/flowcore/
 %{_includedir}/flowcore/
+%{_includedir}/flowid/
 %{_libdir}/libflowcore_sdk.a
 %{_libdir}/cmake/flowcore/
 %{_prefix}/lib/systemd/system/flowcored.service
@@ -65,6 +69,7 @@ DESTDIR=%{buildroot} cmake --install build
 %{_bindir}/libflowcore_telemetry.so*
 
 %{_libdir}/libflowcore_intent.so
+%{_libdir}/libflowcore_flowid.so
 
 
 %post

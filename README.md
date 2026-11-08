@@ -52,6 +52,10 @@ The C++23 SDK and additive C ABI let applications report actual request start/co
 
 See [APPLICATION_INTEGRATION.md](APPLICATION_INTEGRATION.md), [INTENT_API.md](INTENT_API.md) and [TRANSPORT_AWARE.md](TRANSPORT_AWARE.md). QUIC uses an opt-in aioquic adapter, not a new protocol stack.
 
+## Experimental FLOWID logical sessions
+
+Cooperating applications can resume an authenticated, ordered message session across a transport disconnect or an endpoint change. The C++23 client uses TCP or explicitly selected MPTCP. The reference server persists the application commit cursor and deduplication window in SQLite. Read the [protocol](FLOWID_PROTOCOL.md), [security model](FLOWID_SECURITY.md), [runnable lab](FLOWID_EXPERIMENTS.md) and [ARM64 results](FLOWID_RESULTS.md).
+
 ## Documentation and validation
 
 | Topic | Reference |

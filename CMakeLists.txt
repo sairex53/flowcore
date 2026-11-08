@@ -292,3 +292,35 @@ install(DIRECTORY monitoring/dashboard DESTINATION "${FLOWCORE_DATA}/monitoring"
 install(FILES monitoring/dashboard-nginx.conf DESTINATION "${FLOWCORE_DATA}/monitoring")
 install(FILES packaging/flowcore-dashboard.service DESTINATION lib/systemd/system)
 install(FILES packaging/flowcore-dashboard.conf DESTINATION lib/sysusers.d)
+
+option(FLOWCORE_FLOWID "Build the experimental FLOWID C++ SDK" ON)
+if(FLOWCORE_FLOWID)
+    find_package(OpenSSL 3 QUIET)
+    if(OpenSSL_FOUND)
+        add_library(flowcore_flowid SHARED src/flowid.cpp)
+        target_link_libraries(flowcore_flowid PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+        target_include_directories(flowcore_flowid PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+        target_compile_features(flowcore_flowid PUBLIC cxx_std_23)
+        target_compile_options(flowcore_flowid PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        set_target_properties(flowcore_flowid PROPERTIES EXPORT_NAME flowid)
+        add_library(flowcore::flowid ALIAS flowcore_flowid)
+        add_executable(flowid-client examples/flowid_client.cpp)
+        target_link_libraries(flowid-client PRIVATE flowcore_flowid flowcore_sdk)
+        target_compile_options(flowid-client PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        set_target_properties(flowid-client PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+        install(TARGETS flowcore_flowid EXPORT FlowcoreTargets LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+        install(TARGETS flowid-client RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+        install(FILES include/flowid/session.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowid")
+        set(FLOWID_TEST_CLIENT --client "$<TARGET_FILE:flowid-client>")
+    else()
+        message(WARNING "OpenSSL development files unavailable; FLOWID C++ SDK omitted")
+    endif()
+endif()
+
+add_test(NAME flowid_session COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/flowid_test.py" ${FLOWID_TEST_CLIENT})
+set_tests_properties(flowid_session PROPERTIES TIMEOUT 45)
+install(FILES FLOWID_PROTOCOL.md FLOWID_SECURITY.md FLOWID_EXPERIMENTS.md FLOWID_RESULTS.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
