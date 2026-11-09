@@ -71,6 +71,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Next-generation integrated engine | [Architecture](NEXTGEN_ARCHITECTURE.md), [engine](INTEGRATED_ENGINE.md), [benchmarks](NEXTGEN_BENCHMARKS.md), [innovation](INNOVATION_REPORT.md) |
 | Safe online experimentation | [Strategy engine](STRATEGY_ENGINE.md), [experiment design](ONLINE_EXPERIMENTATION.md), [results](STRATEGY_RESULTS.md) |
 | TCP socket intelligence | [Engine](TCP_PACING_ENGINE.md), [SDK](SOCKET_INTELLIGENCE.md), [results](TCP_PACING_RESULTS.md) |
+| Bandwidth-Preserving Hybrid V3 (lab) | [Engine](HYBRID_CONTROLLER_V3.md), [actuator coordination](ACTUATOR_COORDINATION.md), [results](HYBRID_V3_RESULTS.md) |
 | Application-intent packet scheduling | [Design](KERNEL_SCHEDULER_DESIGN.md), [reproduce](SCHEDULER_PROTOTYPE.md), [results](SCHEDULER_BENCHMARKS.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |
 | Distributed coordination | [FABRIC_ARCHITECTURE.md](FABRIC_ARCHITECTURE.md) |

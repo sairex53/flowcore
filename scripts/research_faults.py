@@ -87,7 +87,7 @@ def apply_conditions(service, settings, mode, seed, link_up, ecn=None):
     if ecn is not None:
         ecn = ecn_policy.validate(ecn)
     profile = net_profile(settings)
-    if mode in ('integrated', 'pacing-guarded') and (profile['bandwidth_kbit'] > 12000 or service.controller.mode != 'off'):
+    if mode in ('integrated', 'pacing-guarded', 'hybrid-v3') and (profile['bandwidth_kbit'] > 12000 or service.controller.mode != 'off'):
         raise ValueError('integrated mode requires bounded HTB capacity and exclusive socket authority')
     number(seed, 1, 2**32-1, True)
     if type(link_up) is not bool:
@@ -151,13 +151,15 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
             root(rows, 'noqueue')
         return dict(applied_ns=time.monotonic_ns(), kernel_confirmed_ns=time.monotonic_ns(),
                     capacity_kbit=None, netem=None, link_up=True)
-    if mode in ('cake','ecn-cake'):
+    if mode in ('cake','ecn-cake','cake-diffserv'):
         root(qdiscs, 'cake')
-        if cap != service.profile['bandwidth_kbit']:
+        diffserv = 'diffserv4' if mode == 'cake-diffserv' else 'besteffort'
+        if cap != service.profile['bandwidth_kbit'] or (first and mode == 'cake-diffserv'):
             lab.tc('qdisc', 'change', 'dev', 'fc0', 'root', 'handle', '1:', 'cake',
-                   'bandwidth', f'{cap}kbit', 'besteffort', 'flows', 'rtt', '100ms')
-        if root(json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0')), 'cake')['options']['bandwidth'] != cap*125:
-            raise RuntimeError('CAKE capacity readback failed')
+                   'bandwidth', f'{cap}kbit', diffserv, 'flows', 'rtt', '100ms')
+        options = root(json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0')), 'cake')['options']
+        if options['bandwidth'] != cap*125 or options['diffserv'] != diffserv:
+            raise RuntimeError('CAKE configuration readback failed')
     elif mode in ('linux', 'fifo', 'fq_codel', 'deadline-unaware', *FQ_MODES):
         root(qdiscs, 'htb')
         classes = lambda: [row for row in json.loads(lab.tc('-j','class','show','dev','fc0'))

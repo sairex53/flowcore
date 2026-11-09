@@ -64,14 +64,17 @@ def checked(status, operation):
 
 
 class PacingWorkload:
-    def __init__(self, output, mode, deadline_floor=None, shadow_names=(), *, target_us=SLO_TARGET, trace=False):
+    def __init__(self, output, mode, deadline_floor=None, shadow_names=(), *, target_us=SLO_TARGET, trace=False, hybrid_cap=0, control_directory=None):
         self.output = output
+        self.control_directory = control_directory or output
         self.mode = mode
         self.lib = library()
         self.controller = None
         self.actuator_lock = None
+        self.hybrid = mode == 'hybrid-v3'
+        self.last_release = None
         self.guarded = mode == 'pacing-guarded'
-        self.integrated = mode in ('integrated', 'pacing-guarded')
+        self.integrated = mode in ('integrated', 'pacing-guarded', 'hybrid-v3')
         self.trace = trace
         self.rate_steps = None
         self.receiver_previous = None
@@ -89,11 +92,14 @@ class PacingWorkload:
         self.rate = fallback if mode in STRATEGIES else STATIC if mode in ('pacing-static', 'pacing-htb-static') else 0
         if mode in ('deadline-admission', 'deadline-paced-static'):
             self.rate = PACING_BASELINE
+        if self.hybrid:
+            self.rate = hybrid_cap or CEILING
         self.floor = deadline_floor if mode.startswith('deadline-') else FLOOR
         self.lowat = 4096 if mode == 'pacing-lowat' else 0
         self.algorithm = mode.removeprefix('tcp-') if mode in ('tcp-cubic', 'tcp-reno', 'tcp-bbr') else None
+        if mode in STRATEGIES or self.hybrid:
+            self.actuator_lock = private_lock(self.control_directory/'pacing.lock')
         if mode in STRATEGIES:
-            self.actuator_lock = private_lock(output/'pacing.lock')
             floor = deadline_floor if mode == 'deadline-adaptive' else FLOOR
             self.controller = self.lib.fc_pacing_controller(STRATEGIES[mode], floor, CEILING, fallback, target_us)
             if not self.controller:
@@ -192,7 +198,7 @@ class PacingWorkload:
         self.previous_ecn.clear()
         self.previous_aqm.clear()
         self.receiver_previous = None
-        if self.rate == CEILING:
+        if self.rate == CEILING or getattr(self, 'hybrid', False):
             return
         if not self.sockets:
             self.rate = CEILING
@@ -262,7 +268,7 @@ class PacingWorkload:
         common = self.previous.keys() & previous.keys()
         acked = sum(max(0, self.previous[key]-previous[key]) for key in common)
         throughput = acked*10**9//(now-last) if last and now > last else 0
-        snapshot_path = self.output/'pacing-input.json'
+        snapshot_path = self.control_directory/'pacing-input.json'
         try:
             feed = read_json(snapshot_path, limit=8192)
         except (OSError, ValueError):
@@ -296,6 +302,23 @@ class PacingWorkload:
                 self.scope_stamp = stamp
             valid = (valid and verified_scope and requests >= 12 and not failures
                      and all(row['cap_bytes_s'] == self.rate for row in info))
+        if self.hybrid:
+            from hybrid_runtime import publish
+            caps = [r['cap_bytes_s'] for r in info] if len(info)==len(self.sockets) else []
+            command = feed.get('hybrid_action')
+            revision = scope.get('revision')
+            if (command and (not self.last_release or command['id'] != self.last_release['id'])
+                    and 0 <= now-command['id'] <= 2_500_000_000 and verified_scope and not transition and not failures
+                    and revision == command['revision'] and self.cohort_revision == command['cohort']
+                    and caps and caps == command['caps'] and all(cap == self.rate for cap in caps)
+                    and self.rate < CEILING):
+                if not self.timed_apply(CEILING, 'fallback'):
+                    raise RuntimeError('Hybrid V3 cap release was refused')
+                caps = [CEILING]*len(caps)
+                self.last_release = dict(id=command['id'], verified_ns=time.monotonic_ns())
+            publish(self.control_directory/'hybrid-sockets.json', dict(time_ns=time.monotonic_ns(), revision=revision,
+                    caps=caps, flows=[r['flow'] for r in info], cohort=self.cohort_revision,
+                    demand=queues>0, release=self.last_release))
         if self.mode.startswith('ecn-') or self.mode == 'integrated':
             current_ecn = {row['cookie']: row for row in info}
             aqm = feed.get('ecn_aqm', {})
@@ -308,6 +331,8 @@ class PacingWorkload:
                 scope_matches=self.mode != 'ecn-cake')
             if fresh:
                 self.previous_ecn, self.previous_aqm = current_ecn, aqm
+        if self.hybrid:
+            self.observed_cohort_revision = self.cohort_revision
         receiver = self.receiver_window(feed, transition=transition) if self.guarded else (0, 0, 0)
         if self.guarded:
             # Delivery is observed independently. Unsent bytes corroborate
@@ -441,12 +466,14 @@ class PacingWorkload:
                 for sock, _ in self.sockets.values():
                     if self.lib.fc_pacing_inspect_v2(sock.fileno(), values) or values[1] != self.rate:
                         rollback_ok = False
-                self.lib.fc_pacing_confirm(self.controller, False)
+                if self.controller:
+                    self.lib.fc_pacing_confirm(self.controller, False)
                 if not rollback_ok:
                     raise RuntimeError('socket group rollback could not be verified')
                 return False
             applied.append((flow, handle))
-        self.lib.fc_pacing_confirm(self.controller, True)
+        if self.controller:
+            self.lib.fc_pacing_confirm(self.controller, True)
         self.rate = rate
         self.actions += 1
         self.rollbacks += decision == 'rollback'
@@ -492,6 +519,7 @@ class PacingWorkload:
         if self.controller:
             self.lib.fc_pacing_delete_controller(self.controller)
             self.controller = None
+        if self.actuator_lock is not None:
             self.actuator_lock.close()
         if abandoned:
             raise RuntimeError('socket membership failed to detach before workload shutdown')

@@ -9,6 +9,7 @@ import os
 import random
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -301,7 +302,7 @@ def recent_receiver(path):
     if not records:
         return {}
     latest = json.loads(records[-1])
-    return dict(time_ns=round(latest['time']*NANO), bytes=sum(latest['bytes']))
+    return dict(time_ns=round(latest['time']*NANO), bytes=sum(latest['bytes']), flows=latest['bytes'])
 
 
 def trial(directory, m, rep, mode, seed=None):
@@ -323,6 +324,8 @@ def trial(directory, m, rep, mode, seed=None):
         cfg['observability']['max_sockets'] = 1024
     elif online:
         cfg['observability']['max_sockets'] = 1024
+    if mode == 'hybrid-v3':
+        cfg['adaptive']['background_floor_pct'] = m['hybrid_v3']['background_floor_pct']
     configured_reserve = ('static', 'pacing-hybrid', *PACING_HTB_MODES, *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:])
     if online or mode in configured_reserve:
         reserve = m['static_critical_pct']
@@ -333,7 +336,7 @@ def trial(directory, m, rep, mode, seed=None):
     if reserve is not None:
         cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
         cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
-    if mode in ('cake','ecn-cake'):
+    if mode in ('cake','ecn-cake','cake-diffserv'):
         cfg['policies']['default'] = cfg['policies']['fair']
     config = directory/'config.json'
     save(config,cfg)
@@ -415,10 +418,15 @@ def trial(directory, m, rep, mode, seed=None):
                 request('controller_shadow',strategy='slo')
             elif mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') or mode.startswith('slo'):
                 request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') else 'slo')
-            plan = directory/'workload.json'
+            control_dir = (Path(resources.enter_context(tempfile.TemporaryDirectory(
+                dir=RUNTIME, prefix='hybrid-v3-'))) if mode == 'hybrid-v3' else directory)
+            plan = control_dir/'workload.json'
+            receiver_log = control_dir/'receiver.jsonl'
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services,
                             server_address=('fd42:203::2' if workload.get('address_family')=='ipv6' else '10.203.0.2'))
+            if 'cake-diffserv' in m['modes']:
+                settings['dscp'] = dict(critical=46, interactive=34, standard=0, background=8)
             deadline_profile = m.get('deadline')
             pacing = deadline_profile or ecn_profile or any(mode in PACING_MODES for mode in m['modes'])
             if deadline_profile:
@@ -430,33 +438,45 @@ def trial(directory, m, rep, mode, seed=None):
                 settings['ecn_socket_algorithm'] = 'dctcp'
             if pacing:
                 settings['socket_pacing_mode'] = mode
+                if mode == 'hybrid-v3':
+                    settings['hybrid_control_directory'] = str(control_dir)
+                    settings['hybrid_cap'] = m['hybrid_v3']['initial_cap_bytes_s']
                 settings['pacing_trace'] = bool(set(m['modes']) & set(PACING_HTB_MODES))
                 if mode in ('integrated', 'pacing-guarded'):
                     settings['pacing_target_us'] = round(m['controller']['target_p99_ms']*1000)
                 settings['socket_shadows'] = m.get('socket_shadows', [])
-                pacing_lock = resources.enter_context(private_lock(directory/'pacing.lock'))
+                pacing_lock = resources.enter_context(private_lock(control_dir/'pacing.lock'))
             save(plan,settings)
             options = ['--duration',str(m['duration_seconds']), '--payload',str(workload['payload_bytes']),
                        '--streams',str(max(p['background_streams'] for p in workload['phases'])),
                        '--research-plan',plan]
-            server = worker(1, 'server', directory/'receiver.jsonl', options, sl)
+            server = worker(1, 'server', receiver_log, options, sl)
             await_ready(server,directory/'server.log')
             start = time.monotonic()+.5+workload.get('warmup_seconds', 0)
             end = start+m['duration_seconds']
             settings['start_monotonic'] = start
-            save(plan,settings)
+            save(plan, settings)
+            if mode == 'hybrid-v3':
+                save(directory/'workload.json', {key: item for key, item in settings.items()
+                                                if key != 'hybrid_control_directory'})
             client = worker(0, 'client', directory, options, cl)
             samples = []
             begin_ticks = cpu_ticks()
             generation = 0
-            def pacing_feedback(value, transition=False):
+            hybrid = None
+            if mode == 'hybrid-v3':
+                from hybrid_runtime import Coordinator, sockets
+                hybrid = Coordinator(directory, m['hybrid_v3'], round(m['controller']['target_p99_ms']*1000),
+                                     cfg['adaptive']['window_seconds'])
+
+            def pacing_feedback(value, transition=False, action=None, dry=False):
                 if not pacing:
                     return
                 row = dict(time_ns=time.monotonic_ns(), capacity_bytes_s=(expected_capacity or 0)*125,
                            backlog_bytes=root(value.get('tc', {})).get('backlog', 0),
                            class_active=value.get('state', {}).get('mode', 'off') != 'off',
                            transition=transition)
-                if mode in ('integrated', 'pacing-guarded'):
+                if mode in ('integrated', 'pacing-guarded', 'hybrid-v3'):
                     from nextgen_scope import feedback
                     row['integrated'] = feedback(
                         value.get('tc', {}), cfg['policies']['default']['classes'],
@@ -464,12 +484,16 @@ def trial(directory, m, rep, mode, seed=None):
                         generation=generation, sampled_ns=value.get('sample_ns'),
                         healthy=value.get('integrated_quality')
                         and value.get('state', {}).get('mode') == 'off',
-                        require_ecn=mode == 'integrated')
+                        require_ecn=mode == 'integrated',
+                        allocation=value.get('hybrid', {}).get('allocation'))
+                    if hybrid:
+                        row['integrated']['revision'] = value.get('hybrid', {}).get('revision')
+                        row['hybrid_action'] = action
                     if mode == 'pacing-guarded':
                         row['integrated']['background_ceiling'] = ((expected_capacity or 0)
                             * cfg['policies']['default']['classes']['background']['max_pct']//100*125)
                 if settings.get('pacing_trace') and not transition:
-                    row['receiver'] = recent_receiver(directory/'receiver.jsonl')
+                    row['receiver'] = recent_receiver(receiver_log)
                     row['sample_ns'] = value.get('sample_ns')
                     leaves = {q.get('parent'): q.get('backlog', 0)
                               for q in value.get('tc', {}).get('qdisc', []) if q.get('parent')}
@@ -481,12 +505,14 @@ def trial(directory, m, rep, mode, seed=None):
                                   if q.get('parent') == '1:20' or mode == 'ecn-cake' and q.get('root')), {})
                     row['ecn_aqm'] = aqm_counters(scope)
                     row['ecn_sample_ns'] = value.get('sample_ns')
-                with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.pacing-', delete=False) as stream:
+                if dry:
+                    return row
+                with tempfile.NamedTemporaryFile(mode='w', dir=control_dir, prefix='.pacing-', delete=False) as stream:
                     temporary = Path(stream.name)
                     try:
                         json.dump(row, stream)
                         stream.close()
-                        temporary.replace(directory/'pacing-input.json')
+                        temporary.replace(control_dir/'pacing-input.json')
                     finally:
                         temporary.unlink(missing_ok=True)
 
@@ -515,7 +541,21 @@ def trial(directory, m, rep, mode, seed=None):
                     timing['release_begin_ns'] = time.monotonic_ns()
                     fcntl.flock(pacing_lock, fcntl.LOCK_UN)
 
-            def sample():
+            def commit_hybrid(action, revision, stamp, expected_sockets):
+                with class_update():
+                    if expected_sockets is not None and sockets(control_dir) != expected_sockets:
+                        hybrid.record('stale_socket_snapshot', action=action)
+                        return None
+                    try:
+                        return request('hybrid_apply', action=action, revision=revision,
+                                       capacity_kbit=expected_capacity, sample_ns=stamp)
+                    except ValueError as error:
+                        if action == 'shift' and 'stale Hybrid V3' in str(error):
+                            hybrid.record('stale_class_snapshot', action=action)
+                            return None
+                        raise
+
+            def sample(allow=True):
                 begin = time.monotonic_ns()
                 value = request('research_sample', **({'deadline': True} if deadline_profile else {}))
                 if mode == 'online-select':
@@ -523,7 +563,23 @@ def trial(directory, m, rep, mode, seed=None):
                     value['online_strategy'] = {key: status[key] for key in ('state','active','switches','regressions','shadow')}
                 value['runner_ipc_ns'] = time.monotonic_ns()-begin
                 samples.append(value)
-                pacing_feedback(value)
+                action = None
+                if hybrid:
+                    preview = pacing_feedback(value, dry=True)
+                    before_generation = generation
+                    now = time.monotonic()
+                    boundary = min((start+fault['at_seconds'] for fault in m['faults']
+                                    if start+fault['at_seconds'] > now), default=end)
+                    action = hybrid.tick(value, preview['integrated'], preview.get('receiver', {}),
+                                         sockets(control_dir), expected_capacity, commit_hybrid,
+                                         allow=allow, start_new=boundary-now >= hybrid.evaluation_seconds)
+                    # A class commit invalidates this sample. Leave the invalidation
+                    # frame in place until the daemon publishes its new readback.
+                    if generation != before_generation:
+                        timeline.write(json.dumps(value)+'\n')
+                        timeline.flush()
+                        return
+                pacing_feedback(value, action=action)
                 timeline.write(json.dumps(value)+'\n')
                 timeline.flush()
             if version2:
@@ -654,7 +710,7 @@ def trial(directory, m, rep, mode, seed=None):
                         sample()
                         next_sample += 1
                     time.sleep(max(0,deadline-time.monotonic()))
-                    sample()
+                    sample(allow=False)
                     if version2:
                         snapshot('measurement_end' if len(fault)==1 else 'pre_transition')
                     if len(fault)==1:
@@ -669,6 +725,8 @@ def trial(directory, m, rep, mode, seed=None):
                         continue
                     network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
                     link_up = fault.get('link_up',link_up)
+                    if hybrid:
+                        hybrid.reset()
                     with class_update() as lock_timing:
                         begun = time.monotonic_ns()
                         applied = request('research_conditions',network=network,mode=mode,
@@ -692,6 +750,21 @@ def trial(directory, m, rep, mode, seed=None):
             if code not in (0,2) or server.poll() is not None:
                 raise RuntimeError(f'workload infrastructure failed, exit={code}')
             time.sleep(.15)
+            if hybrid:
+                stop(server)
+                for artifact in (receiver_log, control_dir/'hybrid-sockets.json'):
+                    if not artifact.exists():
+                        continue
+                    with artifact.open('rb') as source, tempfile.NamedTemporaryFile(
+                            dir=directory, prefix='.evidence-', delete=False) as stream:
+                        temporary = Path(stream.name)
+                        try:
+                            shutil.copyfileobj(source, stream)
+                            stream.close()
+                            temporary.chmod(0o644)
+                            temporary.replace(directory/artifact.name)
+                        finally:
+                            temporary.unlink(missing_ok=True)
             if mode == 'ecn-dctcp':
                 records = (directory/'receiver.jsonl').read_text().splitlines()
                 if not records or json.loads(records[-1])['algorithm_fallbacks']:
@@ -705,6 +778,8 @@ def trial(directory, m, rep, mode, seed=None):
                 raise RuntimeError(f'namespace holder identity changed: expected {[sender,receiver]}, got {final_inspect["namespaces"]}')
             result = summarize(directory,m,rep,mode,samples,history,start,end,
                                tuple(b-a for a,b in zip(begin_ticks,finish_ticks)))
+            if hybrid:
+                result['hybrid_v3'] = dict(actions=hybrid.actions, rollbacks=hybrid.rollbacks, frozen=hybrid.frozen)
             if online_status:
                 result['online_strategy'] = {key: online_status[key] for key in ('switches','regressions','shadow_evaluations','shadow_cpu_ns')}
             if pacing:
@@ -723,6 +798,11 @@ def trial(directory, m, rep, mode, seed=None):
                 measurement = snapshots[1:]
                 result['observed_rate_windows'] = [v2.observed(a, b, a['configured_kbit'])
                     for a, b in zip(measurement[::2], measurement[1::2])]
+                if mode == 'cake-diffserv':
+                    tins = root(measurement[-1]['tc']).get('tins', [])
+                    if len(tins) != 4 or not all(tins[i].get('sent_packets', 0) > 0 for i in (0, 3)):
+                        raise RuntimeError('CAKE DiffServ bulk and voice tins did not both transmit')
+                    result['cake_diffserv_tins'] = tins
                 result['warnings'] = v2.noise(host_before, host_after, metrics, result['observed_rate_windows'])
             save(directory/'result.json',result)
             return result

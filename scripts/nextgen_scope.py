@@ -2,10 +2,13 @@
 from service_config import CLASSES
 
 
-def feedback(tc, configured, capacity_kbit, initial_capacity_kbit, *, generation, sampled_ns, healthy, require_ecn=True):
+def feedback(tc, configured, capacity_kbit, initial_capacity_kbit, *, generation, sampled_ns, healthy, require_ecn=True, allocation=None):
     expected = {f'1:{CLASSES[name]}': (capacity_kbit*entry['min_pct']//100*125,
                                        capacity_kbit*entry['max_pct']//100*125)
                 for name, entry in configured.items()}
+    if allocation is not None:
+        expected = {f'1:{CLASSES[name]}': (rate*125, ceil*125)
+                    for name, (rate, ceil) in allocation.items()}
     expected['1:1'] = (capacity_kbit*125, capacity_kbit*125)
     actual = {row['handle']: (row.get('rate'), row.get('ceil'))
               for row in tc.get('class', []) if row.get('class') == 'htb'}
@@ -20,6 +23,12 @@ def feedback(tc, configured, capacity_kbit, initial_capacity_kbit, *, generation
     headers, rules = set(), set()
     valid = bool(healthy and capacity_kbit and actual == expected and root == [('htb', '1:')]
                  and leaves == expected_leaves and (not require_ecn or background.get('options', {}).get('ecn')))
+    if valid and allocation is not None:
+        expected_children = {f'1:{CLASSES[name]}': ('1:1', entry['priority'])
+                             for name, entry in configured.items()}
+        children = {row['handle']: (row.get('parent'), row.get('prio'))
+                    for row in tc['class'] if row.get('class') == 'htb' and row['handle'] != '1:1'}
+        valid = children == expected_children
     if valid:
         for row in tc.get('filter', []):
             if row.get('kind') != 'flower' or row.get('parent') != '1:' or row.get('chain') != 0:

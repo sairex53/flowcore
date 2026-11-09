@@ -161,11 +161,25 @@ async def client(output, duration, rate, payload, request_port, background_port,
         pacing = PacingWorkload(output, research['socket_pacing_mode'], research.get('deadline_pacing_floor'),
                                 research.get('socket_shadows', ()),
                                 target_us=research.get('pacing_target_us', SLO_TARGET),
-                                trace=research.get('pacing_trace', False))
+                                trace=research.get('pacing_trace', False), hybrid_cap=research.get('hybrid_cap', 0),
+                                control_directory=Path(research['hybrid_control_directory'])
+                                if 'hybrid_control_directory' in research else None)
     admission = None
     if research and 'deadline_admission' in research:
         from deadline_workload import AdmissionWorkload
         admission = AdmissionWorkload(output, research['deadline_admission'], research['deadline_mode'], deadline_ms, payload)
+
+    dscp = research.get('dscp') if research else None
+
+    def mark(sock, traffic_class):
+        if dscp is None:
+            return
+        level, option = ((socket.IPPROTO_IPV6, socket.IPV6_TCLASS) if sock.family == socket.AF_INET6
+                         else (socket.IPPROTO_IP, socket.IP_TOS))
+        value = dscp[traffic_class]<<2
+        sock.setsockopt(level, option, (sock.getsockopt(level, option)&3)|value)
+        if sock.getsockopt(level, option)&252 != value:
+            raise RuntimeError('workload DSCP readback mismatch')
 
     async def background(flow):
         budget = research['bulk_bytes_per_stream'] if research else 0
@@ -177,7 +191,9 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
                 algorithm = socket_algorithm or (pacing.algorithm if pacing else None)
                 _, writer = await research_connect(host, background_port, algorithm)
-                writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
+                sock = writer.get_extra_info('socket')
+                mark(sock, 'background')
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
                 if pacing:
                     await pacing.membership(pacing.add, flow, writer.get_extra_info('socket'))
@@ -247,6 +263,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
                     host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
                     reader, writer = await research_connect(host, port, socket_algorithm)
                     direct_socket = writer.get_extra_info('socket')
+                    mark(direct_socket, traffic_class)
                     direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     network_begin_ns = time.monotonic_ns() if admission else None
                     writer.write(request_data)

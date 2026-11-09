@@ -1,5 +1,6 @@
 // Private native bridge for the Research Lab workload, not a public ABI.
 #include "flowcore/socket_pacing.hpp"
+#include "flowcore/hybrid.hpp"
 
 #include <cerrno>
 #include <memory>
@@ -7,6 +8,18 @@
 
 namespace p = flowcore::v2::pacing;
 extern "C" {
+
+void fc_hybrid_plan_v1(const std::uint64_t* in, std::uint64_t* out) noexcept {
+    const auto plan = flowcore::hybrid::assess({in[0], in[1], in[2], in[3], in[4],
+        in[5], in[6], in[7], in[8], in[9], in[10], in[11], in[12], in[13],
+        in[14], in[15]!=0, in[16]!=0});
+    out[0] = static_cast<unsigned>(plan.limit);
+    out[1] = static_cast<unsigned>(plan.action);
+    out[2] = plan.headroom;
+    out[3] = plan.effective_upper;
+    out[4] = plan.step;
+}
+
 
 int fc_pacing_capabilities(int* out) noexcept {
     auto result = p::probe();

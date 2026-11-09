@@ -108,7 +108,7 @@ def verify(snapshot, mode, expected_capacity, configured_ports):
                     raise RuntimeError(f'{device} offload readback disagrees with experiment')
     tc = snapshot['tc']
     qdisc, reverse = root(tc['qdisc']), root(tc['receiver_qdisc'])
-    want = 'noqueue' if mode == 'linux-default' else 'cake' if mode in ('cake','ecn-cake') else 'htb'
+    want = 'noqueue' if mode == 'linux-default' else 'cake' if mode in ('cake','ecn-cake','cake-diffserv') else 'htb'
     if qdisc['kind'] != want or reverse['kind'] != ('noqueue' if want == 'noqueue' else 'netem'):
         raise RuntimeError('unexpected sender or receiver root qdisc')
     filters = {(row['protocol'], opt.get('classid'), opt['keys'].get('dst_port'))
@@ -138,7 +138,8 @@ def verify(snapshot, mode, expected_capacity, configured_ports):
     elif want == 'cake':
         options = qdisc['options']
         readback = options['bandwidth']/125
-        if (readback != expected_capacity or options['diffserv'] != 'besteffort'
+        diffserv = 'diffserv4' if mode == 'cake-diffserv' else 'besteffort'
+        if (readback != expected_capacity or options['diffserv'] != diffserv
                 or options['flowmode'] != 'flows' or options.get('ingress') or filters or rates or leaf):
             raise RuntimeError('CAKE readback disagrees with baseline')
     elif rates or filters or leaf:

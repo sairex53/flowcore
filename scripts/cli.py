@@ -133,6 +133,10 @@ def main():
     capabilities = nextgen_actions.add_parser("capabilities")
     capabilities.add_argument("--fabric-config", type=Path)
     nextgen_actions.add_parser("report").add_argument("summary", type=Path)
+    hybrid = commands.add_parser('hybrid', help='plan and inspect Hybrid V3 laboratory decisions')
+    hybrid_actions = hybrid.add_subparsers(dest='action', required=True)
+    hybrid_actions.add_parser('plan').add_argument('frame', type=Path)
+    hybrid_actions.add_parser('inspect').add_argument('journal', type=Path)
     args = parser.parse_args()
     watch = getattr(args, 'watch', None)
     if watch is not None and not .1 <= watch <= 60:
@@ -140,6 +144,11 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command == 'hybrid':
+            from hybrid_runtime import inspect, plan_file
+            result = plan_file(args.frame) if args.action == 'plan' else inspect(args.journal)
+            print(json.dumps(result, indent=2))
+            return 0
         if args.command == "nextgen":
             if args.action == "report":
                 from nextgen_report import report

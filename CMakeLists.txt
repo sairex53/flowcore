@@ -332,7 +332,7 @@ set_tests_properties(scheduler_research PROPERTIES TIMEOUT 15)
 install(FILES KERNEL_SCHEDULER_DESIGN.md SCHEDULER_PROTOTYPE.md SCHEDULER_BENCHMARKS.md
     KERNEL_UPSTREAM_PLAN.md DESTINATION "${FLOWCORE_DATA}/docs")
 
-add_library(flowcore_pacing_lab SHARED src/pacing_lab_c.cpp)
+add_library(flowcore_pacing_lab SHARED src/pacing_lab_c.cpp src/hybrid.cpp)
 target_link_libraries(flowcore_pacing_lab PRIVATE flowcore_sdk)
 target_compile_options(flowcore_pacing_lab PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_pacing_lab LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
@@ -373,4 +373,10 @@ install(FILES NEXTGEN_ARCHITECTURE.md INTEGRATED_ENGINE.md NEXTGEN_BENCHMARKS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES PACING_ROOT_CAUSE_V2.md PACING_REMEDIATION.md PACING_REGRESSION_RESULTS.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME hybrid_v3_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/hybrid_test.py")
+set_tests_properties(hybrid_v3_unit PROPERTIES
+    ENVIRONMENT "FLOWCORE_HYBRID_TEST_BUILD=$<TARGET_FILE_DIR:flowcore_pacing_lab>")
+install(FILES HYBRID_CONTROLLER_V3.md ACTUATOR_COORDINATION.md HYBRID_V3_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")

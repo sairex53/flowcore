@@ -1,4 +1,5 @@
 """Summarize integrated control costs with measured benchmark outputs."""
+from collections import Counter
 import json
 from statistics import median
 
@@ -28,12 +29,24 @@ def report(path):
         cohort_times = []
         ipc = []
         observer = []
+        hybrid_events = Counter()
+        hybrid_decisions = []
         for run in rows:
             directory = path.parent/run['artifact']
             timeline = read_records(directory/'timeline.jsonl')
             ipc.extend(sample['runner_ipc_ns']/1e6 for sample in timeline if 'runner_ipc_ns' in sample)
             observer.extend(sample['telemetry_timing']['observer_ns']/1e6
                             for sample in timeline if 'observer_ns' in sample.get('telemetry_timing', {}))
+            if mode == 'hybrid-v3':
+                for row in read_records(directory/'hybrid-v3.jsonl'):
+                    if row['event'] == 'verified':
+                        hybrid_events[row['action']] += 1
+                    if row['event'] == 'outcome' and row['benefit_observed']:
+                        hybrid_events['useful_observation'] += 1
+                    if row['event'] == 'restored_static':
+                        hybrid_events['restored_static'] += 1
+                    if row['event'] == 'plan':
+                        hybrid_decisions.append(row['decision_cpu_ns']/1e3)
             if mode != 'integrated':
                 continue
             cohort = read_records(directory/'socket-cohort.jsonl')
@@ -77,6 +90,11 @@ def report(path):
             transition_compensation_samples=len(times),
             transition_compensation_median_ms=median(times) if times else None,
         )
+        if mode == 'hybrid-v3':
+            stats['hybrid_coordination'] = dict(verified_releases=hybrid_events['release_socket'],
+                verified_class_probes=hybrid_events['shift_class'], static_restores=hybrid_events['restored_static'],
+                useful_observations=hybrid_events['useful_observation'],
+                planner_call_cpu_median_us=median(hybrid_decisions) if hybrid_decisions else None)
     return dict(schema=1, experiment_id=summary.get('experiment_id'), status=summary['status'],
                 environment=summary['environment'], by_mode=by_mode,
                 comparisons={mode: compare_v2(summary, summary, baseline, mode)

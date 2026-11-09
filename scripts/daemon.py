@@ -71,12 +71,15 @@ class Service:
         self.research_step_done = False
         from strategy_engine import Engine
         self.strategy_engine = Engine(self)
+        from hybrid_authority import Authority
+        self.hybrid_authority = Authority(self)
 
     def log(self, event, **fields):
         if self.config['log_level'] == 'info' or event == 'error':
             print(json.dumps(dict(time=time.time(), event=event, **fields)), flush=True)
 
     def close_lab(self):
+        self.hybrid_authority.invalidate()
         self.strategy_engine.detach()
         self.diagnostics.lab.reset('lab closed or replaced')
         self.incident.reset()
@@ -189,7 +192,13 @@ class Service:
         if not isinstance(op,str):
             raise ValueError('expected operation name')
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
-        if self.research_mode in ('integrated', 'pacing-guarded') and op in ('controller_start', 'strategy_activate'):
+        if op == 'hybrid_apply':
+            return self.hybrid_authority.command(request, pid)
+        if self.research_mode == 'hybrid-v3' and self.lab and op in ('lab_up', 'lab_configure', 'policy_apply',
+                'ops_reload', 'diagnostic_intervention', 'platform_apply_intent', 'platform_container_attach',
+                'platform_workload_attach', 'controller_shadow', 'controller_observe', 'controller_fallback', 'controller_stop'):
+            raise ValueError('Hybrid V3 lab owns policy until teardown')
+        if self.research_mode in ('integrated', 'pacing-guarded', 'hybrid-v3') and op in ('controller_start', 'strategy_activate'):
             raise ValueError('integrated research reserves adaptive authority for owned sockets')
         if op.startswith('strategy_'):
             return self.strategy_engine.command(request)
@@ -299,6 +308,11 @@ class Service:
             if not self.research:
                 raise ValueError('research commands require a research daemon')
             if op == 'research_conditions':
+                hybrid = request.get('mode') == 'hybrid-v3' or self.research_mode == 'hybrid-v3'
+                if hybrid:
+                    self.hybrid_authority.authorize(pid)
+                    if self.hybrid_authority.boosted:
+                        self.hybrid_authority.change(False)
                 if self.strategy_engine.experiment:
                     outcome = self.strategy_engine.rollback('scheduled_network_change')
                     if outcome['state'] == 'FAULTED':
@@ -309,6 +323,8 @@ class Service:
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                     self.incident.recorder.record('fault', time.monotonic_ns(), action='research_conditions', status='failed')
                     raise
+                if hybrid:
+                    self.hybrid_authority.revision += 1
                 self.incident.recorder.record('fault', time.monotonic_ns(), action='research_conditions', status='applied',
                                               capacity=self.profile['bandwidth_kbit'], link_up=self.research_link_up)
                 return applied
@@ -338,7 +354,13 @@ class Service:
             if request.get('deadline') is True:
                 from deadline_runtime import evidence
                 extras['deadline_evidence'] = evidence(self, time.monotonic_ns())
-            if self.research_mode in ('integrated', 'pacing-guarded'):
+            hybrid = self.research_mode == 'hybrid-v3'
+            window = self.controller.cfg['window_seconds']
+            if hybrid:
+                extras['hybrid'] = self.hybrid_authority.status()
+                end = view['time_ns']//1_000_000_000*1_000_000_000
+                extras['control_bounds_ns'] = [end-window*1_000_000_000, end]
+            if self.research_mode in ('integrated', 'pacing-guarded', 'hybrid-v3'):
                 extras['integrated_quality'] = bool(self.research_link_up and not self.error
                     and not self.observer.errors and not self.observer.truncated)
             return dict(time_ns=view['time_ns'], tc=self.telemetry, overhead=view['overhead'],
@@ -346,7 +368,7 @@ class Service:
                         backend=view['bpf'], state=self.controller.status(),
                         sample_ns=self.observer.sampled_ns,
                         control_window=self.observer.window(view['time_ns'],
-                            self.controller.cfg['window_seconds'])['application'],
+                            window, complete=hybrid)['application'],
                         buckets={str(tick): dict(bucket.counters)
                                  for tick,bucket in self.observer.windows.buckets.items()
                                  if tick >= view['time_ns']//1000000000-5}, **extras)
@@ -669,6 +691,9 @@ def main():
                     while not stopped:
                         if reload_pending:
                             reload_pending=False
+                            if service.research_mode == 'hybrid-v3' and service.lab:
+                                service.log('error', detail='reload blocked during Hybrid V3')
+                                continue
                             if service.strategy_engine.experiment:
                                 outcome = service.strategy_engine.rollback('configuration_reload')
                                 if outcome['state'] == 'FAULTED':
