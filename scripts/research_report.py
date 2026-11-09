@@ -1,5 +1,6 @@
 """Portable HTML, CSV and JSON reports from recorded experiments."""
 import csv
+import hashlib
 import html
 import io
 import json
@@ -7,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from research_stats import METRICS, aggregate, compare, investigations, load_summary, value
+from benchmark import ROOT
 from workload import percentile
 
 COLORS = ('#2563eb','#15803d','#7c3aed','#b45309','#be185d')
@@ -178,19 +180,37 @@ def report(summary_path, baseline=None):
             if mode in data['manifest']['modes']:
                 comparisons.append(compare(data,data,'static',mode))
     outcomes = {comparison['outcome'] for comparison in comparisons if 'outcome' in comparison}
-    outcome = ('INVALID EXPERIMENT' if any(not row['valid'] for row in data['runs']) or
-               'INVALID EXPERIMENT' in outcomes else 'REGRESSION' if 'REGRESSION' in outcomes
-               else 'PASS' if outcomes == {'PASS'} else 'INCONCLUSIVE')
+    has_infra = any(row.get('measurement',{}).get('state') == 'INVALID_INFRASTRUCTURE'
+                    or row.get('artifact_integrity',{}).get('verified') is False for row in data['runs'])
+    has_workload_failure = any(row.get('measurement',{}).get('state') == 'FAILED_WORKLOAD'
+                               for row in data['runs'])
+    outcome = ('INVALID EXPERIMENT' if has_infra or 'INVALID EXPERIMENT' in outcomes else
+               'FAILED_WORKLOAD' if has_workload_failure else 'REGRESSION' if 'REGRESSION' in outcomes
+               else 'PASS' if outcomes and outcomes == {'PASS'} else 'INCONCLUSIVE')
+    state = ('INVALID_INFRASTRUCTURE' if outcome == 'INVALID EXPERIMENT' else
+             'FAILED_WORKLOAD' if outcome == 'FAILED_WORKLOAD' else
+             'COMPLETED_WITH_REGRESSION' if outcome == 'REGRESSION' else
+             'VALID' if outcome == 'PASS' else 'INCONCLUSIVE')
     flags = investigations(data) if data['version']>=2 else {}
-    artifact = dict(version=data['version'], outcome=outcome, investigations=flags, environment=data['environment'],manifest=data['manifest'],
+    analysis_sources = (ROOT/'scripts'/'measurement.py', ROOT/'scripts'/'research_stats.py',
+                        ROOT/'scripts'/'research_report.py', ROOT/'scripts'/'research_manifest.py')
+    analysis_hashes = {source.name:hashlib.sha256(source.read_bytes()).hexdigest()
+                       for source in analysis_sources}
+    artifact = dict(version=data['version'], outcome=outcome, state=state,
+                    analysis_version=3 if data['manifest'].get('integrity') else data['environment'].get('analysis_version'),
+                    analysis_source_sha256=analysis_hashes,
+                    experiment_manifest_hash_verified=data.get('experiment_manifest_hash_verified'),
+                    investigations=flags, environment=data['environment'],manifest=data['manifest'],
                     aggregate=stats,regression=comparisons,runs=data['runs'],raw_summary=summary_path.name)
     write_artifact(path/'report.json',json.dumps(artifact,indent=2,allow_nan=False)+'\n')
     stream = io.StringIO()
     writer = csv.writer(stream)
-    writer.writerow(['mode','repetition','valid','offered','completed','failed',*METRICS,'artifact'])
+    writer.writerow(['mode','repetition','valid','measurement_state','offered','completed','failed',*METRICS,'artifact','evidence_sha256'])
     for row in data['runs']:
-        writer.writerow([*(row.get(key) for key in ('mode','repetition','valid','offered','completed','failed')),
-                         *(value(row,key) for key in METRICS),row['artifact']])
+        writer.writerow([row.get(key) for key in ('mode','repetition','valid')] +
+                         [row.get('measurement',{}).get('state')] +
+                         [row.get(key) for key in ('offered','completed','failed')] +
+                         [value(row,key) for key in METRICS] + [row['artifact'],row.get('evidence_sha256')])
     write_artifact(path/'report.csv',stream.getvalue())
     if data['version'] >= 2:
         stream = io.StringIO()
@@ -217,7 +237,7 @@ def report(summary_path, baseline=None):
                   f'<td>{text(item.get("simultaneous_median_ci", item.get("adjusted_p")))}</td><td>{item["status"]}</td></tr>'
                   for result in comparisons for item in result['findings'])
     details = ''.join(run_charts(path,row) if row['valid'] else
-                      f'<p>{html.escape(row["artifact"])}: {html.escape(row["error"])}</p>' for row in data['runs'])
+                      f'<p>{html.escape(row["artifact"])} · {html.escape(row.get("measurement",{}).get("state","INVALID"))}: {html.escape(row.get("error","; ".join(i.get("code","issue") for i in row.get("measurement",{}).get("issues",[]))))}</p>' for row in data['runs'])
     flags_html = ''.join(f'<li>{html.escape(name)} · {html.escape("; ".join(notes))}</li>'
                          for name, notes in flags.items())
     extra_links = (' · <a href="aggregate.csv">Aggregate CSV</a> · <a href="reproduce.sh">Reproduction command</a>'
@@ -231,8 +251,8 @@ summary{{cursor:pointer;font-weight:650}}svg{{width:100%;max-width:100%;font-siz
 .charts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:12px}}.legend{{font-size:12px}}
 pre{{white-space:pre-wrap}}a{{color:#1d4ed8}}</style><h1>FLOWCORE Research Lab</h1>
 <p>{text(data['environment']['kernel'])} · {text(data['environment']['architecture'])} · Git {text(data['environment']['git_commit'])}</p>
-<p>Outcome {outcome}. Per-run medians below. Request P99 is conditional on success. Confidence intervals and variance are in JSON.</p>
-<p><a href="report.json">JSON</a> · <a href="report.csv">CSV</a> · <a href="experiment.json">Replay manifest</a>{extra_links}</p>
+<p>Outcome {outcome} · state {state}. Per-run medians below. Request P99 is conditional on success. Confidence intervals and variance are in JSON.</p>
+<p><a href="report.json">JSON</a> · <a href="report.csv">CSV</a> · <a href="experiment.json">Replay manifest</a>{' · <code>flowcore bench verify summary.json</code> checks every run artifact' if data['manifest'].get('integrity') else ''}{extra_links}</p>
 <table><thead><tr><th>Mode</th><th>Valid</th><th>P99 ms</th><th>Total Mbit/s</th><th>UDP Mbit/s</th><th>Jain</th><th>CPU s</th><th>Adjustments/min</th><th>Failure ratio</th><th>Deadline attainment</th></tr></thead><tbody>{table}</tbody></table>
 {comparison_chart}<h2>Run-level regression checks</h2><table><tr><th>Pair</th><th>Metric</th><th>Runs</th><th>Median change</th><th>Interval or adjusted p</th><th>Result</th></tr>{reg}</table>
 <h2>Investigation flags</h2><ul>{flags_html}</ul>

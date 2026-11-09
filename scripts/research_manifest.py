@@ -43,7 +43,7 @@ def validate(value):
     v3 = version == 3
     fields = ('version', 'topology', 'network', 'workload', 'duration_seconds', 'repetitions',
               'seed', 'modes', 'static_critical_pct', 'controller', 'faults', 'regression')
-    optional = tuple(key for key in ('ecn', 'deadline', 'online', 'socket_shadows', 'hybrid_v3') if key in value)
+    optional = tuple(key for key in ('ecn', 'deadline', 'online', 'socket_shadows', 'hybrid_v3', 'integrity') if key in value)
     keys(value, fields + (('gates',) if v2 else ()) + (('stages', 'events') if v3 else ()) + optional)
     number(version, 1, 3, True)
     if value['topology'] != 'veth-pair':
@@ -55,6 +55,16 @@ def validate(value):
     modes = value['modes']
     if not isinstance(modes, list) or not modes or any(not isinstance(mode, str) or mode not in (V2_MODES if v2 else LEGACY_MODES) for mode in modes) or len(set(modes)) != len(modes):
         raise ValueError('modes must be unique supported comparisons')
+    integrity = value.get('integrity')
+    closed = False
+    if 'integrity' in value:
+        from measurement import profile as measurement_profile
+        integrity = measurement_profile(integrity)
+        if not v2:
+            raise ValueError('measurement integrity requires a version 2 or 3 lab manifest')
+        if integrity['self_test'] != 'none' and (len(modes)!=1 or value['repetitions']!=1):
+            raise ValueError('measurement fault injection requires one isolated trial')
+        closed = integrity['load']=='closed'
     if ('hybrid-v3' in modes) != ('hybrid_v3' in value):
         raise ValueError('hybrid-v3 requires its explicit laboratory policy')
     if 'hybrid_v3' in value:
@@ -167,8 +177,12 @@ def validate(value):
         raise ValueError('CAKE DiffServ experiments require marked critical requests and background TCP')
     if v3 and any(phase['udp_streams'] for phase in phases) and not workload['udp_kbit_per_stream']:
         raise ValueError('UDP background streams require a positive pacing rate')
-    if v2 and not any(phase['requests_per_second'] for phase in phases):
-        raise ValueError('version 2 requires an offered request cohort')
+    if closed:
+        if (integrity['concurrency'] > workload['max_inflight'] or
+                any(phase['requests_per_second'] for phase in phases)):
+            raise ValueError('closed loop requires bounded concurrency and zero scheduled request rates')
+    elif v2 and not any(phase['requests_per_second'] for phase in phases):
+        raise ValueError('open loop requires an offered request cohort')
     if total != value['duration_seconds']:
         raise ValueError('workload phase durations must sum to experiment duration')
     controller = value['controller']

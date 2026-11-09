@@ -32,6 +32,7 @@ def add_commands(commands):
     tuning = bench.add_parser('tune-static')
     for name in ('pilot', 'evaluation', 'output'):
         tuning.add_argument(name, type=Path)
+    bench.add_parser('verify', help='verify checksums for an integrity-enabled experiment summary').add_argument('summary',type=Path)
     render = bench.add_parser('report')
     render.add_argument('summary',type=Path)
     render.add_argument('--baseline',type=Path)
@@ -122,11 +123,19 @@ def dispatch(args):
             from research_soak import run_soak
             return run_soak(manifest,args.cycles,mode,args.max_minutes,
                             args.max_rss_growth_mb,args.max_fd_growth,args.max_bpf_growth),0
+    if action=='verify':
+        data = load_summary(args.summary)
+        if not data['manifest'].get('integrity'):
+            raise ValueError('summary does not contain Measurement Integrity V3 artifacts')
+        rows = [dict(artifact=row['artifact'], **row.get('artifact_integrity',dict(verified=False)))
+                for row in data['runs']]
+        valid = all(row.get('verified') for row in rows)
+        return dict(summary=str(args.summary),verified=valid,runs=rows), 0 if valid else 2
     if action=='compare':
         baseline = load_summary(args.baseline)
         candidate = load_summary(args.candidate)
         result = compare(baseline,candidate,args.baseline_mode,args.candidate_mode)
-        return result, (2 if result.get('outcome')=='INVALID EXPERIMENT' else
+        return result, (2 if result.get('outcome') in ('INVALID EXPERIMENT','FAILED_WORKLOAD') else
                         int(result.get('outcome')=='REGRESSION' or
                             any(item['status']=='confirmed_regression' for item in result['findings'])))
     if action=='tune-static':
@@ -154,5 +163,6 @@ def dispatch(args):
             rendered = json.loads((output/'report.json').read_text())
             outputs.append(dict(directory=str(output),report=str(page),outcome=rendered['outcome'],
                 valid=sum(r['valid'] for r in data['runs']),invalid=sum(not r['valid'] for r in data['runs'])))
-    return dict(experiments=outputs), (2 if any(item['outcome']=='INVALID EXPERIMENT' for item in outputs)
+    return dict(experiments=outputs), (2 if any(item['outcome'] in ('INVALID EXPERIMENT','FAILED_WORKLOAD')
+                                                   for item in outputs)
         else int(any(item['outcome']=='REGRESSION' for item in outputs)))

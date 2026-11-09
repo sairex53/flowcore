@@ -42,7 +42,8 @@ def host_sample():
         if raw is not None:
             pressures[resource] = {line.split()[0]: int(line.split('total=')[1])
                                    for line in raw.splitlines()}
-    return dict(time_ns=time.monotonic_ns(), cpu_ticks=list(map(int, ticks)),
+    runnable = Path('/proc/loadavg').read_text().split()[3].split('/')[0]
+    return dict(time_ns=time.monotonic_ns(), cpu_ticks=list(map(int, ticks)), runnable_tasks=int(runnable),
                 load_average=os.getloadavg(), pressure_total_us=pressures)
 
 

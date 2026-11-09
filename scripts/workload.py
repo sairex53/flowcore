@@ -3,8 +3,10 @@
 import argparse
 import asyncio
 import csv
+from contextlib import ExitStack
 import json
 import math
+import os
 import random
 import socket
 import struct
@@ -136,7 +138,13 @@ async def server(output, payload, request_port, background_port, streams, udp_po
 
 
 async def client(output, duration, rate, payload, request_port, background_port, streams,
-                 service=None, deadline_ms=None, rates=None, udp_port=9002, research=None):
+                 service=None, deadline_ms=None, rates=None, udp_port=9002, research=None, timing_stream=None):
+    integrity = research.get('integrity') if research else None
+    timing = None
+    if integrity:
+        from measurement import MAX_REQUESTS, TIMING_FIELDS, process_delta, process_sample
+        timing = csv.writer(timing_stream)
+        timing.writerow(TIMING_FIELDS)
     request_data = b'Q' * payload
     services = research.get('services', {}) if research else {}
     if research:
@@ -237,61 +245,83 @@ async def client(output, duration, rate, payload, request_port, background_port,
                     if writer:
                         writer.transport.abort()
 
-    async def request(index, scheduled, traffic_class, name):
-        reporter = reporters.get(traffic_class)
-        dispatch_lag_ms = (time.monotonic() - scheduled) * 1000
-        port = research['ports'][traffic_class] if research else request_port
-        writer = None
-        outcome = 'ok'
-        direct_socket = None
-        network_begin_ns = None
-        budget = admission.budget_ms(index) if admission else deadline_ms
-        advice = ''
-        if admission:
-            advice = admission.admission(scheduled, index, traffic_class)['decision']
-            if admission.gating:
-                if advice == 'DEFER':
-                    await asyncio.sleep(admission.profile['defer_us']/1e6)
-                    advice = admission.admission(scheduled, index, traffic_class, first=False)['decision']
-                outcome = {'REJECT_INFEASIBLE': 'admission_rejected', 'DEFER': 'admission_deferred'}.get(advice, 'ok')
+    async def request(index, scheduled, traffic_class, name, released_ns=None, scheduled_ns=None):
+        nonlocal active_requests, peak_inflight
+        active_requests += 1
+        peak_inflight = max(peak_inflight, active_requests)
         try:
-            if outcome == 'ok':
-                remaining = 5 - (time.monotonic() - scheduled)
-                if remaining <= 0:
-                    raise TimeoutError('late request')
-                async with asyncio.timeout(remaining):
-                    host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
-                    reader, writer = await research_connect(host, port, socket_algorithm)
-                    direct_socket = writer.get_extra_info('socket')
-                    mark(direct_socket, traffic_class)
-                    direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    network_begin_ns = time.monotonic_ns() if admission else None
-                    writer.write(request_data)
-                    await writer.drain()
-                    if await reader.readexactly(64) != b'R' * 64:
-                        raise ValueError('invalid response')
-        except Exception as error:
-            outcome = type(error).__name__
+            reporter = reporters.get(traffic_class)
+            dispatch_ns = time.monotonic_ns()
+            dispatch_lag_ms = (dispatch_ns/1e9 - scheduled) * 1000
+            connect = connected = submitted = drained = received = None
+            port = research['ports'][traffic_class] if research else request_port
+            writer = None
+            outcome = 'ok'
+            direct_socket = None
+            network_begin_ns = None
+            budget = admission.budget_ms(index) if admission else deadline_ms
+            advice = ''
+            if admission:
+                advice = admission.admission(scheduled, index, traffic_class)['decision']
+                if admission.gating:
+                    if advice == 'DEFER':
+                        await asyncio.sleep(admission.profile['defer_us']/1e6)
+                        advice = admission.admission(scheduled, index, traffic_class, first=False)['decision']
+                    outcome = {'REJECT_INFEASIBLE': 'admission_rejected', 'DEFER': 'admission_deferred'}.get(advice, 'ok')
+            try:
+                if outcome == 'ok':
+                    remaining = 5 - (time.monotonic() - scheduled)
+                    if remaining <= 0:
+                        raise TimeoutError('late request')
+                    async with asyncio.timeout(remaining):
+                        host = research.get('server_address','10.203.0.2') if research else '10.203.0.2'
+                        if timing:
+                            connect = time.monotonic_ns()
+                        reader, writer = await research_connect(host, port, socket_algorithm)
+                        if timing:
+                            connected = time.monotonic_ns()
+                        direct_socket = writer.get_extra_info('socket')
+                        mark(direct_socket, traffic_class)
+                        direct_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        network_begin_ns = time.monotonic_ns() if admission else None
+                        if timing:
+                            submitted = time.monotonic_ns()
+                        writer.write(request_data)
+                        await writer.drain()
+                        if timing:
+                            drained = time.monotonic_ns()
+                        if await reader.readexactly(64) != b'R' * 64:
+                            raise ValueError('invalid response')
+                        if timing:
+                            received = time.monotonic_ns()
+            except Exception as error:
+                outcome = type(error).__name__
+            finally:
+                completed_ns = time.monotonic_ns()
+                ended = completed_ns/1e9
+                if reporter and direct_socket and outcome == 'ok' and not own_tcp_info:
+                    try:
+                        own_tcp_info.update(socket_snapshot(direct_socket))
+                    except OSError:
+                        pass
+                if writer:
+                    writer.transport.abort()
+            latency = (ended - scheduled) * 1000
+            row = (index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms)
+            rows.append(row + ((budget, advice) if admission else ()))
+            if timing:
+                timing.writerow((index, outcome, scheduled_ns, released_ns, dispatch_ns, connect, connected,
+                                 submitted, drained, received, completed_ns))
+            if outcome == 'ok' and network_begin_ns is not None:
+                admission.completed(traffic_class, network_begin_ns, round(ended*1e9))
+            if not outcome.startswith('admission_'):
+                window.append((latency, outcome))
+                if pacing and traffic_class == 'critical':
+                    pacing_window.append((latency, outcome))
+                if reporter:
+                    reporter.submit(latency * 1000, outcome, budget)
         finally:
-            ended = time.monotonic()
-            if reporter and direct_socket and outcome == 'ok' and not own_tcp_info:
-                try:
-                    own_tcp_info.update(socket_snapshot(direct_socket))
-                except OSError:
-                    pass
-            if writer:
-                writer.transport.abort()
-        latency = (ended - scheduled) * 1000
-        row = (index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms)
-        rows.append(row + ((budget, advice) if admission else ()))
-        if outcome == 'ok' and network_begin_ns is not None:
-            admission.completed(traffic_class, network_begin_ns, round(ended*1e9))
-        if not outcome.startswith('admission_'):
-            window.append((latency, outcome))
-            if pacing and traffic_class == 'critical':
-                pacing_window.append((latency, outcome))
-            if reporter:
-                reporter.submit(latency * 1000, outcome, budget)
+            active_requests -= 1
 
     async def feedback():
         while True:
@@ -382,6 +412,34 @@ async def client(output, duration, rate, payload, request_port, background_port,
         started = time.monotonic()
     report = asyncio.create_task(feedback())
     pending = set()
+    measurement_end = started+duration
+    loop_lags = []
+    skipped_ticks = 0
+    ceiling = False
+    peak_inflight = 0
+    peak_outstanding = 0
+    active_requests = 0
+    process_begin = process_sample() if integrity else None
+
+    async def clock_probe():
+        nonlocal skipped_ticks
+        period = 50_000_000
+        scheduled = round(started*1e9)+period
+        while scheduled < round(measurement_end*1e9):
+            await asyncio.sleep(max(0, scheduled/1e9-time.monotonic()))
+            lag = max(0, time.monotonic_ns()-scheduled)
+            loop_lags.append(lag/1e6)
+            skipped_ticks += lag//period
+            scheduled += period*(1+lag//period)
+
+    async def self_test():
+        await asyncio.sleep(max(0, started+1-time.monotonic()))
+        if integrity['self_test']=='client_exit':
+            os._exit(75)
+        time.sleep(.2)  # Explicit isolated generator-contamination fixture.
+
+    clock_task = asyncio.create_task(clock_probe()) if integrity else None
+    fault_task = (asyncio.create_task(self_test()) if integrity and integrity['self_test']!='none' else None)
     async def background_schedule():
         offset = 0
         for index, phase in enumerate(phase_plan):
@@ -409,32 +467,62 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 yield offset+index/phase_rate
             offset += phase['seconds']
 
-    schedule = scheduled_offsets()
-    for index, offset in enumerate(schedule):
-        scheduled = started + offset
-        await asyncio.sleep(max(0, scheduled - time.monotonic()))
-        traffic_class = schedule_rng.choices(list(weights), weights=list(weights.values()))[0]
-        names = services.get(traffic_class, [traffic_class])
-        name = names[index % len(names)]
-        reporter = reporters.get(traffic_class)
-        if len(pending) >= cap:
-            ended = time.monotonic()
-            row = (index, scheduled, ended, (ended - scheduled) * 1000, 'inflight_limit', traffic_class, name, (ended - scheduled) * 1000)
-            rows.append(row + ((admission.budget_ms(index), '') if admission else ()))
-            window.append((5000, 'inflight_limit'))
-            if pacing and traffic_class == 'critical':
-                pacing_window.append((5000, 'inflight_limit'))
-            if reporter:
-                reporter.submit((ended - scheduled) * 1e6, 'inflight_limit',
-                                admission.budget_ms(index) if admission else deadline_ms)
-            continue
-        task = asyncio.create_task(request(index, scheduled, traffic_class, name))
-        pending.add(task)
-        task.add_done_callback(pending.discard)
-    await asyncio.sleep(max(0, started + duration - time.monotonic()))
-    measurement_end = started + duration
+    closed = bool(integrity and integrity['load']=='closed')
+    if closed:
+        offered = 0
+
+        async def lane(slot):
+            nonlocal offered, ceiling
+            rng = random.Random((research['seed']<<8)+slot)
+            attempt = 0
+            while (released := time.monotonic_ns())/1e9 < measurement_end:
+                if offered >= MAX_REQUESTS:
+                    ceiling = True
+                    return
+                index = offered
+                offered += 1
+                traffic_class = rng.choices(list(weights), weights=list(weights.values()))[0]
+                names = services.get(traffic_class, [traffic_class])
+                await request(index, released/1e9, traffic_class, names[(slot+attempt)%len(names)], released)
+                attempt += 1
+
+        await asyncio.gather(*(lane(slot) for slot in range(integrity['concurrency'])))
+    else:
+        for index, offset in enumerate(scheduled_offsets()):
+            scheduled = started+offset
+            await asyncio.sleep(max(0, scheduled-time.monotonic()))
+            released = time.monotonic_ns()
+            scheduled_ns = round(scheduled*1e9) if timing else None
+            traffic_class = schedule_rng.choices(list(weights), weights=list(weights.values()))[0]
+            names = services.get(traffic_class, [traffic_class])
+            name = names[index % len(names)]
+            reporter = reporters.get(traffic_class)
+            if len(pending) >= cap:
+                completed_ns = time.monotonic_ns()
+                ended = completed_ns/1e9
+                row = (index, scheduled, ended, (ended-scheduled)*1000, 'inflight_limit', traffic_class, name, (ended-scheduled)*1000)
+                rows.append(row + ((admission.budget_ms(index), '') if admission else ()))
+                if timing:
+                    timing.writerow((index, 'inflight_limit', scheduled_ns, released, None, None, None,
+                                     None, None, None, None, completed_ns))
+                window.append((5000, 'inflight_limit'))
+                if pacing and traffic_class == 'critical':
+                    pacing_window.append((5000, 'inflight_limit'))
+                if reporter:
+                    reporter.submit((ended-scheduled)*1e6, 'inflight_limit',
+                                    admission.budget_ms(index) if admission else deadline_ms)
+                continue
+            task = asyncio.create_task(request(index, scheduled, traffic_class, name, released, scheduled_ns))
+            pending.add(task)
+            peak_outstanding = max(peak_outstanding, len(pending))
+            task.add_done_callback(pending.discard)
+    await asyncio.sleep(max(0, measurement_end-time.monotonic()))
     if pending:
         await asyncio.gather(*pending)
+    for task in (clock_task, fault_task):
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
     stopping = True
     report.cancel()
     changes.cancel()
@@ -458,6 +546,12 @@ async def client(output, duration, rate, payload, request_port, background_port,
                'p99_ms': percentile(successes, .99), 'max_ms': max(successes, default=None),
                'background_errors': background_errors,'udp_send_errors':len(udp_send_errors),
                'worker_errors': worker_errors}
+    if integrity:
+        summary['measurement_client'] = dict(load=integrity['load'], configured_concurrency=integrity['concurrency'],
+            request_cap=cap, peak_inflight=peak_inflight, peak_outstanding=peak_outstanding,
+            loop_samples=len(loop_lags), loop_lag_max_ms=max(loop_lags, default=None),
+            loop_lag_p99_ms=percentile(loop_lags,.99), missed_loop_ticks=skipped_ticks, request_ceiling_hit=ceiling,
+            process=process_delta(process_begin, process_sample()))
     if admission:
         summary['deadline_admission'] = admission.summary()
     if pacing:
@@ -507,7 +601,11 @@ if __name__ == '__main__':
     if not all(1 <= port <= 65535 for port in (args.request_port, args.background_port,args.udp_port)) or args.request_port == args.background_port:
         parser.error('ports must be in 1..65535; TCP request/background ports must differ')
     workload = (args.payload, args.request_port, args.background_port, args.streams)
-    asyncio.run(server(args.output, *workload, udp_port=args.udp_port,research=research) if args.mode == 'server'
-                else client(args.output, args.duration, args.rate, *workload,
-                            service=args.report_service, deadline_ms=args.deadline_ms, rates=args.rates,
-                            udp_port=args.udp_port,research=research))
+    with ExitStack() as resources:
+        timing_stream = None
+        if args.mode=='client' and research and research.get('integrity'):
+            timing_stream = resources.enter_context((args.output/'request-timing.csv').open('w', buffering=1))
+        asyncio.run(server(args.output, *workload, udp_port=args.udp_port,research=research) if args.mode == 'server'
+                    else client(args.output, args.duration, args.rate, *workload,
+                                service=args.report_service, deadline_ms=args.deadline_ms, rates=args.rates,
+                                udp_port=args.udp_port,research=research, timing_stream=timing_stream))

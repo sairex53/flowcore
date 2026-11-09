@@ -20,6 +20,7 @@ from adaptive_experiment import await_ready
 from benchmark import ROOT, owned_directory, receiver_metrics, run, TC
 from cli import request
 import benchmark_v2 as v2
+import measurement
 import ecn_policy
 import deadline_runtime
 from ecn_feedback import aqm_counters
@@ -126,12 +127,28 @@ def metadata():
     dirty = subprocess.run(['git','status','--porcelain'], cwd=ROOT, capture_output=True, text=True)
     sources = sorted([*ROOT.glob('scripts/*.py'), *ROOT.glob('src/*.cpp'), *ROOT.glob('bpf/*'),
                       *ROOT.glob('include/flowcore/*.hpp'), *ROOT.glob('include/flowcore/*.h'), ROOT/'config/service.json', ROOT/'CMakeLists.txt'])
+    build_keys = ('CMAKE_BUILD_TYPE:', 'CMAKE_CXX_COMPILER:', 'CMAKE_CXX_FLAGS:', 'FLOWCORE_BPF:')
+    cache = v2.read(BINDIR/'CMakeCache.txt') or ''
+    settings = {line.split(':',1)[0]: line.split('=',1)[1] for line in cache.splitlines()
+                if line.startswith(build_keys) and '=' in line}
     return dict(kernel=os.uname().release, architecture=os.uname().machine, cpus=os.cpu_count(),
+                monotonic_resolution_ns=round(time.get_clock_info('monotonic').resolution*1e9),
+                build_configuration=settings,
+                boot_fingerprint=hashlib.sha256((v2.read('/proc/sys/kernel/random/boot_id') or '').encode()).hexdigest(),
                 git_commit=git.stdout.strip() if git.returncode==0 else None,
                 git_dirty=bool(dirty.stdout) if dirty.returncode==0 else None,
                 flowcore=run([BINDIR/'flowcore','--version']).strip(),
                 binary_sha256=hashlib.sha256((BINDIR/'flowcore').read_bytes()).hexdigest(),
                 host=v2.host_metadata(),
+                network_sysctls={key:v2.read('/proc/sys/'+path) for key,path in {
+                    'net.core.default_qdisc':'net/core/default_qdisc',
+                    'net.core.rmem_max':'net/core/rmem_max',
+                    'net.core.wmem_max':'net/core/wmem_max',
+                    'net.ipv4.tcp_ecn':'net/ipv4/tcp_ecn',
+                    'net.ipv4.tcp_congestion_control':'net/ipv4/tcp_congestion_control',
+                    'net.ipv4.tcp_sack':'net/ipv4/tcp_sack',
+                    'net.ipv4.tcp_mtu_probing':'net/ipv4/tcp_mtu_probing',
+                }.items()},
                 tc=run([TC,'-V']).strip(),
                 source_sha256={str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
                                for p in sources if p.is_file()})
@@ -425,6 +442,9 @@ def trial(directory, m, rep, mode, seed=None):
             settings = dict(**workload, seed=seed, start_monotonic=0,
                             ports={cls: ports[cls] for cls in services}, services=services,
                             server_address=('fd42:203::2' if workload.get('address_family')=='ipv6' else '10.203.0.2'))
+            integrity = m.get('integrity')
+            if integrity:
+                settings['integrity'] = integrity
             if 'cake-diffserv' in m['modes']:
                 settings['dscp'] = dict(critical=46, interactive=34, standard=0, background=8)
             deadline_profile = m.get('deadline')
@@ -586,6 +606,7 @@ def trial(directory, m, rep, mode, seed=None):
                 time.sleep(max(0, start-time.monotonic()))
                 snapshot('measurement_start')
                 host_before = v2.host_sample()
+            runner_before = measurement.process_sample() if integrity else None
             if mode == 'online-select':
                 request('strategy_shadow',names=online['shadows'],seconds=online['seconds']+5)
                 request('strategy_activate',name=online['candidate'],scope='owned-fc0',
@@ -741,14 +762,17 @@ def trial(directory, m, rep, mode, seed=None):
                 host_after = v2.host_sample()
                 save(directory/'host-noise.json', dict(start=host_before, end=host_after))
             finish_ticks = cpu_ticks()
+            runner_usage = measurement.process_delta(runner_before, measurement.process_sample()) if integrity else None
             online_status = request('strategy_rollback') if mode=='online-select' else None
             if online_status:
                 save(directory/'strategy.json', online_status)
                 if online_status['state'] == 'FAULTED':
                     raise RuntimeError('online canary rollback could not be verified')
             code = client.wait(timeout=12)
-            if code not in (0,2) or server.poll() is not None:
-                raise RuntimeError(f'workload infrastructure failed, exit={code}')
+            if code not in (0,2):
+                raise measurement.WorkloadExit(f'client exited {code} before successful accounting')
+            if server.poll() is not None:
+                raise RuntimeError('receiver exited during measurement')
             time.sleep(.15)
             if hybrid:
                 stop(server)
@@ -809,11 +833,11 @@ def trial(directory, m, rep, mode, seed=None):
                 result.update(metrics)
                 result['total_mbps'] = result['background_mbps'] + result['udp_mbps'] + metrics['request_payload_mbps']
                 result['workload_seed'] = seed
-                measurement = snapshots[1:]
+                observed_snapshots = snapshots[1:]
                 result['observed_rate_windows'] = [v2.observed(a, b, a['configured_kbit'])
-                    for a, b in zip(measurement[::2], measurement[1::2])]
+                    for a, b in zip(observed_snapshots[::2], observed_snapshots[1::2])]
                 if mode == 'cake-diffserv':
-                    tins = root(measurement[-1]['tc']).get('tins', [])
+                    tins = root(observed_snapshots[-1]['tc']).get('tins', [])
                     if len(tins) != 4 or not all(tins[i].get('sent_packets', 0) > 0 for i in (0, 3)):
                         raise RuntimeError('CAKE DiffServ bulk and voice tins did not both transmit')
                     result['cake_diffserv_tins'] = tins
@@ -825,6 +849,10 @@ def trial(directory, m, rep, mode, seed=None):
                 result['slo_harmful_actions'] = (sum(row['result']=='rolled_back' and bool(row.get('degraded'))
                                                       for row in history) + (hybrid.adverse if hybrid else 0))
                 result['warnings'] = v2.noise(host_before, host_after, metrics, result['observed_rate_windows'])
+                if integrity:
+                    result['measurement'] = measurement.classify(directory, result, m,
+                        dict(start=host_before, end=host_after), runner_usage)
+                    result['valid'] = result['measurement']['state'] != 'INVALID_INFRASTRUCTURE'
             save(directory/'result.json',result)
             return result
         finally:
@@ -839,11 +867,18 @@ def execute(manifest, label='research', parent=RESULTS):
     owned_directory(path)
     rng = random.Random(m['seed'])
     seeds = rng.sample(range(1,2**32), m['repetitions']) if m['version']>=2 else []
-    order = [(rep, mode) for rep in range(m['repetitions'])
-             for mode in (rng.sample(m['modes'],len(m['modes'])) if seeds else m['modes'])]
+    integrity = m.get('integrity')
+    mode_order = measurement.block_order(m['modes'], m['repetitions'], rng,
+                                         integrity['ordering'] if integrity else 'randomized') if seeds else [m['modes']]*m['repetitions']
+    order = [(rep, mode) for rep, modes in enumerate(mode_order) for mode in modes]
     if not seeds:
         rng.shuffle(order)
-    data = dict(version=m['version'], status='running', manifest=m, environment=metadata(), order=order, runs=[],
+    environment = metadata()
+    if integrity:
+        environment['analysis_version'] = measurement.VERSION
+        environment['experiment_manifest_sha256'] = hashlib.sha256(
+            json.dumps(m,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    data = dict(version=m['version'], status='running', manifest=m, environment=environment, order=order, runs=[],
                 block_seeds=seeds, experiment_id=path.name)
     if seeds:
         reproduction = shlex.join(['sudo', str(BINDIR/'flowcore'), 'bench', 'replay', str(path/'experiment.json')])
@@ -853,22 +888,49 @@ def execute(manifest, label='research', parent=RESULTS):
     print(f'Evidence: {path}',flush=True,file=sys.stderr)
     for rep, mode in order:
         name = f'r{rep}-{mode}'
+        caught = None
         try:
             result = trial(path/name,m,rep,mode,seeds[rep] if seeds else None)
         except KeyboardInterrupt:
             data['status'] = 'interrupted'
+            if integrity:
+                interrupted = dict(mode=mode, repetition=rep, artifact=name, workload_seed=seeds[rep],
+                                   valid=False, error='operator interrupted trial',
+                                   measurement=dict(version=measurement.VERSION, state='INVALID_INFRASTRUCTURE',
+                                                    issues=[dict(code='INTERRUPTED')]))
+                save(path/name/'result.json', interrupted)
+                interrupted['evidence_sha256'] = measurement.seal(path/name)
+                data['runs'].append(interrupted)
             save(path/'summary.json',data)
             raise
         except (OSError,RuntimeError,ValueError,KeyError,StopIteration,subprocess.SubprocessError) as error:
+            caught = error
             result = dict(mode=mode,repetition=rep,valid=False,error=str(error))
             save(path/name/'result.json',result)
         result['artifact'] = name
         if seeds:
             result['workload_seed'] = seeds[rep]
+        if integrity:
+            if 'measurement' not in result:
+                failed_workload = isinstance(caught, measurement.WorkloadExit)
+                state = 'FAILED_WORKLOAD' if failed_workload else 'INVALID_INFRASTRUCTURE'
+                issue = 'CLIENT_EXIT' if failed_workload else 'TRIAL_FAILED'
+                result['measurement'] = dict(version=measurement.VERSION,state=state,
+                    issues=[dict(code=issue, detail=result['error'])])
+                if failed_workload:
+                    try:
+                        result['measurement']['partial_ledger'] = measurement.partial_timing_ledger(path/name)
+                    except (OSError,ValueError,UnicodeError) as ledger_error:
+                        result['measurement']['partial_ledger'] = dict(available=False,valid=False,
+                                                                       error=str(ledger_error))
+            save(path/name/'result.json', result)
+            result['evidence_sha256'] = measurement.seal(path/name)
         data['runs'].append(result)
         save(path/'summary.json',data)
         print(f"{name}: {result.get('p99_ms')} ms, failures={result.get('failed')}, {result.get('error','measured')}",
               flush=True,file=sys.stderr)
+        if integrity:
+            time.sleep(integrity['cooldown_seconds'])
     data['status'] = 'complete'
     save(path/'summary.json',data)
     return path,data
