@@ -76,6 +76,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Per-message UDP intents | [Design](PER_MESSAGE_INTENTS.md), [SDK](UDP_INTENT_SDK.md), [results](MESSAGE_SCHEDULING_RESULTS.md) |
 | Real application performance V2 | [Engine](REAL_APPLICATIONS_V2.md), [stack](SERVICE_STACK.md), [results](APPLICATION_PERFORMANCE_RESULTS.md) |
 | Application-intent packet scheduling | [Design](KERNEL_SCHEDULER_DESIGN.md), [reproduce](SCHEDULER_PROTOTYPE.md), [results](SCHEDULER_BENCHMARKS.md) |
+| Dynamic bottleneck and path adaptation | [Engine](DYNAMIC_NETWORK_ENGINE.md), [routed MPTCP lab](PATH_ADAPTATION.md), [ARM64 results](PATH_ADAPTATION_RESULTS.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |
 | Distributed coordination | [FABRIC_ARCHITECTURE.md](FABRIC_ARCHITECTURE.md) |
 | Audited policy rollout | [FLEET_MANAGEMENT.md](FLEET_MANAGEMENT.md) |

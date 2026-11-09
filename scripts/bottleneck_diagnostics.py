@@ -3,6 +3,7 @@ import time
 
 from bottleneck import Bottleneck, direction, lab_directions, lab_sockets
 from service_config import keys
+from path_adaptation import advisory
 
 
 class Diagnostics:
@@ -106,7 +107,7 @@ class Diagnostics:
                 events = [row for row in self.service.inventory.events if row.get('interface') in (None, interface)]
             links = [row for row in state.get('interfaces', []) if row['name'] == info['interface']]
             indices = {row['index'] for row in links}
-            return dict(info, links=links, routes=[row for row in state.get('routes', [])
+            return dict(info, adaptation=advisory(info), links=links, routes=[row for row in state.get('routes', [])
                                                  if row.get('interface_index') in indices][:32],
                         events=events[-16:])
         return info

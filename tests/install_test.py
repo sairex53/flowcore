@@ -32,6 +32,8 @@ def main():
         assert (docs/'POLICY_OPTIMIZER.md').is_file()
         assert all((docs/name).is_file() for name in
                    ('PER_MESSAGE_INTENTS.md', 'UDP_INTENT_SDK.md', 'MESSAGE_SCHEDULING_RESULTS.md'))
+        assert all((docs/name).is_file() for name in
+                   ('DYNAMIC_NETWORK_ENGINE.md', 'PATH_ADAPTATION.md', 'PATH_ADAPTATION_RESULTS.md'))
         assert (prefix/'bin/flowcore-udp-intent-demo').is_file()
         manifest = [stage/line.lstrip('/') for line in (build/'install_manifest.txt').read_text().splitlines()]
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)
@@ -72,6 +74,8 @@ def main():
                 assert result['error'] is None and len(result['interfaces'])>=1
                 bottleneck = json.loads(command([cli, 'bottleneck', 'inspect'], env=env))
                 assert bottleneck['scope'] == 'host_read_only' and bottleneck['schema'] == 1
+                path = json.loads(command([cli, 'path', 'diagnostics'], env=env))
+                assert path['adaptation']['action'] == 'NO_INTERVENTION'
                 assert json.loads(command([cli, 'diagnose'],env=env))['schema'] == 1
                 preview = json.loads(command([cli,'policy','optimize'],env=env))
                 assert preview['dry_run'] and preview['optimizer']['conflicts'][0]['code']=='OWNED_HTB_REQUIRED'

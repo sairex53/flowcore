@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "service": "interactive-api",
+  "preference": "reliability",
+  "deadline_ms": 100,
+  "multipath": true
+}

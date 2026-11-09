@@ -11,6 +11,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -180,7 +181,36 @@ def tcp_connection(sock):
                 tcp_info=tcp_info(data),subflows=[])
 
 
-def connection(sock):
+def full_subflows(sock):
+    """Linux MPTCP_FULL_INFO provides both arrays in the same snapshot."""
+    count, tcp_stride, addr_stride = MAX_PATHS+2, 512, 264
+    addresses = ctypes.create_string_buffer(count*addr_stride)
+    transport = ctypes.create_string_buffer(count*tcp_stride)
+    header = ctypes.create_string_buffer(136)
+    struct.pack_into('=6I2Q', header, 0, 0,tcp_stride,0,addr_stride,0,count,
+                     ctypes.addressof(addresses),ctypes.addressof(transport))
+    length = ctypes.c_uint(ctypes.sizeof(header))
+    if ctypes.CDLL(None,use_errno=True).getsockopt(sock.fileno(),SOL_MPTCP,4,header,ctypes.byref(length)):
+        raise OSError(ctypes.get_errno(),'MPTCP_FULL_INFO')
+    tcp_kernel,tcp_user,addr_kernel,addr_user,available,capacity=struct.unpack_from('=6I',header)
+    # Linux clamps userspace strides to the kernel record widths and
+    # packs returned records using those smaller strides.
+    if (not 40<=length.value<=ctypes.sizeof(header) or not 1<=tcp_user<=min(tcp_kernel,tcp_stride)
+            or addr_user!=addr_stride or addr_kernel<addr_user or capacity!=count or available>count):
+        raise ValueError('invalid or truncated MPTCP_FULL_INFO')
+    result=[]
+    for index in range(available):
+        offset=index*addr_user
+        row=addresses.raw[offset:offset+addr_user]
+        info=transport.raw[index*tcp_user:(index+1)*tcp_user]
+        result.append(dict(id=struct.unpack_from('=I',row)[0],local=sockaddr(row[8:136]),
+                           remote=sockaddr(row[136:264]),
+                           local_port=struct.unpack_from('!H',row,10)[0],
+                           remote_port=struct.unpack_from('!H',row,138)[0],tcp_info=tcp_info(info)))
+    return result
+
+
+def connection(sock, full=False):
     raw=sock.getsockopt(SOL_MPTCP,1,256)
     is_mptcp,is_mptcp_error=_tcp_is_mptcp(sock)
     result=dict(transport='MPTCP',extra_subflows=raw[0],source='SOL_MPTCP/MPTCP_INFO',
@@ -198,6 +228,12 @@ def connection(sock):
         result['subflow_tcp_info']=[tcp_info(row) for row in subflow_option(sock,2,512)]
     except (OSError,ValueError,struct.error) as error:
         result['subflow_error']=dict(errno=getattr(error,'errno',None),message=str(error)[:240])
+    if full:
+        try:
+            result['full_subflows']=full_subflows(sock)
+            result['full_subflow_source']='MPTCP_FULL_INFO'
+        except (OSError,ValueError,struct.error) as error:
+            result['full_subflow_error']=str(error)[:160]
     return result
 
 
@@ -848,23 +884,33 @@ def experiment(strategy='linux-default',scenario='primary-failover',path_count=2
 
 
 def _server(ready_path):
+    slots=threading.BoundedSemaphore(12)
+
+    def echo(peer):
+        try:
+            with peer:
+                peer.settimeout(12)
+                while data := peer.recv(32768):
+                    peer.sendall(data)
+        except OSError:
+            pass
+        finally:
+            slots.release()
+
     with socket.socket(socket.AF_INET,socket.SOCK_STREAM,PROTOCOL) as listener:
         listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         listener.bind(('0.0.0.0',PORT))
-        listener.listen(8)
+        listener.listen(12)
         Path(ready_path).write_text('ready\n')
         while True:
             peer,_=listener.accept()
-            with peer:
-                peer.settimeout(12)
-                while True:
-                    data=peer.recv(32768)
-                    if not data:
-                        break
-                    peer.sendall(data)
+            if slots.acquire(False):
+                threading.Thread(target=echo,args=(peer,),daemon=True).start()
+            else:
+                peer.close()
 
 
-def _client(path,duration,transport,destination,source):
+def _client(path,duration,transport,destination,source,full=False):
     proto=PROTOCOL if transport=='mptcp' else socket.IPPROTO_TCP
     rows=[]
     error=None
@@ -888,7 +934,7 @@ def _client(path,duration,transport,destination,source):
                         if response!=payload:
                             raise RuntimeError('MPTCP echo payload verification failed')
                         completed=time.monotonic_ns()
-                        info=connection(sock) if transport=='mptcp' else tcp_connection(sock)
+                        info=connection(sock,full=full) if transport=='mptcp' else tcp_connection(sock)
                         row=dict(request_id=request_id,issued_ns=issued,completed_ns=completed,
                                  latency_ms=(completed-issued)/1e6,outcome='ok',
                                  verified_payload_bytes=len(response),connection=info)
@@ -897,6 +943,7 @@ def _client(path,duration,transport,destination,source):
                         row=dict(request_id=request_id,issued_ns=issued,completed_ns=completed,
                                  latency_ms=(completed-issued)/1e6,outcome=type(exc).__name__,
                                  verified_payload_bytes=0,error=str(exc)[:240],connection={})
+                        rows.append(row)
                         stream.write(json.dumps(row,allow_nan=False)+'\n')
                         stream.flush()
                         error=dict(type=type(exc).__name__,message=str(exc)[:240])
@@ -925,8 +972,8 @@ def _main():
     if sys.argv[1]=='server':
         _server(sys.argv[2])
         return 0
-    if sys.argv[1]=='client':
-        return _client(sys.argv[2],float(sys.argv[3]),sys.argv[4],sys.argv[5],sys.argv[6])
+    if sys.argv[1] in ('client','client-full'):
+        return _client(sys.argv[2],float(sys.argv[3]),sys.argv[4],sys.argv[5],sys.argv[6],sys.argv[1]=='client-full')
     raise SystemExit('invalid multipath worker role')
 
 

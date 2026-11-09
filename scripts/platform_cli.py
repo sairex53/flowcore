@@ -31,6 +31,17 @@ def add_commands(commands):
     multipath.add_argument('--repetitions',type=int)
     multipath.add_argument('--seed',type=int,default=20261107)
     multipath.add_argument('--compare',action='store_true',help='run the TCP, Linux-default, static and FLOWCORE policy matrix')
+    from dynamic_path_lab import MODES as path_modes
+    path=sub.add_parser('path-lab',help='compare verified policies on routed and direct MPTCP paths')
+    path.add_argument('--modes',nargs='+',choices=path_modes,default=path_modes)
+    path.add_argument('--scenario',choices=('stable','dynamic'),default='dynamic')
+    path.add_argument('--duration',type=float,default=10)
+    path.add_argument('--repetitions',type=int,default=10)
+    path.add_argument('--seed',type=int,default=44139)
+    path.add_argument('--preference',choices=('latency','reliability','throughput'))
+    path.add_argument('--deadline-ms',type=float)
+    path.add_argument('--service',help='label a laboratory service')
+    path.add_argument('--intent-file',type=Path,help='bounded cooperative path intent snapshot')
     commit = sub.add_parser('commit')
     commit.add_argument('file',type=Path)
     commit.add_argument('--revision',type=int,required=True)
@@ -69,6 +80,22 @@ def dispatch(args):
     if action=='mptcp':
         from multipath import capabilities
         return capabilities()
+    if action=='path-lab':
+        from dynamic_path_lab import experiment
+        from path_adaptation import PathIntent, load_intent, service_label
+        service=service_label(args.service) if args.service is not None else None
+        if args.intent_file:
+            if args.service or args.preference or args.deadline_ms is not None:
+                raise ValueError('intent file cannot be combined with service, preference or deadline flags')
+            import os
+            owners=(int(os.environ['SUDO_UID']),) if 'SUDO_UID' in os.environ else ()
+            service,intent=load_intent(args.intent_file,owners)
+        else:
+            intent=PathIntent(args.preference or 'latency',
+                              args.deadline_ms if args.deadline_ms is not None else 100)
+        return experiment(modes=args.modes,scenario=args.scenario,duration=args.duration,
+                          repetitions=args.repetitions,seed=args.seed,preference=intent.preference,
+                          deadline_ms=intent.deadline_ms,service=service,multipath=intent.multipath)
     if action=='multipath-lab':
         from multipath import experiment
         service_intent=None

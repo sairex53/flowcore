@@ -127,6 +127,8 @@ endif()
 
 add_test(NAME platform_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_test.py")
 add_test(NAME multipath_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/multipath_test.py")
+add_test(NAME path_adaptation_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/path_adaptation_test.py")
+install(FILES DYNAMIC_NETWORK_ENGINE.md PATH_ADAPTATION.md PATH_ADAPTATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES monitoring/flowcore-grafana.json DESTINATION "${FLOWCORE_DATA}/monitoring")
 install(FILES README.md ARCHITECTURE.md PLATFORM.md SECURITY.md CLI.md RELEASE.md RESEARCH.md BENCHMARK_V2.md INTENT_API.md APPLICATION_INTEGRATION.md EBPF_FLOW_ENGINE.md EBPF_PERFORMANCE.md PREDICTIVE_ENGINE.md PREDICTIVE_RESULTS.md MULTIPATH_ENGINE.md MULTIPATH_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
