@@ -68,14 +68,26 @@ std::expected<Descriptor, Error> pin(int fd, std::uint64_t expected = 0) noexcep
 }
 
 template<class T>
-Error change(int fd, int level, int option, T wanted, T& expected) noexcept {
-    if (wanted == expected) return {};
+Error change(int fd, int level, int option, T wanted, T& expected,
+             RateTiming* timing = nullptr, bool verify_noop = false) noexcept {
+    if (wanted == expected && !verify_noop) return {};
+    auto started = timing ? Clock::now() : Clock::time_point{};
     auto before = get<T>(fd, level, option);
+    if (timing) timing->precheck_ns = (Clock::now()-started).count();
     if (!before) return before.error();
     if (*before != expected) return std::make_error_code(std::errc::device_or_resource_busy);
-    if (auto failure = set(fd, level, option, wanted)) return failure;
+    if (wanted == expected) return {};
+    started = timing ? Clock::now() : Clock::time_point{};
+    const auto failure = set(fd, level, option, wanted);
+    if (timing) {
+        timing->write_attempted = true;
+        timing->write_ns = (Clock::now()-started).count();
+    }
+    if (failure) return failure;
     expected = wanted; // Kernel accepted a mutation. Compensate only if we still own it.
+    started = timing ? Clock::now() : Clock::time_point{};
     auto observed = get<T>(fd, level, option);
+    if (timing) timing->readback_ns = (Clock::now()-started).count();
     if (!observed) return observed.error();
     return *observed == expected ? Error{} : std::make_error_code(stale);
 }
@@ -281,18 +293,19 @@ Error SocketPolicy::tick(Clock::time_point now) noexcept {
     return std::make_error_code(std::errc::timed_out);
 }
 
-Error SocketPolicy::set_rate(Rate rate) noexcept {
+Error SocketPolicy::set_rate(Rate rate) noexcept { return set_rate(rate, nullptr); }
+
+Error SocketPolicy::set_rate(Rate rate, RateTiming* timing) noexcept {
+    if (timing) *timing = {};
     if (auto failure = tick()) return failure;
     if (!within(policy_, rate)) return std::make_error_code(std::errc::invalid_argument);
+    const auto began = timing ? Clock::now() : Clock::time_point{};
     auto pinned = pin(fd_, cookie_);
+    if (timing) timing->pin_ns = (Clock::now()-began).count();
     if (!pinned) return pinned.error();
-    // Even a no-op target must agree with actual ownership/readback.
-    const auto observed = get<Rate>(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE);
-    if (!observed) return observed.error();
-    if (*observed != applied_.rate) return std::make_error_code(std::errc::device_or_resource_busy);
     const auto before = applied_.rate;
-    if (auto failure = change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, rate, applied_.rate)) {
-        if (change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, before, applied_.rate))
+    if (auto failure = change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, rate, applied_.rate, timing, true)) {
+        if (before != applied_.rate && change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, before, applied_.rate))
             return std::make_error_code(stale);
         return failure;
     }

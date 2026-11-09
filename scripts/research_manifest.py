@@ -13,10 +13,11 @@ LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo
 STATIC_MODES = tuple(f'static{pct}' for pct in range(20, 41))
 FQ_MODES = ('tcp-fq', 'pacing-static', 'pacing-queue', 'pacing-slo', 'pacing-lowat',
             'tcp-cubic', 'tcp-reno', 'tcp-bbr')
-PACING_MODES = (*FQ_MODES, 'pacing-hybrid')
+PACING_HTB_MODES = ('pacing-htb-fq', 'pacing-htb-static', 'pacing-htb-queue', 'pacing-htb-slo', 'pacing-guarded')
+PACING_MODES = (*FQ_MODES, 'pacing-hybrid', *PACING_HTB_MODES)
 MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'online-select', *PACING_MODES, *ecn_policy.MODES, *deadline_runtime.MODES)
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'online-select', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
+CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'online-select', 'pacing-hybrid', *PACING_HTB_MODES, *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)
@@ -86,7 +87,7 @@ def validate(value):
     network = value['network']
     keys(network, (*NETWORK_FIELDS, *(OPTIONAL_NETWORK_FIELDS if v3 else ())))
     net_profile(network)
-    if 'integrated' in modes and (version != 2 or network['bandwidth_kbit'] > 12000):
+    if set(modes) & {'integrated', 'pacing-guarded'} and (version != 2 or network['bandwidth_kbit'] > 12000):
         raise ValueError('integrated mode requires a v2 owned HTB profile at up to 12000 kbit/s')
     if v3:
         number(network.get('reverse_bandwidth_kbit', network['bandwidth_kbit']), 100, 1000000, True)
@@ -113,7 +114,7 @@ def validate(value):
             number(workload['deadline_ms'], .001, 5000)
         if deadline_modes and (workload['deadline_ms'] is None or workload['deadline_ms'] <= value['deadline']['tight_deadline_ms']):
             raise ValueError('deadline experiments require a regular budget larger than the tight budget')
-        if 'integrated' in modes and workload['deadline_ms'] is None:
+        if set(modes) & {'integrated', 'pacing-guarded'} and workload['deadline_ms'] is None:
             raise ValueError('integrated mode requires application deadlines')
         if workload['warmup_seconds'] and workload['bulk_bytes_per_stream']:
             raise ValueError('finite background transfers require zero warmup')
@@ -152,7 +153,7 @@ def validate(value):
         if v3:
             number(phase['udp_streams'], 0, 32, True)
         total += phase['seconds']
-    if 'integrated' in modes and not any(phase['background_streams'] for phase in phases):
+    if set(modes) & {'integrated', 'pacing-guarded'} and not any(phase['background_streams'] for phase in phases):
         raise ValueError('integrated mode requires bulk traffic')
     if v3 and any(phase['udp_streams'] for phase in phases) and not workload['udp_kbit_per_stream']:
         raise ValueError('UDP background streams require a positive pacing rate')
@@ -163,7 +164,7 @@ def validate(value):
     controller = value['controller']
     keys(controller, ('target_p99_ms', 'window_seconds', 'minimum_samples', 'bpf'))
     number(controller['target_p99_ms'], .001, 600000)
-    if 'integrated' in modes and controller['target_p99_ms'] > 30000:
+    if set(modes) & {'integrated', 'pacing-guarded'} and controller['target_p99_ms'] > 30000:
         raise ValueError('integrated controller target exceeds the native socket planner range')
     number(controller['window_seconds'], 2, 30, True)
     if 'online' in value and (controller['window_seconds'] > 8 or
@@ -195,7 +196,7 @@ def validate(value):
             raise ValueError('link_up must be boolean')
         current.update({key: fault[key] for key in NETWORK_FIELDS if key in fault})
         net_profile(current)
-        if 'integrated' in modes and current['bandwidth_kbit'] > network['bandwidth_kbit']:
+        if set(modes) & {'integrated', 'pacing-guarded'} and current['bandwidth_kbit'] > network['bandwidth_kbit']:
             raise ValueError('integrated faults cannot exceed the admitted initial capacity')
     if v3:
         stages = value['stages']

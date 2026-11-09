@@ -36,3 +36,7 @@ sudo python3 -B scripts/pacing_capabilities.py --probe-bpf
 ```
 
 [Socket SDK](SOCKET_INTELLIGENCE.md) · [Results and benchmark commands](TCP_PACING_RESULTS.md)
+
+
+The receiver-guarded research arm and follow-up evaluation are documented in
+[Pacing remediation](PACING_REMEDIATION.md) and [Pacing regression results](PACING_REGRESSION_RESULTS.md).

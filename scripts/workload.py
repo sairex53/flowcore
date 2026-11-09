@@ -160,7 +160,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
         from pacing_workload import PacingWorkload, SLO_TARGET
         pacing = PacingWorkload(output, research['socket_pacing_mode'], research.get('deadline_pacing_floor'),
                                 research.get('socket_shadows', ()),
-                                target_us=research.get('pacing_target_us', SLO_TARGET))
+                                target_us=research.get('pacing_target_us', SLO_TARGET),
+                                trace=research.get('pacing_trace', False))
     admission = None
     if research and 'deadline_admission' in research:
         from deadline_workload import AdmissionWorkload
@@ -179,7 +180,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32768)
                 writer.transport.set_write_buffer_limits(high=32768, low=8192)
                 if pacing:
-                    pacing.add(flow, writer.get_extra_info('socket'))
+                    await pacing.membership(pacing.add, flow, writer.get_extra_info('socket'))
                     attached = True
                 writer.write(struct.pack('!I', flow))
                 while not budget or sent < budget:
@@ -199,8 +200,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
                     # Give request timers and reporters a turn even then.
                     await asyncio.sleep(0)
                 if attached:
+                    await pacing.membership(pacing.remove, flow)
                     attached = False
-                    pacing.remove(flow)
                 writer.close()
                 await writer.wait_closed()
                 return
@@ -214,8 +215,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 await asyncio.sleep(.2)
             finally:
                 try:
-                    if attached:
-                        pacing.remove(flow)
+                    if attached and flow in pacing.sockets:
+                        await pacing.membership(pacing.remove, flow)
                 finally:
                     if writer:
                         writer.transport.abort()
@@ -366,8 +367,17 @@ async def client(output, duration, rate, payload, request_port, background_port,
     pending = set()
     async def background_schedule():
         offset = 0
-        for phase in phase_plan:
-            await asyncio.sleep(max(0, started+offset-time.monotonic()))
+        for index, phase in enumerate(phase_plan):
+            scheduled = started+offset
+            await asyncio.sleep(max(0, scheduled-time.monotonic()))
+            if research and research.get('pacing_trace'):
+                observed = time.monotonic_ns()
+                if pacing and pacing.guarded:
+                    await pacing.membership(pacing.cohort_changed, 'phase', index)
+                with (output/'workload-phases.jsonl').open('a') as log:
+                    log.write(json.dumps(dict(index=index, scheduled_ns=round(scheduled*1e9),
+                        actual_ns=observed, background_streams=phase['background_streams'],
+                        requests_per_second=phase['requests_per_second']))+'\n')
             set_backgrounds(phase['background_streams'])
             set_udp_backgrounds(phase.get('udp_streams',0))
             offset += phase['seconds']

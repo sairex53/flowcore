@@ -1,5 +1,7 @@
 """Integrated mode parser and rollback regression tests."""
+import asyncio
 import copy
+import fcntl
 from contextlib import ExitStack
 from pathlib import Path
 import sys
@@ -140,6 +142,38 @@ class Integrated(unittest.TestCase):
         self.assertTrue(worker.cohort_failed)
         self.assertEqual(closed, [socket.SHUT_RDWR])
         self.assertFalse(worker.previous)
+
+    def test_class_lock_serializes_membership_and_planner(self):
+        async def trial(worker, sender):
+            with (worker.output/'pacing.lock').open('rb') as class_lock:
+                fcntl.flock(class_lock, fcntl.LOCK_EX)
+                member = asyncio.create_task(worker.membership(worker.add, 0, sender))
+                await asyncio.sleep(0)
+                self.assertEqual(worker.membership_waiters, 1)
+                worker.tick(50, 24)
+                self.assertEqual(worker.transition_holds, 1)
+                self.assertEqual(worker.sockets, {})
+                fcntl.flock(class_lock, fcntl.LOCK_UN)
+                await asyncio.wait_for(member, timeout=1)
+                self.assertEqual(worker.membership_waiters, 0)
+                self.assertEqual(worker.polls, 0)
+                self.assertIn(0, worker.sockets)
+                values = (U64*len(SETTINGS))()
+                self.assertEqual(worker.lib.fc_pacing_inspect_v2(sender.fileno(), values), 0)
+                self.assertEqual(values[1], CEILING)
+                await worker.membership(worker.remove, 0)
+
+        with tempfile.TemporaryDirectory(dir=ROOT/'build', prefix='pacing-lock-') as temp, ExitStack() as resources:
+            listener = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            listener.settimeout(1)
+            sender = resources.enter_context(socket.create_connection(listener.getsockname(), timeout=1))
+            peer, _ = listener.accept()
+            resources.enter_context(peer)
+            worker = PacingWorkload(Path(temp), 'pacing-guarded')
+            resources.callback(worker.finish)
+            asyncio.run(trial(worker, sender))
 
     def test_group_write_refusal_compensates_prior_socket(self):
         old, wanted = 1_500_000, 200_000

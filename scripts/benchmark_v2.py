@@ -127,7 +127,8 @@ def verify(snapshot, mode, expected_capacity, configured_ports):
             expected = {(proto, f'1:{CLASSES[name]}', port) for name, port in configured_ports.items()
                         for proto in ('ip', 'ipv6')}
             children = {f'1:{minor}' for minor in CLASSES.values()}
-            if filters != expected or leaf != dict.fromkeys(children, 'fq_codel') or set(rates) != children | {'1:1'}:
+            expected_leaf = 'fq' if mode == 'pacing-htb-fq' else 'fq_codel'
+            if filters != expected or leaf != dict.fromkeys(children, expected_leaf) or set(rates) != children | {'1:1'}:
                 raise RuntimeError('classified HTB hierarchy or flower readback mismatch')
         else:
             expected_leaf = 'fq' if mode in FQ_MODES else 'pfifo' if mode == 'fifo' else 'fq_codel'

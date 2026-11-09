@@ -2,7 +2,7 @@
 from service_config import CLASSES
 
 
-def feedback(tc, configured, capacity_kbit, initial_capacity_kbit, *, generation, sampled_ns, healthy):
+def feedback(tc, configured, capacity_kbit, initial_capacity_kbit, *, generation, sampled_ns, healthy, require_ecn=True):
     expected = {f'1:{CLASSES[name]}': (capacity_kbit*entry['min_pct']//100*125,
                                        capacity_kbit*entry['max_pct']//100*125)
                 for name, entry in configured.items()}
@@ -19,7 +19,7 @@ def feedback(tc, configured, capacity_kbit, initial_capacity_kbit, *, generation
                       for name, entry in configured.items() for protocol in ('ip', 'ipv6')}
     headers, rules = set(), set()
     valid = bool(healthy and capacity_kbit and actual == expected and root == [('htb', '1:')]
-                 and leaves == expected_leaves and background.get('options', {}).get('ecn'))
+                 and leaves == expected_leaves and (not require_ecn or background.get('options', {}).get('ecn')))
     if valid:
         for row in tc.get('filter', []):
             if row.get('kind') != 'flower' or row.get('parent') != '1:' or row.get('chain') != 0:

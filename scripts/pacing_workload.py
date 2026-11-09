@@ -1,4 +1,5 @@
 """Research-only adapter between asyncio-owned sockets and the C++ pacing engine."""
+import asyncio
 import ctypes as c
 import errno
 import fcntl
@@ -20,7 +21,10 @@ FALLBACK = 400_000
 STATIC = 180_000
 SLO_TARGET = 30_000
 STRATEGIES = {'pacing-queue': 1, 'pacing-slo': 2, 'pacing-hybrid': 3, 'ecn-pacing-control': 3, 'ecn-aware': 4,
-              'deadline-adaptive': 5, 'integrated': 6}
+              'deadline-adaptive': 5, 'integrated': 6, 'pacing-guarded': 7,
+              'pacing-htb-queue': 1, 'pacing-htb-slo': 2}
+REASONS = ('none', 'scope_lost', 'insufficient_evidence', 'stabilizing', 'redundant',
+           'local_pressure', 'goodput_regression', 'latency_regression', 'probe_expired')
 SETTINGS = ('cookie', 'cap_bytes_s', 'tcp_pacing_bytes_s', 'delivery_bytes_s', 'bytes_acked',
             'notsent_lowat', 'notsent_bytes', 'rtt_us', 'cwnd_segments', 'total_retransmits',
             'output_queue_bytes', 'send_buffer_bytes', 'ecn_negotiated',
@@ -37,12 +41,14 @@ def library():
     signatures = {
         'open': (P, [c.c_int, U64, U64, U64, c.c_uint32, c.POINTER(c.c_int)]),
         'rate': (c.c_int, [P, U64]),
+        'rate_timed': (c.c_int, [P, U64, c.POINTER(U64)]),
         'close': (c.c_int, [P]),
         'inspect_v2': (c.c_int, [c.c_int, c.POINTER(U64)]),
         'controller': (P, [c.c_uint, U64, U64, U64, c.c_uint32]),
         'delete_controller': (None, [P]),
         'evaluate_v3': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
         'evaluate_v4': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
+        'evaluate_v5': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64), c.POINTER(c.c_uint)]),
         'shadow_v1': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
         'confirm': (None, [P, c.c_bool]),
     }
@@ -58,13 +64,19 @@ def checked(status, operation):
 
 
 class PacingWorkload:
-    def __init__(self, output, mode, deadline_floor=None, shadow_names=(), *, target_us=SLO_TARGET):
+    def __init__(self, output, mode, deadline_floor=None, shadow_names=(), *, target_us=SLO_TARGET, trace=False):
         self.output = output
         self.mode = mode
         self.lib = library()
         self.controller = None
         self.actuator_lock = None
-        self.integrated = mode == 'integrated'
+        self.guarded = mode == 'pacing-guarded'
+        self.integrated = mode in ('integrated', 'pacing-guarded')
+        self.trace = trace
+        self.rate_steps = None
+        self.receiver_previous = None
+        self.lock_timing = None
+        self.membership_waiters = 0
         self.generation = None
         self.scope_stamp = 0
         self.cohort_revision = self.observed_cohort_revision = 0
@@ -74,7 +86,7 @@ class PacingWorkload:
         self.actuation_wall_ns = 0
         self.apply_failures = 0
         fallback = CEILING if self.integrated else PACING_BASELINE if mode == 'deadline-adaptive' else FALLBACK
-        self.rate = fallback if mode in STRATEGIES else STATIC if mode == 'pacing-static' else 0
+        self.rate = fallback if mode in STRATEGIES else STATIC if mode in ('pacing-static', 'pacing-htb-static') else 0
         if mode in ('deadline-admission', 'deadline-paced-static'):
             self.rate = PACING_BASELINE
         self.floor = deadline_floor if mode.startswith('deadline-') else FLOOR
@@ -110,6 +122,30 @@ class PacingWorkload:
         self.shadows = {}
         self.shadow_cpu_ns = self.shadow_evaluations = 0
 
+    async def membership(self, operation, *args):
+        if self.actuator_lock is None:
+            return operation(*args)
+        requested = time.monotonic_ns()
+        self.membership_waiters += 1
+        try:
+            while True:
+                try:
+                    fcntl.flock(self.actuator_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic_ns()-requested >= 1_000_000_000:
+                        if self.integrated:
+                            self.fault_cohort()
+                        raise RuntimeError('class transition did not release socket membership lock')
+                    await asyncio.sleep(.005)
+            self.lock_timing = dict(requested_ns=requested, acquired_ns=time.monotonic_ns())
+            try:
+                return operation(*args)
+            finally:
+                fcntl.flock(self.actuator_lock, fcntl.LOCK_UN)
+        finally:
+            self.membership_waiters -= 1
+
     def add(self, flow, sock):
         if flow in self.sockets or len(self.sockets) >= 32:
             raise RuntimeError('background socket quota or overlap')
@@ -138,6 +174,16 @@ class PacingWorkload:
                 if status not in (0, errno.EBADF):
                     checked(status, 'restore socket policy')
 
+    def fault_cohort(self):
+        if self.cohort_failed:
+            return
+        self.cohort_failed = True
+        for sock, _ in self.sockets.values():
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
     def cohort_changed(self, event, flow):
         # The asyncio worker owns this cohort. This callback has no await and
         # cannot interleave with the planner. Restoration only lifts a cap.
@@ -145,6 +191,7 @@ class PacingWorkload:
         self.previous.clear()
         self.previous_ecn.clear()
         self.previous_aqm.clear()
+        self.receiver_previous = None
         if self.rate == CEILING:
             return
         if not self.sockets:
@@ -156,12 +203,7 @@ class PacingWorkload:
         try:
             verified = self.timed_apply(CEILING, 'fallback')
         except (OSError, RuntimeError):
-            self.cohort_failed = True
-            for sock, _ in self.sockets.values():
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+            self.fault_cohort()
             raise
         finally:
             with (self.output/'socket-cohort.jsonl').open('a') as log:
@@ -174,6 +216,19 @@ class PacingWorkload:
         self.drain_count += 1
         self.drain_wait_ns += elapsed_ns
         self.drain_over_ms += elapsed_ns >= 1_000_000
+
+    def receiver_window(self, feed, *, transition):
+        current = feed.get('receiver') or None
+        previous = self.receiver_previous
+        if transition or not current or previous is None:
+            self.receiver_previous = current
+            return 0, 0, 0
+        end, start = current['time_ns'], previous['time_ns']
+        if end <= start:
+            return 0, 0, 0
+        self.receiver_previous = current
+        delta = current['bytes'] - previous['bytes']
+        return (delta*10**9//(end-start), start, end) if delta >= 0 else (0, 0, 0)
 
     def observe(self, now, p99_ms, requests, deadline_pressure, failures):
         if self.cohort_failed:
@@ -200,6 +255,7 @@ class PacingWorkload:
                 self.observed_notsent += 1
             info.append(result)
 
+        tcp_collected = time.monotonic_ns() if self.trace else None
         previous, last = self.previous, self.last_sample_ns
         self.previous = {row['cookie']: row['bytes_acked'] for row in info if row['bytes_acked'] is not None}
         self.last_sample_ns = now
@@ -211,6 +267,7 @@ class PacingWorkload:
             feed = read_json(snapshot_path, limit=8192)
         except (OSError, ValueError):
             feed = {}
+        feedback_read = time.monotonic_ns() if self.trace else None
         when = feed.get('time_ns', 0)
         fresh = 0 <= now-when <= 2_500_000_000 and when != self.last_feedback_ns
         earlier = self.last_feedback_ns
@@ -239,7 +296,7 @@ class PacingWorkload:
                 self.scope_stamp = stamp
             valid = (valid and verified_scope and requests >= 12 and not failures
                      and all(row['cap_bytes_s'] == self.rate for row in info))
-        if self.mode.startswith('ecn-') or self.integrated:
+        if self.mode.startswith('ecn-') or self.mode == 'integrated':
             current_ecn = {row['cookie']: row for row in info}
             aqm = feed.get('ecn_aqm', {})
             sample_ns = feed.get('ecn_sample_ns')
@@ -251,20 +308,34 @@ class PacingWorkload:
                 scope_matches=self.mode != 'ecn-cake')
             if fresh:
                 self.previous_ecn, self.previous_aqm = current_ecn, aqm
+        receiver = self.receiver_window(feed, transition=transition) if self.guarded else (0, 0, 0)
+        if self.guarded:
+            # Delivery is observed independently. Unsent bytes corroborate
+            # demand but cannot raise the rate merely because a cap is high.
+            demand = throughput if queues else 0
+        reason = c.c_uint()
+        planned_begin = planned_end = None
         shadow = {}
         if (self.controller or self.shadow_names) and (fresh or not when or now-when > 2_500_000_000):
-            inputs = (U64*14)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
+            inputs = (U64*20)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
                               max(rtts, default=0), min(round(p99_ms*1000), 30_000_000),
                               requests, len(info), valid, feed.get('class_active', False),
                               transition, bool(congestion and congestion['early']), deadline_pressure,
-                              scope.get('background_guarantee', 0))
+                              scope.get('background_guarantee', 0), scope.get('background_ceiling', 0),
+                              *receiver, feed.get('critical_backlog_bytes', 0), last)
             if self.shadow_names:
                 shadow = self.shadow(inputs, valid, congestion, feed)
             if self.controller and not (valid and repeated_sample and not transition):
                 next_rate = U64()
                 evaluate = self.lib.fc_pacing_evaluate_v4 if self.integrated else self.lib.fc_pacing_evaluate_v3
                 begin = time.process_time_ns()
-                answer = evaluate(self.controller, inputs, self.rate, c.byref(next_rate))
+                planned_begin = time.monotonic_ns() if self.trace else None
+                if self.guarded:
+                    answer = self.lib.fc_pacing_evaluate_v5(self.controller, inputs, self.rate,
+                                                           c.byref(next_rate), c.byref(reason))
+                else:
+                    answer = evaluate(self.controller, inputs, self.rate, c.byref(next_rate))
+                planned_end = time.monotonic_ns() if self.trace else None
                 self.decision_cpu_ns += time.process_time_ns()-begin
                 self.observed_cohort_revision = self.cohort_revision
                 decision = ('hold', 'adjust', 'rollback', 'fallback', 'class-only')[answer]
@@ -280,6 +351,11 @@ class PacingWorkload:
                 class_active=feed.get('class_active'), transition=transition,
                 integrated_scope=scope if self.integrated else None,
                 cohort_revision=self.cohort_revision if self.integrated else None,
+                decision_reason=REASONS[reason.value] if self.guarded else None,
+                receiver_window=dict(rate=receiver[0], begin_ns=receiver[1], end_ns=receiver[2]) if self.guarded else None,
+                timing=(dict(tcp_collected_ns=tcp_collected, feedback_read_ns=feedback_read,
+                             plan_begin_ns=planned_begin, plan_end_ns=planned_end, lock=self.lock_timing,
+                             queue_sample_ns=feed.get('sample_ns')) if self.trace else None),
                 request_p99_ms=p99_ms, requests=requests, congestion=congestion,
                 deadline_pressure=deadline_pressure, shadow=shadow, sockets=info))+'\n')
         self.polls += 1
@@ -318,22 +394,48 @@ class PacingWorkload:
 
     def timed_apply(self, rate, decision):
         began = time.monotonic_ns()
+        self.rate_steps = [] if self.trace else None
+        verified = False
         try:
             verified = self.apply(rate, decision)
+        except (OSError, RuntimeError):
+            if self.integrated:
+                self.fault_cohort()
+            raise
         finally:
-            self.actuation_wall_ns += time.monotonic_ns()-began
+            completed = time.monotonic_ns()
+            self.actuation_wall_ns += completed-began
+            if self.rate_steps is not None:
+                with (self.output/'socket-actuation.jsonl').open('a') as log:
+                    log.write(json.dumps(dict(started_ns=began, completed_ns=completed,
+                        decision=decision, target_bytes_s=rate, verified=verified, lock=self.lock_timing,
+                        steps=self.rate_steps))+'\n')
+                self.rate_steps = None
         self.apply_failures += verified is False
         if self.integrated and not verified and decision in ('rollback', 'fallback'):
+            self.fault_cohort()
             raise RuntimeError('integrated socket compensation was refused')
         return verified
 
+    def set_rate(self, handle, rate, flow, stage):
+        if getattr(self, 'rate_steps', None) is None:
+            return self.lib.fc_pacing_rate(handle, rate)
+        began = time.monotonic_ns()
+        timing = (U64*5)()
+        result = self.lib.fc_pacing_rate_timed(handle, rate, timing)
+        self.rate_steps.append(dict(flow=flow, stage=stage, started_ns=began,
+            completed_ns=time.monotonic_ns(), errno=result, pin_ns=timing[0],
+            precheck_ns=timing[1], setsockopt_ns=timing[2], readback_ns=timing[3],
+            write_attempted=bool(timing[4])))
+        return result
+
     def apply(self, rate, decision):
         applied = []
-        for _, handle in self.sockets.values():
-            if not handle or self.lib.fc_pacing_rate(handle, rate):
+        for flow, (_, handle) in self.sockets.items():
+            if not handle or self.set_rate(handle, rate, flow, 'apply'):
                 rollback_ok = True
-                for changed in reversed(applied):
-                    if self.lib.fc_pacing_rate(changed, self.rate):
+                for previous_flow, changed in reversed(applied):
+                    if self.set_rate(changed, self.rate, previous_flow, 'compensate'):
                         rollback_ok = False
                 values = (U64*len(SETTINGS))()
                 for sock, _ in self.sockets.values():
@@ -343,7 +445,7 @@ class PacingWorkload:
                 if not rollback_ok:
                     raise RuntimeError('socket group rollback could not be verified')
                 return False
-            applied.append(handle)
+            applied.append((flow, handle))
         self.lib.fc_pacing_confirm(self.controller, True)
         self.rate = rate
         self.actions += 1
@@ -357,11 +459,19 @@ class PacingWorkload:
             if self.actuator_lock is None:
                 self.observe(time.monotonic_ns(), p99_ms, requests, deadline_pressure, failures)
                 return
+            requested = time.monotonic_ns()
+            if self.membership_waiters:
+                self.transition_holds += 1
+                return
             try:
                 fcntl.flock(self.actuator_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 self.transition_holds += 1
+                if self.trace:
+                    with (self.output/'socket-lock.jsonl').open('a') as log:
+                        log.write(json.dumps(dict(requested_ns=requested, result='busy'))+'\n')
                 return
+            self.lock_timing = dict(requested_ns=requested, acquired_ns=time.monotonic_ns())
             try:
                 self.observe(time.monotonic_ns(), p99_ms, requests, deadline_pressure, failures)
             finally:
@@ -370,6 +480,11 @@ class PacingWorkload:
             self.sample_cpu_ns += time.process_time_ns()-begin
 
     def finish(self):
+        abandoned = len(self.sockets)
+        for _, handle in self.sockets.values():
+            if handle:
+                self.lib.fc_pacing_close(handle)
+        self.sockets.clear()
         for handle in self.shadows.values():
             if handle:
                 self.lib.fc_pacing_delete_controller(handle)
@@ -378,6 +493,8 @@ class PacingWorkload:
             self.lib.fc_pacing_delete_controller(self.controller)
             self.controller = None
             self.actuator_lock.close()
+        if abandoned:
+            raise RuntimeError('socket membership failed to detach before workload shutdown')
         return dict(mode=self.mode, socket_actions=self.actions, rollbacks=self.rollbacks, fallbacks=self.fallbacks,
                     samples=self.polls, transition_holds=self.transition_holds, peak_notsent_bytes=self.peak_notsent if self.observed_notsent else None,
                     drain_calls=self.drain_count, drain_wait_ms=self.drain_wait_ns/1e6,

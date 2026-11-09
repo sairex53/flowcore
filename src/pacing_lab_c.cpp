@@ -45,6 +45,16 @@ void* fc_pacing_open(int fd, std::uint64_t rate, std::uint64_t floor, std::uint6
 int fc_pacing_rate(void* handle, std::uint64_t rate) noexcept {
     return static_cast<p::SocketPolicy*>(handle)->set_rate(rate).value();
 }
+int fc_pacing_rate_timed(void* handle, std::uint64_t rate, std::uint64_t* out) noexcept {
+    p::RateTiming timing;
+    const auto result = static_cast<p::SocketPolicy*>(handle)->set_rate(rate, &timing);
+    out[0] = timing.pin_ns;
+    out[1] = timing.precheck_ns;
+    out[2] = timing.write_ns;
+    out[3] = timing.readback_ns;
+    out[4] = timing.write_attempted;
+    return result.value();
+}
 int fc_pacing_close(void* handle) noexcept {
     std::unique_ptr<p::SocketPolicy> managed(static_cast<p::SocketPolicy*>(handle));
     return managed->remove().value();
@@ -88,16 +98,22 @@ void* fc_pacing_controller(unsigned strategy, std::uint64_t floor, std::uint64_t
 }
 void fc_pacing_delete_controller(void* handle) noexcept { delete static_cast<p::Controller*>(handle); }
 static unsigned evaluate_fields(void* handle, const std::uint64_t* fields, std::uint64_t current,
-                                std::uint64_t* proposed, unsigned count, bool shadow = false) noexcept {
+                                std::uint64_t* proposed, unsigned count, bool shadow = false, unsigned* reason = nullptr) noexcept {
     const p::Observation o{fields[0], fields[1], fields[2], fields[3], static_cast<std::uint32_t>(fields[4]),
                            static_cast<std::uint32_t>(fields[5]), static_cast<std::uint32_t>(fields[6]),
                            static_cast<unsigned>(fields[7]), fields[8]!=0, fields[9]!=0, fields[10]!=0,
                            count >= 12 && fields[11]!=0, count >= 13 && fields[12]!=0,
-                           count >= 14 ? fields[13] : 0};
+                           count >= 14 ? fields[13] : 0,
+                           count >= 19 ? fields[14] : 0, count >= 19 ? fields[15] : 0,
+                           p::Clock::time_point{std::chrono::nanoseconds(count >= 19 ? fields[16] : 0)},
+                           p::Clock::time_point{std::chrono::nanoseconds(count >= 19 ? fields[17] : 0)},
+                           p::Clock::time_point{std::chrono::nanoseconds(count >= 20 ? fields[19] : 0)},
+                           count >= 19 ? fields[18] : 0};
     auto& controller = *static_cast<p::Controller*>(handle);
     const auto now = p::Clock::now();
     const auto result = shadow ? controller.preview(o, current, now) : controller.evaluate(o, current, now);
     *proposed = result.rate;
+    if (reason) *reason = static_cast<unsigned>(result.reason);
     return static_cast<unsigned>(result.decision);
 }
 unsigned fc_pacing_evaluate(void* handle, const std::uint64_t* fields, std::uint64_t current,
@@ -115,6 +131,10 @@ unsigned fc_pacing_evaluate_v3(void* handle, const std::uint64_t* fields, std::u
 unsigned fc_pacing_evaluate_v4(void* handle, const std::uint64_t* fields, std::uint64_t current,
                                std::uint64_t* proposed) noexcept {
     return evaluate_fields(handle, fields, current, proposed, 14);
+}
+unsigned fc_pacing_evaluate_v5(void* handle, const std::uint64_t* fields, std::uint64_t current,
+                               std::uint64_t* proposed, unsigned* reason) noexcept {
+    return evaluate_fields(handle, fields, current, proposed, 20, false, reason);
 }
 unsigned fc_pacing_shadow_v1(void* handle, const std::uint64_t* fields, std::uint64_t current,
                              std::uint64_t* proposed) noexcept {

@@ -14,6 +14,7 @@ def rate_args(rate, ceil):
 
 def resize_htb(service, capacity, *, preserve_windows=False):
     """Rebase the managed controller on a scheduled capacity change."""
+    began = time.monotonic_ns()
     number(capacity, 100, 1000000, True)
     lab, control = service.lab, service.controller
     old = service.profile['bandwidth_kbit']
@@ -32,6 +33,7 @@ def resize_htb(service, capacity, *, preserve_windows=False):
         lab.assert_owned_sender()
         lab.tc('class', 'change', 'dev', 'fc0', 'parent', '1:', 'classid', '1:1',
                *rate_args(capacity, capacity))
+    writing = time.monotonic_ns()
     if capacity > old:
         parent()
     desired = {}
@@ -43,8 +45,10 @@ def resize_htb(service, capacity, *, preserve_windows=False):
                *rate_args(rate, ceil), 'prio', c['priority'], 'quantum', '1514')
     if capacity < old:
         parent()
+    reading = time.monotonic_ns()
     if adaptive_tc.read(lab, capacity, policy) != desired:
         raise RuntimeError('research resize readback failed')
+    verified = time.monotonic_ns()
     service.profile = dict(service.profile, bandwidth_kbit=capacity)
     # Counter deltas and feedback from the previous capacity must not arm probes.
     observer = service.observer
@@ -58,6 +62,7 @@ def resize_htb(service, capacity, *, preserve_windows=False):
         control.start(mode, strategy)
     control.record(result='research_rebase', previous_capacity_kbit=old, capacity_kbit=capacity,
                    previous_mode=mode, allocation=desired)
+    return dict(started_ns=began, write_begin_ns=writing, readback_begin_ns=reading, verified_ns=verified)
 
 
 def root(rows, kind):
@@ -82,7 +87,7 @@ def apply_conditions(service, settings, mode, seed, link_up, ecn=None):
     if ecn is not None:
         ecn = ecn_policy.validate(ecn)
     profile = net_profile(settings)
-    if mode == 'integrated' and (profile['bandwidth_kbit'] > 12000 or service.controller.mode != 'off'):
+    if mode in ('integrated', 'pacing-guarded') and (profile['bandwidth_kbit'] > 12000 or service.controller.mode != 'off'):
         raise ValueError('integrated mode requires bounded HTB capacity and exclusive socket authority')
     number(seed, 1, 2**32-1, True)
     if type(link_up) is not bool:
@@ -112,6 +117,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
     cap = profile['bandwidth_kbit']
     first = service.research_mode is None
     endpoints = None
+    resize = None
     if first:
         if ecn is not None:
             endpoints = ecn_policy.configure(lab, ecn, mode)
@@ -133,6 +139,10 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
                     lab.tc('qdisc','add','dev','fc0','parent','1:20',
                            'fq' if mode in FQ_MODES else 'pfifo' if mode=='fifo' else 'fq_codel',
                            'limit','1000')
+        if mode == 'pacing-htb-fq':
+            for minor in CLASSES.values():
+                lab.assert_owned_sender()
+                lab.tc('qdisc', 'replace', 'dev', 'fc0', 'parent', f'1:{minor}', 'fq', 'limit', '1000')
         service.research_mode = mode
     qdiscs = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
     if mode == 'linux-default':
@@ -161,7 +171,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
             raise RuntimeError('baseline capacity readback failed')
     elif mode in CLASSIFIED:
         root(qdiscs, 'htb')
-        resize_htb(service, cap)
+        resize = resize_htb(service, cap)
     else:
         raise ValueError('unknown research mode')
     if ecn is not None:
@@ -211,6 +221,8 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
     confirmed = time.monotonic_ns()
     result = dict(applied_ns=confirmed, kernel_confirmed_ns=confirmed, capacity_kbit=cap,
                   netem=observed, link_up=link_up)
+    if resize is not None:
+        result['htb_resize'] = resize
     if endpoints is not None:
         result['ecn_endpoints'] = endpoints
     if reverse is not None:

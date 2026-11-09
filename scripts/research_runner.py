@@ -25,7 +25,7 @@ from ecn_feedback import aqm_counters
 from ipc_security import private_directory, private_lock
 from daemon import SOCKET
 from observer_perf import await_service, command, stop, cpu_ticks
-from research_manifest import FAULTS, PACING_MODES, net_profile, validate
+from research_manifest import FAULTS, PACING_HTB_MODES, PACING_MODES, net_profile, validate
 from service_config import load
 from workload import percentile
 
@@ -288,6 +288,22 @@ def compose_scenario_network(base, active_events):
     return result
 
 
+def recent_receiver(path):
+    # Read only the end of an append-only receiver ledger. Ignore a partial
+    # line while the other process is publishing its latest counter sample.
+    with path.open('rb') as stream:
+        end = stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, end-16384))
+        raw = stream.read(16384)
+    records = raw.split(b'\n')[:-1]
+    if end > 16384:
+        records = records[1:]
+    if not records:
+        return {}
+    latest = json.loads(records[-1])
+    return dict(time_ns=round(latest['time']*NANO), bytes=sum(latest['bytes']))
+
+
 def trial(directory, m, rep, mode, seed=None):
     owned_directory(directory)
     cfg = load(ROOT/'config/service.json')
@@ -303,11 +319,11 @@ def trial(directory, m, rep, mode, seed=None):
         cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
         cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
     online = m.get('online')
-    if 'integrated' in m['modes']:
+    if set(m['modes']) & {'integrated', *PACING_HTB_MODES}:
         cfg['observability']['max_sockets'] = 1024
     elif online:
         cfg['observability']['max_sockets'] = 1024
-    configured_reserve = ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:])
+    configured_reserve = ('static', 'pacing-hybrid', *PACING_HTB_MODES, *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:])
     if online or mode in configured_reserve:
         reserve = m['static_critical_pct']
     elif mode.startswith('static') and mode != 'static-step':
@@ -414,7 +430,8 @@ def trial(directory, m, rep, mode, seed=None):
                 settings['ecn_socket_algorithm'] = 'dctcp'
             if pacing:
                 settings['socket_pacing_mode'] = mode
-                if mode == 'integrated':
+                settings['pacing_trace'] = bool(set(m['modes']) & set(PACING_HTB_MODES))
+                if mode in ('integrated', 'pacing-guarded'):
                     settings['pacing_target_us'] = round(m['controller']['target_p99_ms']*1000)
                 settings['socket_shadows'] = m.get('socket_shadows', [])
                 pacing_lock = resources.enter_context(private_lock(directory/'pacing.lock'))
@@ -439,14 +456,24 @@ def trial(directory, m, rep, mode, seed=None):
                            backlog_bytes=root(value.get('tc', {})).get('backlog', 0),
                            class_active=value.get('state', {}).get('mode', 'off') != 'off',
                            transition=transition)
-                if mode == 'integrated':
+                if mode in ('integrated', 'pacing-guarded'):
                     from nextgen_scope import feedback
                     row['integrated'] = feedback(
                         value.get('tc', {}), cfg['policies']['default']['classes'],
                         expected_capacity or 0, m['network']['bandwidth_kbit'],
                         generation=generation, sampled_ns=value.get('sample_ns'),
                         healthy=value.get('integrated_quality')
-                        and value.get('state', {}).get('mode') == 'off')
+                        and value.get('state', {}).get('mode') == 'off',
+                        require_ecn=mode == 'integrated')
+                    if mode == 'pacing-guarded':
+                        row['integrated']['background_ceiling'] = ((expected_capacity or 0)
+                            * cfg['policies']['default']['classes']['background']['max_pct']//100*125)
+                if settings.get('pacing_trace') and not transition:
+                    row['receiver'] = recent_receiver(directory/'receiver.jsonl')
+                    row['sample_ns'] = value.get('sample_ns')
+                    leaves = {q.get('parent'): q.get('backlog', 0)
+                              for q in value.get('tc', {}).get('qdisc', []) if q.get('parent')}
+                    row['critical_backlog_bytes'] = leaves.get('1:10', 0)
                 if deadline_profile:
                     row['deadline_evidence'] = value.get('deadline_evidence', {})
                 if ecn_profile:
@@ -467,9 +494,10 @@ def trial(directory, m, rep, mode, seed=None):
             def class_update():
                 nonlocal generation
                 if pacing_lock is None:
-                    yield
+                    yield {}
                     return
-                deadline = time.monotonic()+1
+                requested = time.monotonic_ns()
+                deadline = requested/NANO+1
                 while True:
                     try:
                         fcntl.flock(pacing_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -480,9 +508,11 @@ def trial(directory, m, rep, mode, seed=None):
                         time.sleep(.01)
                 try:
                     generation += 1
+                    timing = dict(requested_ns=requested, acquired_ns=time.monotonic_ns(), generation=generation)
                     pacing_feedback({}, transition=True)
-                    yield
+                    yield timing
                 finally:
+                    timing['release_begin_ns'] = time.monotonic_ns()
                     fcntl.flock(pacing_lock, fcntl.LOCK_UN)
 
             def sample():
@@ -639,12 +669,12 @@ def trial(directory, m, rep, mode, seed=None):
                         continue
                     network.update({key:fault[key] for key in FAULTS[:-1] if key in fault})
                     link_up = fault.get('link_up',link_up)
-                    with class_update():
+                    with class_update() as lock_timing:
                         begun = time.monotonic_ns()
                         applied = request('research_conditions',network=network,mode=mode,
                                           seed=(seed+index-1)%(2**32-1)+1,link_up=link_up,**ecn_options)
                     transitions.write(json.dumps(dict(scheduled_ns=round(deadline*NANO),begun_ns=begun,
-                                                      requested=fault, **applied))+'\n')
+                                                      requested=fault, actuator_lock=lock_timing, **applied))+'\n')
                     transitions.flush()
                     if version2:
                         expected_capacity = applied['capacity_kbit']

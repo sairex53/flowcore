@@ -229,6 +229,90 @@ void integrated_policy() {
     CHECK(handoff.evaluate(observation, baseline, now+1s).decision == p::Decision::Hold);
 }
 
+void rate_timing() {
+    Pair pair;
+    auto managed = p::SocketPolicy::attach(pair.sender.fd, settings());
+    CHECK(managed);
+    const auto initial = managed->snapshot();
+    CHECK(initial);
+    p::RateTiming trace;
+    CHECK(!managed->set_rate(initial->maximum_rate, &trace));
+    CHECK(!trace.write_attempted);
+    CHECK(managed->set_rate(1, &trace) == std::errc::invalid_argument);
+    CHECK(!trace.write_attempted);
+    CHECK(!managed->set_rate(300'000, &trace));
+    CHECK(trace.write_attempted);
+    const auto after = managed->snapshot();
+    CHECK(after && after->maximum_rate == 300'000);
+}
+
+void guarded_policy() {
+    constexpr p::Rate baseline = 1'500'000;
+    p::Controller policy(p::Strategy::Guarded, 50'000, baseline, baseline);
+    p::Observation o{};
+    o.capacity = baseline;
+    o.throughput = o.background_demand = 1'000'000;
+    o.background_guarantee = 300'000;
+    o.background_ceiling = baseline;
+    o.backlog_bytes = 24'000;
+    o.critical_backlog = 3000;
+    o.rtt_us = 15000;
+    o.request_p99_us = 50'000;
+    o.requests = 24;
+    o.active_sockets = 4;
+    o.valid = true;
+    const auto start = p::Clock::now();
+    auto sample = [&](p::Controller& controller, p::Rate current, std::chrono::seconds elapsed,
+                      p::Rate goodput) {
+        o.receiver_rate = goodput;
+        o.receiver_begin = o.request_begin = start+elapsed-1s;
+        o.receiver_end = start+elapsed;
+        return controller.evaluate(o, current, start+elapsed);
+    };
+    CHECK(sample(policy, baseline, 0s, 1'000'000).decision == p::Decision::Hold);
+    CHECK(sample(policy, baseline, 1s, 1'000'000).reason == p::Reason::Stabilizing);
+    CHECK(sample(policy, baseline, 1s, 1'000'000).reason == p::Reason::InsufficientEvidence);
+    const auto cut = sample(policy, baseline, 2s, 1'000'000);
+    CHECK(cut.decision == p::Decision::Adjust && cut.rate == 242'500);
+    policy.confirm(true, start+2s+10ms);
+    CHECK(sample(policy, cut.rate, 3s, 0).reason == p::Reason::Stabilizing); // crosses the write
+    CHECK(sample(policy, cut.rate, 4s, 0).decision == p::Decision::Hold);
+    const auto rollback = sample(policy, cut.rate, 5s, 800'000);
+    CHECK(rollback.decision == p::Decision::Rollback && rollback.rate == baseline);
+    CHECK(rollback.reason == p::Reason::GoodputRegression);
+    policy.confirm(true, start+5s);
+
+    p::Controller transition(p::Strategy::Guarded, 50'000, baseline, baseline);
+    CHECK(sample(transition, baseline, 0s, 1'000'000).decision == p::Decision::Hold);
+    CHECK(sample(transition, baseline, 1s, 1'000'000).decision == p::Decision::Hold);
+    CHECK(sample(transition, baseline, 2s, 1'000'000).decision == p::Decision::Adjust);
+    transition.confirm(true, start+2s);
+    o.class_transition = true;
+    CHECK(transition.evaluate(o, cut.rate, start+2001ms).decision == p::Decision::Fallback);
+    transition.confirm(true, start+2001ms);
+    o.class_transition = false;
+    o.capacity = o.background_ceiling = 875'000;
+    CHECK(sample(transition, baseline, 3s, 650'000).reason == p::Reason::ScopeLost);
+    o.capacity = o.background_ceiling = baseline;
+    CHECK(sample(transition, baseline, 4s, 1'000'000).reason == p::Reason::ScopeLost);
+    CHECK(sample(transition, baseline, 5s, 1'000'000).decision == p::Decision::Hold);
+    CHECK(sample(transition, baseline, 6s, 1'000'000).decision == p::Decision::Adjust);
+    transition.confirm(true, start+6s);
+    // An unchanged old receiver record cannot keep a probe alive.
+    const auto expired = transition.evaluate(o, cut.rate, start+10s);
+    CHECK(expired.decision == p::Decision::Rollback && expired.reason == p::Reason::UnprovenBenefit);
+
+    p::Controller redundant(p::Strategy::Guarded, 50'000, baseline, baseline);
+    o.class_transition = false;
+    o.critical_backlog = 0;
+    CHECK(sample(redundant, baseline, 0s, 1'000'000).decision == p::Decision::Hold);
+    CHECK(sample(redundant, baseline, 1s, 1'000'000).reason == p::Reason::InsufficientEvidence);
+    o.critical_backlog = 3000;
+    o.background_ceiling = 960'000;
+    CHECK(sample(redundant, baseline, 2s, 1'000'000).decision == p::Decision::Hold);
+    CHECK(sample(redundant, baseline, 3s, 1'000'000).reason == p::Reason::Redundant);
+}
+
 void intent_attestation(const char* path) {
     flowcore::v2::Intent intent;
     intent.service = "pacing_demo";
@@ -273,6 +357,8 @@ int main(int argc, char** argv) {
             descriptor_reuse_and_drift();
             decision_logic();
             integrated_policy();
+            guarded_policy();
+            rate_timing();
             readiness();
             const auto options = p::probe();
             std::cout << "SO_MARK write errno=" << options->mark_write.value() << '\n';

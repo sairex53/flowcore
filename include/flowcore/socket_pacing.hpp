@@ -46,6 +46,11 @@ struct Snapshot {
     std::optional<std::uint32_t> output_queue_bytes, send_buffer_bytes;
 };
 
+struct RateTiming {
+    std::uint64_t pin_ns = 0, precheck_ns = 0, write_ns = 0, readback_ns = 0;
+    bool write_attempted = false;
+};
+
 struct Capabilities {
     Error maximum_rate, priority, mark_read, mark_write, notsent_lowat, congestion, tcp_info, cookie;
 };
@@ -68,6 +73,7 @@ public:
     std::uint64_t attest(const Service&) const;
     std::expected<Snapshot, Error> snapshot() const;
     Error set_rate(Rate) noexcept;
+    Error set_rate(Rate, RateTiming*) noexcept;
     // Call from the owner's timer even when there is no traffic.
     Error tick(Clock::time_point now = Clock::now()) noexcept;
     Error remove() noexcept;
@@ -87,8 +93,10 @@ private:
     bool active_ = false;
 };
 
-enum class Strategy { Static, Queue, Slo, Hybrid, Ecn, Deadline, Integrated };
+enum class Strategy { Static, Queue, Slo, Hybrid, Ecn, Deadline, Integrated, Guarded };
 enum class Decision { Hold, Adjust, Rollback, Fallback, ClassOnly };
+enum class Reason { None, ScopeLost, InsufficientEvidence, Stabilizing, Redundant,
+                    LocalPressure, GoodputRegression, LatencyRegression, UnprovenBenefit };
 struct Observation {
     Rate capacity = 0, throughput = 0, background_demand = 0;
     std::uint64_t backlog_bytes = 0;
@@ -97,8 +105,11 @@ struct Observation {
     bool valid = false, class_controller_active = false, class_transition = false, ecn_pre_loss = false,
          deadline_pressure = false;
     Rate background_guarantee = 0; // aggregate bytes/s from verified HTB readback
+    Rate background_ceiling = 0, receiver_rate = 0;
+    Clock::time_point receiver_begin{}, receiver_end{}, request_begin{};
+    std::uint64_t critical_backlog = 0;
 };
-struct Proposal { Decision decision; Rate rate; };
+struct Proposal { Decision decision; Rate rate; Reason reason = Reason::None; };
 
 class Controller {
 public:
@@ -108,8 +119,13 @@ public:
     Proposal preview(const Observation&, Rate current, Clock::time_point now) noexcept;
     // Record the result after the caller verifies its entire local socket update.
     void confirm(bool success) noexcept;
+    void confirm(bool success, Clock::time_point verified) noexcept;
 private:
+    Proposal guarded(const Observation&, Rate current, Clock::time_point now) noexcept;
     Strategy strategy_;
+    Clock::time_point verified_{}, receiver_end_{};
+    Rate reference_goodput_ = 0;
+    unsigned goodput_bad_ = 0, latency_bad_ = 0, outcome_windows_ = 0, baseline_windows_ = 0;
     Rate floor_, ceiling_, fallback_, previous_ = 0;
     Rate last_throughput_ = 0, last_capacity_ = 0;
     std::uint32_t prior_p99_ = 0, target_us_;
