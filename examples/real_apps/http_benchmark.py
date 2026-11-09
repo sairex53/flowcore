@@ -16,6 +16,7 @@ import time
 
 from flowcore_adapter import FlowcoreAdapter
 from otel_client import OtlpMetrics
+from service_stack import MAX_RESPONSE
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -51,6 +52,8 @@ def request_worker(index, args, start_ns, count, adapter, rows, lock):
     connection = http.client.HTTPConnection(args.host, args.port, timeout=args.timeout,
                                             source_address=(source, 0) if source else None)
     rng = random.Random(args.seed + index)
+    burst_size = getattr(args, "burst_size", 1)
+    response_sizes = getattr(args, "response_sizes", (0,))
     initial_setup_ms = 0
     cookie = 0
     try:
@@ -68,11 +71,14 @@ def request_worker(index, args, start_ns, count, adapter, rows, lock):
         initial_setup_ms = (time.monotonic_ns() - setup_started) / 1e6
         for local in range(count):
             ordinal = index + local * args.concurrency
-            scheduled = start_ns + int(ordinal * 1e9 / args.rate)
+            release_ordinal = ordinal - ordinal % burst_size
+            scheduled = start_ns + int(release_ordinal * 1e9 / args.rate)
             delay = (scheduled - time.monotonic_ns()) / 1e9
             if delay > 0:
                 time.sleep(delay)
             dispatch = time.monotonic_ns()
+            timing, key = {}, rng.randrange(1, 4097)
+            expected = rng.choice(response_sizes)
             outcome, status, body_size = 'ok', None, 0
             connection_setup_ms = initial_setup_ms if local == 0 else 0
             try:
@@ -85,26 +91,34 @@ def request_worker(index, args, start_ns, count, adapter, rows, lock):
                         except (OSError, RuntimeError):
                             cookie = 0
                     connection_setup_ms = (time.monotonic_ns() - setup_started) / 1e6
-                    dispatch = time.monotonic_ns()
                 # Socket association is completed in connection setup, outside the request scope.
                 with adapter.request(deadline_ms=args.deadline_ms, cookie=cookie) as sdk_request:
                     if connection.sock is not None:
                         connection.sock.settimeout(min(args.timeout, max(.001, args.deadline_ms / 1000)))
-                    connection.request('GET', f'/api/critical?work_ms={args.work_ms}',
+                    connection.request('GET', f'/api/critical?work_ms={args.work_ms}&id={key}&response_bytes={expected}',
                                        headers={'X-Deadline-Ms': str(args.deadline_ms),
                                                 'Connection': 'keep-alive'})
                     response = connection.getresponse()
                     status = response.status
-                    data = response.read(4096)
+                    data = response.read(MAX_RESPONSE+1)
                     body_size = len(data)
+                    for item in response.getheader('Server-Timing', '').split(','):
+                        label, separator, value = item.strip().partition(';dur=')
+                        if separator and label in ('gateway_pool','db_pool','db_roundtrip','app_work_configured'):
+                            try:
+                                amount = float(value)
+                                if math.isfinite(amount) and amount >= 0:
+                                    timing[label] = amount
+                            except ValueError:
+                                pass
                     if connection.sock is not None:
                         connection.sock.settimeout(args.timeout)
-                    if status >= 500 or status < 200:
-                        outcome = 'failure'
-                    elif status != 200:
-                        outcome = 'failure'
+                    if status != 200 or not expected <= body_size <= MAX_RESPONSE:
+                        outcome = 'timeout' if status == 504 else 'failure'
                         if sdk_request is not None:
-                            sdk_request.complete(2)
+                            sdk_request.complete(1 if outcome == 'timeout' else 2)
+                        if body_size > MAX_RESPONSE:
+                            connection.close()
             except (TimeoutError, socket.timeout):
                 outcome = 'timeout'
                 connection.close()
@@ -113,12 +127,12 @@ def request_worker(index, args, start_ns, count, adapter, rows, lock):
                 connection.close()
             ended = time.monotonic_ns()
             latency = (ended - dispatch) / 1e6
-            miss = latency > args.deadline_ms
+            miss = outcome != 'ok' or (ended-scheduled)/1e6 > args.deadline_ms
             row = {'request': ordinal, 'scheduled_ns': scheduled, 'dispatch_ns': dispatch,
                    'end_ns': ended, 'latency_ms': latency, 'dispatch_lag_ms': max(0, (dispatch-scheduled)/1e6),
                    'deadline_ms': args.deadline_ms, 'deadline_miss': miss,
                    'connection_setup_ms': connection_setup_ms,
-                   'outcome': outcome, 'status': status, 'response_bytes': body_size}
+                   'outcome': outcome, 'status': status, 'response_bytes': body_size, 'server_timing_ms': timing}
             with lock:
                 rows.append(row)
     finally:
@@ -187,7 +201,7 @@ def background_transfer(args, start_ns):
             'bytes_transferred': received, 'bytes_sent': received if direction == 'upload' else 0,
             'bytes_received': received if direction == 'download' else 0,
             'completion_seconds': seconds,
-            'goodput_mbps': received * 8 / seconds / 1e6 if seconds else 0, 'error': error}
+            'goodput_mbps': received * 8 / seconds / 1e6 if seconds and not error else None, 'error': error}
 
 
 def main():
@@ -199,6 +213,8 @@ def main():
     parser.add_argument('--duration', type=float, default=12)
     parser.add_argument('--concurrency', type=int, default=8)
     parser.add_argument('--deadline-ms', type=float, default=50)
+    parser.add_argument('--burst-size', type=int, default=1)
+    parser.add_argument('--response-sizes', type=int, nargs='+', default=[0])
     parser.add_argument('--work-ms', type=int, default=2)
     parser.add_argument('--background-bytes', type=int, default=8 * 1024 * 1024)
     parser.add_argument('--background-path', default='')
@@ -220,7 +236,8 @@ def main():
             not 0 < args.deadline_ms <= 600000 or not 0 <= args.work_ms <= 1000 or
             not 0 <= args.background_bytes <= 64 * 1024 * 1024 or
             not math.isfinite(args.background_timeout) or not 1 <= args.background_timeout <= 600 or
-            args.start_ns < 0):
+            not 1 <= args.burst_size <= 64 or not 1 <= len(args.response_sizes) <= 16 or
+            any(not 0 <= size <= MAX_RESPONSE for size in args.response_sizes) or args.start_ns < 0):
         parser.error('workload parameter outside supported bounds')
     adapter = FlowcoreAdapter(args.service, priority=args.priority,
                               target_p99_ms=args.deadline_ms, deadline_ms=args.deadline_ms,

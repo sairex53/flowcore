@@ -222,7 +222,10 @@ target_link_libraries(transport_native_test PRIVATE flowcore_sdk)
 add_test(NAME transport_native COMMAND transport_native_test)
 install(FILES TRANSPORT_AWARE.md QUIC_INTEGRATION.md TRANSPORT_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES REAL_APPLICATIONS.md GRPC_INTEGRATION.md DATABASE_INTEGRATION.md APPLICATION_BENCHMARKS.md
+    REAL_APPLICATIONS_V2.md SERVICE_STACK.md APPLICATION_PERFORMANCE_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES config/real-app-v2-fedora45.txt
+    DESTINATION "${FLOWCORE_DATA}/config")
 install(DIRECTORY examples/real_apps DESTINATION "${FLOWCORE_DATA}/examples"
     PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
 add_test(NAME real_apps_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_apps_test.py")

@@ -7,12 +7,14 @@ import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import re
+import socket
 import stat
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 
 from flowcore_adapter import FlowcoreAdapter
+from service_stack import MAX_RESPONSE, Pool, backend_pool, backend_request
 
 CHUNK = b'F' * 65536
 MAX_TRANSFER = 64 * 1024 * 1024
@@ -76,6 +78,7 @@ class BoundedHTTPServer(ThreadingMixIn, HTTPServer):
     def get_request(self):
         request, client_address = super().get_request()
         request.settimeout(5.0)
+        request.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
         return request, client_address
 
     def process_request(self, request, client_address):
@@ -102,11 +105,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         return
 
-    def _send(self, status, value, content_type='application/json'):
+    def _send(self, status, value, content_type='application/json', timing=''):
         data = value if isinstance(value, bytes) else json.dumps(value, separators=(',', ':')).encode()
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(data)))
+        if timing:
+            self.send_header('Server-Timing', timing)
         self.send_header('Connection', 'keep-alive')
         self.end_headers()
         self.wfile.write(data)
@@ -148,8 +153,27 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path == '/api/critical' and role == 'critical':
                 query = parse_qs(route.query, strict_parsing=False)
                 work_ms = min(1000, max(0, int(query.get('work_ms', ['2'])[0])))
-                time.sleep(work_ms / 1000)
-                sent = self._send(200, {'ok': True, 'role': 'critical', 'work_ms': work_ms})
+                key = int(query.get('id', ['1'])[0])
+                size = int(query.get('response_bytes', ['0'])[0])
+                if not 1 <= key <= 4096 or not 0 <= size <= MAX_RESPONSE:
+                    status = 400
+                    sent = self._send(status, {'error': 'invalid request size or record ID'})
+                elif self.server.upstream:
+                    status, body, timing = backend_request(self.server.upstream, key, work_ms, size, deadline_ms)
+                    sent = self._send(status, body, timing=timing)
+                elif self.server.db_pool:
+                    with self.server.db_pool.checkout(min(2, deadline_ms/1000) if deadline_ms else 2) as (db, wait):
+                        began = time.monotonic_ns()
+                        row = db.execute('SELECT value FROM flowcore_bench WHERE id = %s', (key,)).fetchone()
+                        db_ms = (time.monotonic_ns()-began)/1e6
+                    time.sleep(work_ms/1000)
+                    body = json.dumps({'id': key, 'value': row[0]}, separators=(',', ':')).encode()
+                    timing = f'db_pool;dur={wait:.3f}, db_roundtrip;dur={db_ms:.3f}, app_work_configured;dur={work_ms}'
+                    sent = self._send(200, body.ljust(size), timing=timing)
+                else:
+                    time.sleep(work_ms / 1000)
+                    body = json.dumps({'ok': True, 'role': 'critical', 'work_ms': work_ms}).encode()
+                    sent = self._send(200, body.ljust(size))
             elif route.path == '/transfer' and role == 'background':
                 query = parse_qs(route.query, strict_parsing=False)
                 size = int(query.get('bytes', ['0'])[0])
@@ -206,7 +230,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             status = 499
         except Exception as error:
-            status = 503 if type(error).__name__ in ('OperationalError', 'InterfaceError') else 500
+            status = 504 if isinstance(error, TimeoutError) else (
+                503 if type(error).__name__ in ('OperationalError', 'InterfaceError') else 500)
             try:
                 sent = self._send(status, {'error': type(error).__name__})
             except (BrokenPipeError, ConnectionResetError):
@@ -277,6 +302,10 @@ def main():
     parser.add_argument('--max-workers', type=int, default=128)
     parser.add_argument('--database-dsn', default='')
     parser.add_argument('--artifact-dir', default='')
+    parser.add_argument('--only-role', choices=('critical', 'background', 'database'))
+    parser.add_argument('--upstream-port', type=int)
+    parser.add_argument('--pool-size', type=int, default=16)
+    parser.add_argument('--service', default='api-service')
     parser.add_argument('--flowcore', action='store_true',
                         help='register the critical HTTP service and report server request scopes')
     args = parser.parse_args()
@@ -285,13 +314,27 @@ def main():
         parser.error('ports must be unique and in [1,65535]')
     if not 1 <= args.max_workers <= 512:
         parser.error('--max-workers must be in [1,512]')
+    if (not 1 <= args.pool_size <= 64 or
+            args.upstream_port is not None and not 1 <= args.upstream_port <= 65535 or
+            args.upstream_port and args.database_dsn):
+        parser.error('invalid pool or upstream configuration')
     servers = []
     threads = []
     try:
         for role, port in zip(('critical', 'background', 'database'), ports):
+            if args.only_role and role != args.only_role:
+                continue
             server = BoundedHTTPServer((args.bind, port), Handler, args.max_workers)
             server.role, server.db_dsn = role, args.database_dsn
-            server.adapter = (FlowcoreAdapter('api-service', priority='critical',
+            server.upstream = backend_pool(args.upstream_port, args.pool_size) if args.upstream_port else None
+            server.db_pool = None
+            if role == 'critical' and args.database_dsn:
+                import psycopg
+                def connect():
+                    return psycopg.connect(args.database_dsn, connect_timeout=2, autocommit=True,
+                                           options='-c statement_timeout=2000', application_name='flowcore-backend')
+                server.db_pool = Pool(args.pool_size, connect)
+            server.adapter = (FlowcoreAdapter(args.service, priority='critical',
                                target_p99_ms=30, deadline_ms=30)
                              if args.flowcore and role == 'critical' else None)
             server.artifact_fd = (os.open(args.artifact_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -314,6 +357,9 @@ def main():
                 os.close(server.artifact_fd)
             if getattr(server, 'adapter', None) is not None:
                 server.adapter.close()
+            for pool in (server.upstream, server.db_pool):
+                if pool:
+                    pool.close()
             server.server_close()
 
 

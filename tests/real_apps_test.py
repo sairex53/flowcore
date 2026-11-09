@@ -10,15 +10,19 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 from http.server import ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
 APPS = ROOT / 'examples' / 'real_apps'
-sys.path.insert(0, str(APPS))
+sys.path[:0] = [str(APPS), str(ROOT/'scripts')]
 
 from flowcore_adapter import FlowcoreAdapter
+from http_benchmark import request_worker
 from metrics_bridge import Handler, Store
 from otel_client import OtlpMetrics
+from real_app_lab import paired_report, recovery, stages, verify_requests
+from service_stack import Pool
 
 
 def free_port():
@@ -138,6 +142,13 @@ def test_http_service():
             response = connection.getresponse()
             assert response.status == 200 and json.loads(response.read())['ok']
             connection.close()
+            # The multi-host agent constructs legacy worker options directly.
+            options = SimpleNamespace(host='127.0.0.1',port=ports[0],timeout=1,
+                                      work_ms=0,seed=1,rate=1,concurrency=1,deadline_ms=500)
+            rows = []
+            request_worker(0,options,time.monotonic_ns()+10_000_000,1,
+                           FlowcoreAdapter('legacy',enabled=False),rows,threading.Lock())
+            assert len(rows)==1 and rows[0]['outcome']=='ok'
             for path, expected in (('/artifact/backup.bin', 14 * 4096),
                                    ('/transfer?bytes=131072', 131072)):
                 connection = http.client.HTTPConnection('127.0.0.1', ports[1], timeout=2)
@@ -230,6 +241,15 @@ def test_grpc_example():
             assert timed['summary']['attempted'] == 1
             assert timed['summary']['timeouts'] == 1
             assert timed['requests'][0]['grpc_status'] == 'DEADLINE_EXCEEDED'
+            cancel_output = Path(directory) / 'grpc-cancel.json'
+            subprocess.run([sys.executable, str(APPS / 'grpc_benchmark.py'),
+                '--target', f'127.0.0.1:{port}', '--rate', '2', '--duration', '1',
+                '--concurrency', '2', '--deadline-ms', '250', '--mixed', '--cancel-every', '2',
+                '--no-flowcore', '--output', str(cancel_output)], env=env, check=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=15)
+            cancelled = json.loads(cancel_output.read_text())
+            assert cancelled['summary']['cancelled'] == 1 and cancelled['summary']['completed'] == 1
+            assert {row['priority'] for row in cancelled['requests']} == {'interactive', 'standard'}
         finally:
             server.terminate()
             try:
@@ -315,7 +335,59 @@ def test_receiver_http():
         server.server_close()
 
 
+def test_pool_and_result_integrity():
+    class Connection:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    pool = Pool(1, Connection)
+    with pool.checkout(0) as (first, wait):
+        assert wait >= 0
+        try:
+            with pool.checkout(0):
+                raise AssertionError('pool exceeded bound')
+        except TimeoutError:
+            pass
+    try:
+        with pool.checkout(0) as (reused, _):
+            assert reused is first
+            raise ConnectionError('injected disconnect')
+    except ConnectionError:
+        pass
+    assert first.closed
+    with pool.checkout(0) as (replacement, _):
+        assert replacement is not first
+    pool.close()
+    assert replacement.closed
+
+    rows = [dict(request=0, scheduled_ns=1, start_ns=2, end_ns=3,
+                 latency_ms=.000001, outcome='ok', deadline_miss=False)]
+    payload = dict(requests=rows, summary=dict(attempted=1,completed=1,errors=0,deadline_misses=0))
+    verify_requests(payload,1)
+    try:
+        verify_requests(payload,2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('incomplete offered schedule accepted')
+    plan = stages('dynamic',8,dict(bandwidth_kbit=3000,base_rtt_ms=2,loss_pct=0))
+    assert [(name,up) for _,name,_,up in plan]==[
+        ('capacity_rtt_loss',True),('interrupt',False),('restore',True)]
+    assert recovery(rows,[dict(phase='restore',confirmed_ns=1)],1)==.000002
+    assert recovery(rows,[dict(phase='restore',confirmed_ns=2)],1) is None
+    candidates=[dict(repetition=0,mode=mode,status='MEASURED',
+                     http=dict(p99_ms=p99,error_rate=0,deadline_miss_rate=0))
+                for mode,p99 in [('static',4),('hybrid',3),('linux-default',2)]]
+    pair=paired_report(candidates)['comparisons']
+    assert 'linux-default' not in pair
+    assert pair['hybrid']['http.p99_ms']['median_delta']==-1
+    assert pair['hybrid']['http.p99_ms']['classification']=='INCONCLUSIVE'
+
+
 def main():
+    test_pool_and_result_integrity()
     test_otlp()
     test_adapter_fallback()
     test_http_service()

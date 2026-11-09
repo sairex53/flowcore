@@ -31,6 +31,10 @@ METRIC_TYPES = {
     'flowcore.grpc.requests': 'sum',
     'flowcore.grpc.errors': 'sum',
     'flowcore.grpc.deadline_misses': 'sum',
+    'flowcore.http3.request.duration': 'histogram',
+    'flowcore.http3.requests': 'sum',
+    'flowcore.http3.errors': 'sum',
+    'flowcore.http3.deadline_misses': 'sum',
 }
 PROM_NAMES = {name: name.replace('.', '_').replace('flowcore_', 'flowcore_app_', 1)
               for name in METRIC_TYPES}

@@ -74,6 +74,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Bandwidth-Preserving Hybrid V3 (lab) | [Engine](HYBRID_CONTROLLER_V3.md), [actuator coordination](ACTUATOR_COORDINATION.md), [results](HYBRID_V3_RESULTS.md) |
 | Multi-objective SLO optimization | [Engine](MULTIOBJECTIVE_OPTIMIZATION.md), [Pareto analysis](PARETO_ANALYSIS.md), [results](SLO_OPTIMIZATION_RESULTS.md) |
 | Per-message UDP intents | [Design](PER_MESSAGE_INTENTS.md), [SDK](UDP_INTENT_SDK.md), [results](MESSAGE_SCHEDULING_RESULTS.md) |
+| Real application performance V2 | [Engine](REAL_APPLICATIONS_V2.md), [stack](SERVICE_STACK.md), [results](APPLICATION_PERFORMANCE_RESULTS.md) |
 | Application-intent packet scheduling | [Design](KERNEL_SCHEDULER_DESIGN.md), [reproduce](SCHEDULER_PROTOTYPE.md), [results](SCHEDULER_BENCHMARKS.md) |
 | Multi-host experiments | [MULTI_HOST_LAB.md](MULTI_HOST_LAB.md) |
 | Distributed coordination | [FABRIC_ARCHITECTURE.md](FABRIC_ARCHITECTURE.md) |

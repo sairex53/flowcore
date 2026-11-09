@@ -9,6 +9,7 @@ The end-to-end runner creates the database container with Podman's `ns:` network
 ```sh
 python3 -m pip install -r examples/real_apps/requirements.txt
 cmake --build build -j2
+sudo podman pull docker.io/library/postgres@sha256:9f5be6795d4e9dfc0dca4c8a46eb858a9ddef631fc6b57953960f578d3fb1f9b
 sudo python3 scripts/real_app_lab.py --postgres \
   --modes fq_codel,cake,static,hybrid,predictive \
   --repetitions 10 --capacity-kbit 1500 --rate 60 --db-rate 20 \

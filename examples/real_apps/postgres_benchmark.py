@@ -6,6 +6,8 @@ import math
 import os
 from pathlib import Path
 import random
+import socket
+import struct
 import statistics
 import threading
 import time
@@ -17,6 +19,15 @@ from otel_client import OtlpMetrics
 def percentile(values, fraction):
     ordered = sorted(values)
     return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)] if ordered else None
+
+
+def transport_rtt(connection):
+    try:
+        with socket.fromfd(connection.pgconn.socket, socket.AF_INET, socket.SOCK_STREAM) as fd:
+            raw = fd.getsockopt(socket.IPPROTO_TCP, socket.TCP_INFO, 104)
+        return struct.unpack_from('=I', raw, 68)[0] if len(raw) >= 72 else None
+    except (OSError, AttributeError):
+        return None
 
 
 def main():
@@ -89,9 +100,9 @@ def main():
                 elapsed = (ended - began) / 1e6
                 row = {'request': ordinal, 'scheduled_ns': scheduled, 'start_ns': began,
                        'end_ns': ended, 'latency_ms': elapsed, 'deadline_ms': args.deadline_ms,
-                       'deadline_miss': elapsed > args.deadline_ms,
+                       'deadline_miss': status!='ok' or (ended-scheduled)/1e6 > args.deadline_ms,
                        'outcome': status, 'error': error, 'row_returned': value is not None,
-                       'socket_cookie': cookie or None}
+                       'socket_cookie': cookie or None, 'tcp_srtt_us': transport_rtt(connection)}
                 with lock:
                     rows.append(row)
                 ordinal += args.concurrency
@@ -125,6 +136,7 @@ def main():
                   'deadline_misses': misses,
                   'deadline_miss_rate': misses / len(rows) if rows else 0,
                   'completion_ratio': (len(rows) - failures) / len(rows) if rows else 0,
+                  'tcp_srtt_p50_us': percentile([row['tcp_srtt_us'] for row in rows if row['tcp_srtt_us'] is not None],.50),
                   'query_rps': (len(rows) - failures) / elapsed,
                   'offered_rps': args.rate,
                   'p50_ms': percentile(values, .50), 'p95_ms': percentile(values, .95),

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
+import random
 from pathlib import Path
 import statistics
 import sys
@@ -33,6 +34,8 @@ def main():
     parser.add_argument('--concurrency', type=int, default=8)
     parser.add_argument('--deadline-ms', type=float, default=50)
     parser.add_argument('--work-ms', type=int, default=2)
+    parser.add_argument('--mixed', action='store_true')
+    parser.add_argument('--cancel-every', type=int, default=0)
     parser.add_argument('--response-bytes', type=int, default=128)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--start-ns', type=int, default=0)
@@ -46,7 +49,7 @@ def main():
             not 1 <= args.duration <= 180 or not 1 <= args.concurrency <= 64 or
             args.concurrency > max(1, math.ceil(args.rate * args.duration)) or
             not 0 < args.deadline_ms <= 600000 or not 0 <= args.work_ms <= 1000 or
-            not 0 <= args.response_bytes <= 65536 or args.start_ns < 0):
+            not 0 <= args.cancel_every <= 10000 or not 0 <= args.response_bytes <= 65536 or args.start_ns < 0):
         parser.error('workload parameter outside supported bounds')
     adapter = FlowcoreAdapter(args.service, priority='interactive',
                               target_p99_ms=args.deadline_ms, deadline_ms=args.deadline_ms,
@@ -68,6 +71,7 @@ def main():
     def worker(index):
         local = []
         ordinal = index
+        rng = random.Random(args.seed+index)
         while ordinal < count:
             scheduled = start_ns + int(ordinal * 1e9 / args.rate)
             delay = (scheduled - time.monotonic_ns()) / 1e9
@@ -75,38 +79,36 @@ def main():
                 time.sleep(delay)
             began = time.monotonic_ns()
             outcome, error, status = 'ok', None, 'OK'
+            priority = 'standard' if args.mixed and ordinal%2 else 'interactive'
+            size = rng.choice((128,512,2048,4096)) if args.mixed else args.response_bytes
+            cancel = args.cancel_every and ordinal%args.cancel_every==0
             request = grpc_app_pb2.CriticalRequest(
-                request_id=ordinal, work_ms=args.work_ms, response_bytes=args.response_bytes)
-            try:
-                scope = adapter.sdk.stream_request(
-                    ordinal, 0, int(args.deadline_ms * 1000), 0) if adapter.sdk is not None else None
-                if scope:
-                    with scope:
-                        try:
-                            reply = stub.Critical(request, timeout=args.deadline_ms / 1000)
-                        except grpc.RpcError as failure:
-                            if failure.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
-                                status = failure.code().name
-                                error = failure.details() or 'deadline exceeded'
-                                raise TimeoutError('gRPC deadline exceeded') from failure
-                            raise
-                else:
-                    reply = stub.Critical(request, timeout=args.deadline_ms / 1000)
-                if reply.request_id != ordinal or len(reply.payload) != args.response_bytes:
-                    outcome, status = 'failure', 'invalid_response'
-            except TimeoutError as failure:
-                outcome = 'timeout'
-                error = error or str(failure)
-            except grpc.RpcError as failure:
-                status = failure.code().name
-                error = failure.details() or str(failure.code())
-                outcome = 'timeout' if failure.code() == grpc.StatusCode.DEADLINE_EXCEEDED else 'failure'
+                request_id=ordinal, work_ms=max(20,args.work_ms) if cancel else args.work_ms, response_bytes=size)
+            with adapter.request(deadline_ms=args.deadline_ms, stream_id=ordinal,
+                                 stream_priority=int(priority=='interactive')) as scope:
+                try:
+                    call = stub.Critical.future(request, timeout=args.deadline_ms/1000,
+                                               metadata=(('flowcore-request-priority',priority),))
+                    if cancel:
+                        time.sleep(.003)
+                        call.cancel()
+                    reply = call.result()
+                    if reply.request_id != ordinal or len(reply.payload) != size:
+                        outcome,status='failure','invalid_response'
+                except grpc.FutureCancelledError:
+                    outcome,status='cancelled','CANCELLED'
+                except grpc.RpcError as failure:
+                    status = failure.code().name
+                    error = failure.details() or str(failure.code())
+                    outcome = 'timeout' if failure.code() == grpc.StatusCode.DEADLINE_EXCEEDED else 'failure'
+                if scope and outcome != 'ok':
+                    scope.complete({'timeout':1,'failure':2,'cancelled':3}[outcome])
             ended = time.monotonic_ns()
             elapsed_ms = (ended - began) / 1e6
             local.append({'request': ordinal, 'scheduled_ns': scheduled, 'start_ns': began,
                           'end_ns': ended, 'latency_ms': elapsed_ms,
-                          'deadline_ms': args.deadline_ms, 'deadline_miss': elapsed_ms > args.deadline_ms,
-                          'outcome': outcome, 'grpc_status': status, 'error': error})
+                          'deadline_ms': args.deadline_ms, 'deadline_miss': outcome != 'ok' or (ended-scheduled)/1e6 > args.deadline_ms,
+                          'priority': priority, 'outcome': outcome, 'grpc_status': status, 'error': error})
             ordinal += args.concurrency
         with lock:
             rows.extend(local)
@@ -121,21 +123,22 @@ def main():
         failures = sum(row['outcome'] != 'ok' for row in rows)
         timeouts = sum(row['outcome'] == 'timeout' for row in rows)
         misses = sum(row['deadline_miss'] for row in rows)
+        cancelled = sum(row['outcome']=='cancelled' for row in rows)
         metrics = OtlpMetrics(args.service)
         for row in rows:
             metrics.observe('flowcore.grpc.request.duration', row['latency_ms'] / 1000,
-                            {'flowcore.traffic_class': 'interactive'})
+                            {'flowcore.traffic_class': row['priority']})
             metrics.add_counter('flowcore.grpc.requests', 1,
-                                {'flowcore.traffic_class': 'interactive'})
+                                {'flowcore.traffic_class': row['priority']})
             if row['outcome'] != 'ok':
                 metrics.add_counter('flowcore.grpc.errors', 1,
-                                    {'flowcore.traffic_class': 'interactive'})
+                                    {'flowcore.traffic_class': row['priority']})
             if row['deadline_miss']:
                 metrics.add_counter('flowcore.grpc.deadline_misses', 1,
-                                    {'flowcore.traffic_class': 'interactive'})
+                                    {'flowcore.traffic_class': row['priority']})
         export = metrics.export(args.metrics_endpoint, args.metrics_token)
         report = {'attempted': len(rows), 'completed': len(rows) - failures,
-                  'errors': failures, 'timeouts': timeouts, 'failed': failures-timeouts,
+                  'errors': failures, 'timeouts': timeouts, 'cancelled': cancelled, 'failed': failures-timeouts-cancelled,
                   'error_rate': failures / len(rows) if rows else 0,
                   'deadline_misses': misses, 'deadline_miss_rate': misses / len(rows) if rows else 0,
                   'completion_ratio': (len(rows)-failures) / len(rows) if rows else 0,
