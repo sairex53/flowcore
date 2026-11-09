@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "topology": "veth-pair",
+  "network": {
+    "bandwidth_kbit": 12000,
+    "base_rtt_ms": 6,
+    "jitter_ms": 0,
+    "loss_pct": 0,
+    "reorder_pct": 0
+  },
+  "workload": {
+    "phases": [
+      {
+        "seconds": 20,
+        "requests_per_second": 30,
+        "background_streams": 4
+      }
+    ],
+    "payload_bytes": 24576,
+    "max_inflight": 256,
+    "priority_weights": {
+      "critical": 80,
+      "interactive": 15,
+      "standard": 5
+    },
+    "bulk_bytes_per_stream": 0,
+    "warmup_seconds": 1,
+    "deadline_ms": 70,
+    "critical_services": 2,
+    "connection_reuse": "none",
+    "background_kbit_per_stream": 0
+  },
+  "duration_seconds": 20,
+  "repetitions": 2,
+  "seed": 2376705039,
+  "modes": [
+    "static",
+    "optimizer",
+    "hybrid-v3"
+  ],
+  "static_critical_pct": 30,
+  "controller": {
+    "target_p99_ms": 30,
+    "window_seconds": 2,
+    "minimum_samples": 20,
+    "bpf": "off"
+  },
+  "faults": [
+    {
+      "at_seconds": 5,
+      "bandwidth_kbit": 7000
+    },
+    {
+      "at_seconds": 8,
+      "bandwidth_kbit": 12000
+    }
+  ],
+  "regression": {
+    "p99_ms": 0.1,
+    "total_mbps": 0.1,
+    "jain_index": 0.02,
+    "cpu_seconds": 0.15,
+    "adjustments_per_minute": 2,
+    "event_loss": 5
+  },
+  "gates": {
+    "baseline": "static",
+    "min_pairs": 10,
+    "margins": {
+      "p99_ms": 0.1,
+      "total_mbps": 0.1,
+      "failure_ratio": 0.01,
+      "deadline_attainment": 0.05
+    }
+  },
+  "hybrid_v3": {
+    "background_floor_pct": 20,
+    "max_goodput_regression_pct": 10,
+    "cooldown_seconds": 3,
+    "maximum_actions": 2,
+    "initial_cap_bytes_s": 0,
+    "objective_guard": {
+      "objectives": {
+        "critical_p99_ms": {
+          "weight": 10,
+          "scale": 30
+        },
+        "background_mbps": {
+          "weight": 5,
+          "scale": 4
+        },
+        "deadline_miss_ratio": {
+          "weight": 6,
+          "scale": 0.05
+        }
+      },
+      "min_score_gain": 0.2
+    }
+  }
+}

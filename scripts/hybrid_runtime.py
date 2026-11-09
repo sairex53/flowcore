@@ -18,8 +18,15 @@ FIELDS = ('capacity', 'background_rate', 'background_ceiling', 'critical_rate', 
 
 
 def config(value):
-    keys(value, ('background_floor_pct', 'max_goodput_regression_pct', 'cooldown_seconds',
-                 'maximum_actions', 'initial_cap_bytes_s'))
+    required = ('background_floor_pct', 'max_goodput_regression_pct', 'cooldown_seconds',
+                'maximum_actions', 'initial_cap_bytes_s')
+    keys(value, (*required, 'objective_guard') if isinstance(value, dict) and 'objective_guard' in value else required)
+    if 'objective_guard' in value:
+        from slo_optimizer import LIVE_METRICS, preferences
+        guard = value['objective_guard']
+        keys(guard, ('objectives', 'min_score_gain'))
+        preferences(guard['objectives'], LIVE_METRICS)
+        number(guard['min_score_gain'], 0, 1000)
     for key, low, high in (('background_floor_pct', 20, 60), ('max_goodput_regression_pct', 1, 30),
                            ('cooldown_seconds', 2, 10), ('maximum_actions', 1, 3)):
         number(value[key], low, high, True)
@@ -89,7 +96,7 @@ class Coordinator:
         self.evaluation_seconds = max(6, 2*window_seconds+2)
         self.previous = self.requested = self.pending = None
         self.last_scope = self.last_sample = None
-        self.streak = self.actions = self.rollbacks = 0
+        self.streak = self.actions = self.rollbacks = self.adverse = 0
         self.cooldown = 0
         self.frozen = False
 
@@ -155,7 +162,8 @@ class Coordinator:
                    target_us=self.target_us, sockets=len(caps), fresh=fresh, demand=bool(socket_state.get('demand')))
         app_begin, app_end = value['control_bounds_ns']
         outcome = dict(p99_us=obs['p99_us'], goodput=bg, fairness=jain, utilization=wire/obs['capacity'],
-                       failure_count=failures, deadline_miss_ratio=misses/deadlines if deadlines else None,
+                       failure_count=failures, success_ratio=requests/(requests+failures) if requests+failures else None,
+                       interval_seconds=elapsed/NANO, deadline_miss_ratio=misses/deadlines if deadlines else None,
                        receiver_begin_ns=previous[3]['time_ns'],
                        app_begin_ns=app_begin, app_end_ns=app_end,
                        cohort=cohort, revision=auth['revision'],
@@ -247,10 +255,17 @@ class Coordinator:
             and row['cpu_seconds'] <= before['cpu_seconds']+.05 for row in after)
         better = safe and all(row['p99_us'] <= before['p99_us']*.95 if pending['action']=='shift_class'
                               else row['goodput'] >= before['goodput']*1.05 for row in after)
+        guard = self.limits.get('objective_guard')
+        tradeoff = None
+        if guard is not None and len(after) == 2:
+            from slo_optimizer import hybrid_tradeoff
+            tradeoff = hybrid_tradeoff(before, after, guard)
+            better = better and tradeoff['gain_met']
         verdict = ('inconclusive' if len(after) != 2 else 'adverse' if not safe else
                    'observed_benefit' if better else 'no_observed_benefit')
+        self.adverse += verdict == 'adverse'
         self.record('outcome', action=pending['action'], guard_passed=safe, benefit_observed=better,
-                    verdict=verdict, before=before, after=after)
+                    verdict=verdict, objective_guard=tradeoff, before=before, after=after)
         if pending['action'] == 'shift_class' and auth.get('boosted'):
             result = commit('restore', auth['revision'], 0, None)
             self.rollbacks += 1

@@ -137,6 +137,17 @@ def main():
     hybrid_actions = hybrid.add_subparsers(dest='action', required=True)
     hybrid_actions.add_parser('plan').add_argument('frame', type=Path)
     hybrid_actions.add_parser('inspect').add_argument('journal', type=Path)
+    slo = commands.add_parser('slo', help='compare measured policies or preview owned allocation alternatives')
+    slo_actions = slo.add_subparsers(dest='action', required=True)
+    slo_report = slo_actions.add_parser('report')
+    slo_report.add_argument('summary', type=Path)
+    slo_report.add_argument('--profile', required=True, type=Path)
+    slo_shadow = slo_actions.add_parser('shadow')
+    slo_shadow.add_argument('--profile', required=True, type=Path)
+    slo_shadow.add_argument('--hybrid-frame', type=Path)
+    slo_shadow.add_argument('--budget-ms', type=float)
+    slo_shadow.add_argument('--payload-bytes', type=int, default=0)
+    slo_shadow.add_argument('--processing-us', type=int)
     args = parser.parse_args()
     watch = getattr(args, 'watch', None)
     if watch is not None and not .1 <= watch <= 60:
@@ -144,6 +155,23 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command == 'slo':
+            from durable_state import read_json
+            from slo_optimizer import profile
+            policy = profile(read_json(args.profile, limit=16384))
+            if args.action == 'report':
+                from slo_report import report
+                result = report(args.summary, policy)
+            else:
+                from slo_shadow import explain
+                if args.budget_ms is None and (args.payload_bytes or args.processing_us is not None):
+                    raise ValueError('payload and processing budgets require --budget-ms')
+                deadline = (dict(budget_ms=args.budget_ms, payload_bytes=args.payload_bytes,
+                                 processing_us=args.processing_us) if args.budget_ms is not None else None)
+                frame = read_json(args.hybrid_frame, limit=8192) if args.hybrid_frame else None
+                result = explain(request('slo_shadow', deadline=deadline), policy, frame)
+            print(json.dumps(result, indent=2, allow_nan=False))
+            return 0
         if args.command == 'hybrid':
             from hybrid_runtime import inspect, plan_file
             result = plan_file(args.frame) if args.action == 'plan' else inspect(args.journal)

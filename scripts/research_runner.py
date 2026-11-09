@@ -788,8 +788,22 @@ def trial(directory, m, rep, mode, seed=None):
                     raise RuntimeError('pacing workload instrumentation did not attach any background socket')
                 result['socket_updates_per_minute'] = report['socket_actions']*60/(end-start)
             if version2:
+                recovery_start = None
+                if m['version'] == 2:
+                    capacity = m['network']['bandwidth_kbit']
+                    previous = capacity
+                    with (directory/'transitions.jsonl').open() as stream:
+                        for line in stream:
+                            transition = json.loads(line)
+                            current = transition.get('capacity_kbit')
+                            if current == capacity and previous is not None and previous < capacity:
+                                recovery_start = transition['kernel_confirmed_ns']/NANO
+                            if current != capacity:
+                                recovery_start = None
+                            previous = current
                 metrics = v2.account(directory/'requests.csv', result['offered'], start, end,
-                                     workload['deadline_ms'], workload['payload_bytes'])
+                                     workload['deadline_ms'], workload['payload_bytes'],
+                                     recovery_start=recovery_start)
                 if metrics['failed_requests'] != result['failed']:
                     raise RuntimeError('workload summary disagrees with raw ledger')
                 result.update(metrics)
@@ -803,6 +817,13 @@ def trial(directory, m, rep, mode, seed=None):
                     if len(tins) != 4 or not all(tins[i].get('sent_packets', 0) > 0 for i in (0, 3)):
                         raise RuntimeError('CAKE DiffServ bulk and voice tins did not both transmit')
                     result['cake_diffserv_tins'] = tins
+                class_changes = sum(row['result'] in ('pending', 'verified', 'released', 'restored_baseline')
+                                    or bool(row.get('rollback')) for row in history)
+                socket_changes = (result.get('socket_pacing') or {}).get('socket_actions', 0)
+                result['slo_policy_updates'] = class_changes + (
+                    hybrid.actions+hybrid.rollbacks if hybrid else socket_changes)
+                result['slo_harmful_actions'] = (sum(row['result']=='rolled_back' and bool(row.get('degraded'))
+                                                      for row in history) + (hybrid.adverse if hybrid else 0))
                 result['warnings'] = v2.noise(host_before, host_after, metrics, result['observed_rate_windows'])
             save(directory/'result.json',result)
             return result

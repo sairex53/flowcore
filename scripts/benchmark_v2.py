@@ -46,7 +46,7 @@ def host_sample():
                 load_average=os.getloadavg(), pressure_total_us=pressures)
 
 
-def account(path, offered, start, end, deadline_ms, payload):
+def account(path, offered, start, end, deadline_ms, payload, *, recovery_start=None):
     """Metrics use the offered cohort, with goodput limited to the window."""
     with path.open() as stream:
         rows = list(csv.DictReader(stream))
@@ -67,10 +67,30 @@ def account(path, offered, start, end, deadline_ms, payload):
         cohort = [row for row in rows if row['service'] == service]
         latencies = [float(row['latency_ms']) for row in cohort if row['outcome'] == 'ok']
         services[service] = dict(offered=len(cohort), completed=len(latencies),
+                                 traffic_class=cohort[0]['traffic_class'],
+                                 payload_mbps=sum(row['outcome']=='ok' and float(row['completed'])<=end
+                                                  for row in cohort)*payload*8/(end-start)/1e6,
                                  p99_ms=percentile(latencies, .99),
                                  failure_ratio=1-len(latencies)/len(cohort),
                                  deadline_attainment=None if deadline_ms is None else
                                  sum(map(on_time, cohort))/len(cohort))
+    recovery = dict(status='not_applicable', seconds=None)
+    if recovery_start is not None and deadline_ms is not None:
+        # Only fully observed windows beginning after kernel-confirmed recovery.
+        horizon = max(0, end-recovery_start)
+        recovery = dict(status='right_censored', seconds=None, observed_seconds=horizon)
+        bins = [[] for _ in range(int(horizon))]
+        for row in rows:
+            offset = float(row['scheduled'])-recovery_start
+            if row['traffic_class']=='critical' and 0 <= offset < len(bins):
+                bins[int(offset)].append(row)
+        streak = 0
+        for i, bucket in enumerate(bins, 1):
+            healthy = len(bucket)>=5 and sum(map(on_time, bucket))*20 >= len(bucket)*19
+            streak = streak+1 if healthy else 0
+            if streak == 2:
+                recovery = dict(status='observed', seconds=i, observed_seconds=horizon)
+                break
     return dict(outcomes=dict(outcomes), timeout_requests=outcomes['TimeoutError'],
                 admission_rejected=outcomes['admission_rejected'], admission_deferred=outcomes['admission_deferred'],
                 sent_request_failures=offered-len(successful)-outcomes['admission_rejected']-
@@ -81,7 +101,7 @@ def account(path, offered, start, end, deadline_ms, payload):
                 deadline_misses=None if attained is None else offered-attained,
                 successful_within_window=in_window, request_payload_mbps=in_window*payload*8/(end-start)/1e6,
                 dispatch_lag_p99_ms=percentile([float(row['dispatch_lag_ms']) for row in rows], .99),
-                services=services)
+                services=services, slo_recovery=recovery)
 
 
 def interface(snapshot, index):

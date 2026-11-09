@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "baseline": "static",
+  "min_pairs": 12,
+  "min_critical_samples": 100,
+  "objectives": {
+    "critical_p99_ms": {"weight": 10, "scale": 30},
+    "deadline_miss_ratio": {"weight": 6, "scale": 0.05},
+    "success_ratio": {"weight": 5, "scale": 1},
+    "background_mbps": {"weight": 8, "scale": 4},
+    "service_mbps": {"weight": 4, "scale": 1},
+    "fairness": {"weight": 2, "scale": 1},
+    "utilization": {"weight": 3, "scale": 1},
+    "cpu_pct": {"weight": 2, "scale": 10},
+    "updates_per_min": {"weight": 2, "scale": 8}
+  },
+  "limits": {
+    "deadline_miss_ratio": 0.15,
+    "success_ratio": 0.99,
+    "background_mbps": 3,
+    "fairness": 0.85,
+    "cpu_pct": 25,
+    "rss_mib": 128,
+    "updates_per_min": 16
+  },
+  "guardrails": {
+    "critical_p99_ms": 5,
+    "deadline_miss_ratio": 0.02,
+    "success_ratio": 0.005,
+    "background_mbps": 0.25
+  },
+  "resources": {
+    "capacity_kbit_max": 12000,
+    "classes": {
+      "critical": {"floor_pct": 30, "ceiling_pct": 100},
+      "interactive": {"floor_pct": 20, "ceiling_pct": 100},
+      "standard": {"floor_pct": 20, "ceiling_pct": 100},
+      "background": {"floor_pct": 20, "ceiling_pct": 100}
+    }
+  },
+  "min_score_gain": 0.2,
+  "solver_cpu_ms": 100
+}

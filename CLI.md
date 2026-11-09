@@ -26,6 +26,7 @@ a separate runtime directory. The installed default is /run/flowcore.
 | intent register FILE/list/inspect NAME/remove NAME | Authenticated application leases |
 | controller start/stop/status/shadow | Active, disabled and read-only adaptation. Strategy flags are static, threshold and slo. |
 | hybrid plan FRAME / hybrid inspect JOURNAL | Read-only Hybrid V3 dry run and decision audit for Research Lab artifacts. |
+| slo report SUMMARY / slo shadow | Paired multi-objective evaluation or read-only allocation preview. Both require an operator profile. |
 | observe [--interface fc0] [--watch SECONDS] | Lab telemetry snapshots |
 | connections [--limit N] [--offset N] [--csv] | Bounded socket snapshots |
 | congestion, events [--jsonl], metrics [--prometheus] | Observations, live events and exports |

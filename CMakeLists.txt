@@ -140,7 +140,7 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/slo_optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp)
 target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -379,4 +379,10 @@ add_test(NAME hybrid_v3_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE
 set_tests_properties(hybrid_v3_unit PROPERTIES
     ENVIRONMENT "FLOWCORE_HYBRID_TEST_BUILD=$<TARGET_FILE_DIR:flowcore_pacing_lab>")
 install(FILES HYBRID_CONTROLLER_V3.md ACTUATOR_COORDINATION.md HYBRID_V3_RESULTS.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME slo_optimization_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/slo_test.py")
+set_tests_properties(slo_optimization_unit PROPERTIES TIMEOUT 15
+    ENVIRONMENT "FLOWCORE_SLO_TEST_BUILD=$<TARGET_FILE_DIR:flowcore_intelligence>")
+install(FILES MULTIOBJECTIVE_OPTIMIZATION.md PARETO_ANALYSIS.md SLO_OPTIMIZATION_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
