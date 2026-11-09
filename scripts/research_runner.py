@@ -303,7 +303,9 @@ def trial(directory, m, rep, mode, seed=None):
         cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
         cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
     online = m.get('online')
-    if online:
+    if 'integrated' in m['modes']:
+        cfg['observability']['max_sockets'] = 1024
+    elif online:
         cfg['observability']['max_sockets'] = 1024
     configured_reserve = ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:])
     if online or mode in configured_reserve:
@@ -412,6 +414,8 @@ def trial(directory, m, rep, mode, seed=None):
                 settings['ecn_socket_algorithm'] = 'dctcp'
             if pacing:
                 settings['socket_pacing_mode'] = mode
+                if mode == 'integrated':
+                    settings['pacing_target_us'] = round(m['controller']['target_p99_ms']*1000)
                 settings['socket_shadows'] = m.get('socket_shadows', [])
                 pacing_lock = resources.enter_context(private_lock(directory/'pacing.lock'))
             save(plan,settings)
@@ -427,6 +431,7 @@ def trial(directory, m, rep, mode, seed=None):
             client = worker(0, 'client', directory, options, cl)
             samples = []
             begin_ticks = cpu_ticks()
+            generation = 0
             def pacing_feedback(value, transition=False):
                 if not pacing:
                     return
@@ -434,6 +439,14 @@ def trial(directory, m, rep, mode, seed=None):
                            backlog_bytes=root(value.get('tc', {})).get('backlog', 0),
                            class_active=value.get('state', {}).get('mode', 'off') != 'off',
                            transition=transition)
+                if mode == 'integrated':
+                    from nextgen_scope import feedback
+                    row['integrated'] = feedback(
+                        value.get('tc', {}), cfg['policies']['default']['classes'],
+                        expected_capacity or 0, m['network']['bandwidth_kbit'],
+                        generation=generation, sampled_ns=value.get('sample_ns'),
+                        healthy=value.get('integrated_quality')
+                        and value.get('state', {}).get('mode') == 'off')
                 if deadline_profile:
                     row['deadline_evidence'] = value.get('deadline_evidence', {})
                 if ecn_profile:
@@ -452,6 +465,7 @@ def trial(directory, m, rep, mode, seed=None):
 
             @contextlib.contextmanager
             def class_update():
+                nonlocal generation
                 if pacing_lock is None:
                     yield
                     return
@@ -465,6 +479,7 @@ def trial(directory, m, rep, mode, seed=None):
                             raise RuntimeError('socket actuator did not release class transition lock')
                         time.sleep(.01)
                 try:
+                    generation += 1
                     pacing_feedback({}, transition=True)
                     yield
                 finally:

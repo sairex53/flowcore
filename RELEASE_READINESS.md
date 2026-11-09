@@ -85,3 +85,10 @@ Scenario frozen in 408e7df before execution, 10 paired static30/hybrid runs on n
 ## x86 installed-mode follow-up
 
 [CI at fb2c9ff](https://github.com/sairex53/flowcore/actions/runs/42327112417) additionally passed staged installation on the x86_64 VM: ordinary-user monitor with zero effective capabilities, watchdog/metrics, authorization/parser refusal, installed SDK consumer/session reuse and staged file removal. CTest 30/30 and selected sanitizers 3/3 also passed in that run. This is CMake staged installation, not a Fedora RPM transaction or installed privileged-helper campaign. Retained log: build/review-x86-installed-ci.log.
+
+
+## Next-generation integrated engine
+
+The integrated engine is an opt-in research mode for owned veth labs. Its release scope remains experimental. The verified HTB and flower tree, managed-socket cap and compensation paths have explicit ownership checks. The integrated deployment gate remains open for installed privileged operation, longer fault campaigns and independent host or architecture runs. The 40-trial next-generation matrix leaves integrated P99 inconclusive and detects a goodput regression in the old ECN-aware arm. The performance gate requires repeated evidence across workloads and stronger baselines. No release tag or production promotion was created.
+
+The current feature completion matrix is in [Next-generation architecture](NEXTGEN_ARCHITECTURE.md). The same-allocation study, separated scheduler baselines, raw evidence locations and local verification are in [Next-generation benchmarks](NEXTGEN_BENCHMARKS.md).

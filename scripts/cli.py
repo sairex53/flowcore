@@ -128,6 +128,11 @@ def main():
     add_ecn(commands)
     from strategy_cli import add_commands as add_strategy
     add_strategy(commands)
+    nextgen = commands.add_parser("nextgen", help="inspect integrated engine capabilities")
+    nextgen_actions = nextgen.add_subparsers(dest="action", required=True)
+    capabilities = nextgen_actions.add_parser("capabilities")
+    capabilities.add_argument("--fabric-config", type=Path)
+    nextgen_actions.add_parser("report").add_argument("summary", type=Path)
     args = parser.parse_args()
     watch = getattr(args, 'watch', None)
     if watch is not None and not .1 <= watch <= 60:
@@ -135,6 +140,15 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command == "nextgen":
+            if args.action == "report":
+                from nextgen_report import report
+                result = report(args.summary)
+            else:
+                from nextgen_capabilities import report
+                result = report(args.fabric_config)
+            print(json.dumps(result, indent=2))
+            return 0
         if args.command == "strategy":
             from strategy_cli import dispatch
             print(json.dumps(dispatch(args), indent=2))

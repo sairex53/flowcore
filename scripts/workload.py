@@ -157,9 +157,10 @@ async def client(output, duration, rate, payload, request_port, background_port,
     paced_kbit = research.get('background_kbit_per_stream', 0) if research else 0
     pacing = None
     if research and 'socket_pacing_mode' in research:
-        from pacing_workload import PacingWorkload
+        from pacing_workload import PacingWorkload, SLO_TARGET
         pacing = PacingWorkload(output, research['socket_pacing_mode'], research.get('deadline_pacing_floor'),
-                                research.get('socket_shadows', ()))
+                                research.get('socket_shadows', ()),
+                                target_us=research.get('pacing_target_us', SLO_TARGET))
     admission = None
     if research and 'deadline_admission' in research:
         from deadline_workload import AdmissionWorkload
@@ -227,7 +228,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
         outcome = 'ok'
         direct_socket = None
         network_begin_ns = None
-        budget = admission.budget_ms(index) if admission else None
+        budget = admission.budget_ms(index) if admission else deadline_ms
         advice = ''
         if admission:
             advice = admission.admission(scheduled, index, traffic_class)['decision']
@@ -281,9 +282,14 @@ async def client(output, duration, rate, payload, request_port, background_port,
             window.clear()
             if pacing:
                 tail = percentile([value for value, _ in pacing_window], .99) or 0
-                if any(status != 'ok' for _, status in pacing_window):
+                failures = sum(status != 'ok' for _, status in pacing_window)
+                if failures:
                     tail = max(tail, 5000)
-                pacing.tick(tail, len(pacing_window), admission.pressure() if admission else False)
+                pressure = admission.pressure() if admission else bool(
+                    deadline_ms and len(pacing_window) >= 12 and
+                    sum(value >= .8*deadline_ms for value, status in pacing_window if status == 'ok')
+                    * 4 >= len(pacing_window))
+                pacing.tick(tail, len(pacing_window), pressure, failures)
                 pacing_window.clear()
             if batch:
                 tail = percentile([value for value, _ in batch], .99)
@@ -392,7 +398,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
             if pacing and traffic_class == 'critical':
                 pacing_window.append((5000, 'inflight_limit'))
             if reporter:
-                reporter.submit((ended - scheduled) * 1e6, 'inflight_limit', admission.budget_ms(index) if admission else None)
+                reporter.submit((ended - scheduled) * 1e6, 'inflight_limit',
+                                admission.budget_ms(index) if admission else deadline_ms)
             continue
         task = asyncio.create_task(request(index, scheduled, traffic_class, name))
         pending.add(task)

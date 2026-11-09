@@ -82,6 +82,8 @@ def apply_conditions(service, settings, mode, seed, link_up, ecn=None):
     if ecn is not None:
         ecn = ecn_policy.validate(ecn)
     profile = net_profile(settings)
+    if mode == 'integrated' and (profile['bandwidth_kbit'] > 12000 or service.controller.mode != 'off'):
+        raise ValueError('integrated mode requires bounded HTB capacity and exclusive socket authority')
     number(seed, 1, 2**32-1, True)
     if type(link_up) is not bool:
         raise ValueError('link_up must be boolean')

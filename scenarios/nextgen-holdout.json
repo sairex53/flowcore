@@ -1,0 +1,92 @@
+{
+  "version": 2,
+  "topology": "veth-pair",
+  "network": {
+    "bandwidth_kbit": 12000,
+    "base_rtt_ms": 12,
+    "jitter_ms": 0,
+    "loss_pct": 0,
+    "reorder_pct": 0
+  },
+  "workload": {
+    "phases": [
+      {
+        "seconds": 2,
+        "requests_per_second": 24,
+        "background_streams": 1
+      },
+      {
+        "seconds": 10,
+        "requests_per_second": 33,
+        "background_streams": 6
+      },
+      {
+        "seconds": 2,
+        "requests_per_second": 28,
+        "background_streams": 2
+      }
+    ],
+    "payload_bytes": 4096,
+    "max_inflight": 256,
+    "priority_weights": {
+      "critical": 80,
+      "interactive": 15,
+      "standard": 5
+    },
+    "bulk_bytes_per_stream": 0,
+    "warmup_seconds": 1,
+    "deadline_ms": 36,
+    "critical_services": 2,
+    "connection_reuse": "none",
+    "background_kbit_per_stream": 0
+  },
+  "duration_seconds": 14,
+  "repetitions": 10,
+  "seed": 194389621,
+  "modes": [
+    "ecn-static",
+    "ecn-queue",
+    "ecn-aware",
+    "integrated"
+  ],
+  "static_critical_pct": 30,
+  "controller": {
+    "target_p99_ms": 30,
+    "window_seconds": 2,
+    "minimum_samples": 20,
+    "bpf": "off"
+  },
+  "faults": [
+    {
+      "at_seconds": 10,
+      "bandwidth_kbit": 8000,
+      "base_rtt_ms": 15,
+      "loss_pct": 0.15
+    }
+  ],
+  "regression": {
+    "p99_ms": 0.1,
+    "total_mbps": 0.1,
+    "jain_index": 0.02,
+    "cpu_seconds": 0.15,
+    "adjustments_per_minute": 2,
+    "event_loss": 5
+  },
+  "gates": {
+    "baseline": "ecn-static",
+    "min_pairs": 10,
+    "margins": {
+      "p99_ms": 0.1,
+      "total_mbps": 0.1,
+      "failure_ratio": 0.01,
+      "deadline_attainment": 0.05
+    }
+  },
+  "ecn": {
+    "version": 1,
+    "target_us": 5000,
+    "interval_us": 100000,
+    "threshold_us": 0,
+    "dctcp_threshold_us": 1000
+  }
+}

@@ -19,7 +19,7 @@ FALLBACK = 400_000
 STATIC = 180_000
 SLO_TARGET = 30_000
 STRATEGIES = {'pacing-queue': 1, 'pacing-slo': 2, 'pacing-hybrid': 3, 'ecn-pacing-control': 3, 'ecn-aware': 4,
-              'deadline-adaptive': 5}
+              'deadline-adaptive': 5, 'integrated': 6}
 SETTINGS = ('cookie', 'cap_bytes_s', 'tcp_pacing_bytes_s', 'delivery_bytes_s', 'bytes_acked',
             'notsent_lowat', 'notsent_bytes', 'rtt_us', 'cwnd_segments', 'total_retransmits',
             'output_queue_bytes', 'send_buffer_bytes', 'ecn_negotiated',
@@ -41,6 +41,7 @@ def library():
         'controller': (P, [c.c_uint, U64, U64, U64, c.c_uint32]),
         'delete_controller': (None, [P]),
         'evaluate_v3': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
+        'evaluate_v4': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
         'shadow_v1': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
         'confirm': (None, [P, c.c_bool]),
     }
@@ -56,13 +57,19 @@ def checked(status, operation):
 
 
 class PacingWorkload:
-    def __init__(self, output, mode, deadline_floor=None, shadow_names=()):
+    def __init__(self, output, mode, deadline_floor=None, shadow_names=(), *, target_us=SLO_TARGET):
         self.output = output
         self.mode = mode
         self.lib = library()
         self.controller = None
         self.actuator_lock = None
-        fallback = PACING_BASELINE if mode == 'deadline-adaptive' else FALLBACK
+        self.integrated = mode == 'integrated'
+        self.generation = None
+        self.scope_stamp = 0
+        self.decision_cpu_ns = 0
+        self.actuation_wall_ns = 0
+        self.apply_failures = 0
+        fallback = CEILING if self.integrated else PACING_BASELINE if mode == 'deadline-adaptive' else FALLBACK
         self.rate = fallback if mode in STRATEGIES else STATIC if mode == 'pacing-static' else 0
         if mode in ('deadline-admission', 'deadline-paced-static'):
             self.rate = PACING_BASELINE
@@ -72,7 +79,7 @@ class PacingWorkload:
         if mode in STRATEGIES:
             self.actuator_lock = private_lock(output/'pacing.lock')
             floor = deadline_floor if mode == 'deadline-adaptive' else FLOOR
-            self.controller = self.lib.fc_pacing_controller(STRATEGIES[mode], floor, CEILING, fallback, SLO_TARGET)
+            self.controller = self.lib.fc_pacing_controller(STRATEGIES[mode], floor, CEILING, fallback, target_us)
             if not self.controller:
                 self.actuator_lock.close()
                 raise RuntimeError('cannot create native pacing controller')
@@ -124,7 +131,7 @@ class PacingWorkload:
         self.drain_wait_ns += elapsed_ns
         self.drain_over_ms += elapsed_ns >= 1_000_000
 
-    def observe(self, now, p99_ms, requests, deadline_pressure):
+    def observe(self, now, p99_ms, requests, deadline_pressure, failures):
         info = []
         for flow, (sock, _) in self.sockets.items():
             values = (U64*len(SETTINGS))()
@@ -170,7 +177,23 @@ class PacingWorkload:
         valid = fresh and bool(common) and len(info) == len(self.sockets)
         decision, proposed, verified = 'hold', self.rate, None
         congestion = None
-        if self.mode.startswith('ecn-'):
+        scope = feed.get('integrated', {})
+        stamp = scope.get('sample_ns')
+        transition = feed.get('transition', False)
+        repeated_sample = False
+        if self.integrated:
+            changed = self.generation is not None and self.generation != scope.get('generation')
+            transition = transition or changed
+            if fresh:
+                self.generation = scope.get('generation')
+            verified_scope = (scope.get('verified') is True and type(stamp) is int
+                              and self.scope_stamp <= stamp and 0 <= now-stamp <= 2_500_000_000)
+            repeated_sample = verified_scope and stamp == self.scope_stamp
+            if verified_scope:
+                self.scope_stamp = stamp
+            valid = (valid and verified_scope and requests >= 12 and not failures
+                     and all(row['cap_bytes_s'] == self.rate for row in info))
+        if self.mode.startswith('ecn-') or self.integrated:
             current_ecn = {row['cookie']: row for row in info}
             aqm = feed.get('ecn_aqm', {})
             sample_ns = feed.get('ecn_sample_ns')
@@ -184,26 +207,38 @@ class PacingWorkload:
                 self.previous_ecn, self.previous_aqm = current_ecn, aqm
         shadow = {}
         if (self.controller or self.shadow_names) and (fresh or not when or now-when > 2_500_000_000):
-            inputs = (U64*13)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
+            inputs = (U64*14)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
                               max(rtts, default=0), min(round(p99_ms*1000), 30_000_000),
                               requests, len(info), valid, feed.get('class_active', False),
-                              feed.get('transition', False), bool(congestion and congestion['early']), deadline_pressure)
+                              transition, bool(congestion and congestion['early']), deadline_pressure,
+                              scope.get('background_guarantee', 0))
             if self.shadow_names:
                 shadow = self.shadow(inputs, valid, congestion, feed)
-            if self.controller:
+            if self.controller and not (valid and repeated_sample and not transition):
                 next_rate = U64()
-                answer = self.lib.fc_pacing_evaluate_v3(self.controller, inputs, self.rate, c.byref(next_rate))
+                evaluate = self.lib.fc_pacing_evaluate_v4 if self.integrated else self.lib.fc_pacing_evaluate_v3
+                begin = time.process_time_ns()
+                answer = evaluate(self.controller, inputs, self.rate, c.byref(next_rate))
+                self.decision_cpu_ns += time.process_time_ns()-begin
                 decision = ('hold', 'adjust', 'rollback', 'fallback', 'class-only')[answer]
                 proposed = next_rate.value
                 if decision in ('adjust', 'rollback', 'fallback'):
-                    verified = self.apply(proposed, decision)
+                    began = time.monotonic_ns()
+                    try:
+                        verified = self.apply(proposed, decision)
+                    finally:
+                        self.actuation_wall_ns += time.monotonic_ns()-began
+                    self.apply_failures += verified is False
+                    if self.integrated and verified is False and decision in ('rollback', 'fallback'):
+                        raise RuntimeError('integrated socket compensation was refused')
 
         with (self.output/'socket-pacing.jsonl').open('a') as log:
             log.write(json.dumps(dict(time_ns=now, fresh=fresh, valid=valid, decision=decision,
                 proposed_bytes_s=proposed, verified=verified,
                 verified_ns=time.monotonic_ns() if verified else None, applied_bytes_s=self.rate, capacity_bytes_s=capacity,
                 throughput_bytes_s=throughput, background_demand_bytes_s=demand, backlog_bytes=feed.get('backlog_bytes'),
-                class_active=feed.get('class_active'), transition=feed.get('transition'),
+                class_active=feed.get('class_active'), transition=transition,
+                integrated_scope=scope if self.integrated else None,
                 request_p99_ms=p99_ms, requests=requests, congestion=congestion,
                 deadline_pressure=deadline_pressure, shadow=shadow, sockets=info))+'\n')
         self.polls += 1
@@ -264,11 +299,11 @@ class PacingWorkload:
         self.fallbacks += decision == 'fallback'
         return True
 
-    def tick(self, p99_ms, requests, deadline_pressure=False):
+    def tick(self, p99_ms, requests, deadline_pressure=False, failures=0):
         begin = time.process_time_ns()
         try:
             if self.actuator_lock is None:
-                self.observe(time.monotonic_ns(), p99_ms, requests, deadline_pressure)
+                self.observe(time.monotonic_ns(), p99_ms, requests, deadline_pressure, failures)
                 return
             try:
                 fcntl.flock(self.actuator_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -276,7 +311,7 @@ class PacingWorkload:
                 self.transition_holds += 1
                 return
             try:
-                self.observe(time.monotonic_ns(), p99_ms, requests, deadline_pressure)
+                self.observe(time.monotonic_ns(), p99_ms, requests, deadline_pressure, failures)
             finally:
                 fcntl.flock(self.actuator_lock, fcntl.LOCK_UN)
         finally:
@@ -298,4 +333,6 @@ class PacingWorkload:
                     workload_cpu_seconds=time.process_time()-self.started_cpu,
                     requested_cc=self.algorithm, background_attaches=self.background_attaches,
                     shadow_evaluations=self.shadow_evaluations, shadow_cpu_ns=self.shadow_cpu_ns,
+                    decision_cpu_ns=self.decision_cpu_ns, actuation_wall_ns=self.actuation_wall_ns,
+                    apply_failures=self.apply_failures,
                     notsent_lowat=self.lowat or None)

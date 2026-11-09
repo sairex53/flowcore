@@ -92,7 +92,8 @@ static unsigned evaluate_fields(void* handle, const std::uint64_t* fields, std::
     const p::Observation o{fields[0], fields[1], fields[2], fields[3], static_cast<std::uint32_t>(fields[4]),
                            static_cast<std::uint32_t>(fields[5]), static_cast<std::uint32_t>(fields[6]),
                            static_cast<unsigned>(fields[7]), fields[8]!=0, fields[9]!=0, fields[10]!=0,
-                           count >= 12 && fields[11]!=0, count >= 13 && fields[12]!=0};
+                           count >= 12 && fields[11]!=0, count >= 13 && fields[12]!=0,
+                           count >= 14 ? fields[13] : 0};
     auto& controller = *static_cast<p::Controller*>(handle);
     const auto now = p::Clock::now();
     const auto result = shadow ? controller.preview(o, current, now) : controller.evaluate(o, current, now);
@@ -110,6 +111,10 @@ unsigned fc_pacing_evaluate_v2(void* handle, const std::uint64_t* fields, std::u
 unsigned fc_pacing_evaluate_v3(void* handle, const std::uint64_t* fields, std::uint64_t current,
                                std::uint64_t* proposed) noexcept {
     return evaluate_fields(handle, fields, current, proposed, 13);
+}
+unsigned fc_pacing_evaluate_v4(void* handle, const std::uint64_t* fields, std::uint64_t current,
+                               std::uint64_t* proposed) noexcept {
+    return evaluate_fields(handle, fields, current, proposed, 14);
 }
 unsigned fc_pacing_shadow_v1(void* handle, const std::uint64_t* fields, std::uint64_t current,
                              std::uint64_t* proposed) noexcept {

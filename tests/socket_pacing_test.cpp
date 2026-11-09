@@ -194,6 +194,41 @@ void decision_logic() {
     CHECK(shadow.preview(observation, 400'000, t+3s).decision == p::Decision::Adjust);
 }
 
+void integrated_policy() {
+    constexpr p::Rate baseline = 1'500'000;
+    p::Controller policy(p::Strategy::Integrated, 50'000, baseline, baseline);
+    p::Observation observation{baseline, 1'100'000, 1'200'000, 20'000,
+                               15'000, 40'000, 24, 6, true, false, false, false, true, 450'000};
+    const auto now = p::Clock::now();
+    CHECK(policy.evaluate(observation, baseline, now).decision == p::Decision::Hold);
+    const auto cut = policy.evaluate(observation, baseline, now+1s);
+    CHECK(cut.decision == p::Decision::Adjust && cut.rate == 187'500);
+    CHECK(cut.rate * observation.active_sockets >= observation.background_guarantee);
+    policy.confirm(true);
+    auto invalid = observation;
+    invalid.valid = false;
+    auto restored = policy.evaluate(invalid, cut.rate, now+1001ms);
+    CHECK(restored.decision == p::Decision::Fallback && restored.rate == baseline);
+    policy.confirm(true);
+
+    p::Controller rollback_policy(p::Strategy::Integrated, 50'000, baseline, baseline);
+    CHECK(rollback_policy.evaluate(observation, baseline, now).decision == p::Decision::Hold);
+    CHECK(rollback_policy.evaluate(observation, baseline, now+1s).decision == p::Decision::Adjust);
+    rollback_policy.confirm(true);
+    observation.request_p99_us = 48'000;
+    auto rollback = rollback_policy.evaluate(observation, cut.rate, now+2s);
+    CHECK(rollback.decision == p::Decision::Rollback && rollback.rate == baseline);
+    rollback_policy.confirm(true);
+
+    p::Controller handoff(p::Strategy::Integrated, 50'000, baseline, baseline);
+    observation.class_transition = true;
+    CHECK(handoff.evaluate(observation, cut.rate, now).decision == p::Decision::Fallback);
+    handoff.confirm(true);
+    observation.class_transition = false;
+    observation.class_controller_active = true;
+    CHECK(handoff.evaluate(observation, baseline, now+1s).decision == p::Decision::Hold);
+}
+
 void intent_attestation(const char* path) {
     flowcore::v2::Intent intent;
     intent.service = "pacing_demo";
@@ -237,6 +272,7 @@ int main(int argc, char** argv) {
             lifecycle();
             descriptor_reuse_and_drift();
             decision_logic();
+            integrated_policy();
             readiness();
             const auto options = p::probe();
             std::cout << "SO_MARK write errno=" << options->mark_write.value() << '\n';

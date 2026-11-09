@@ -5,7 +5,7 @@ from pathlib import Path
 from paths import TC
 from service_config import CLASSES, keys, number
 
-MODES = ('ecn-loss', 'ecn-static', 'ecn-dctcp', 'ecn-queue', 'ecn-aware', 'ecn-pacing-control', 'ecn-cake')
+MODES = ('ecn-loss', 'ecn-static', 'ecn-dctcp', 'ecn-queue', 'ecn-aware', 'ecn-pacing-control', 'ecn-cake', 'integrated')
 CLASSIFIED = tuple(mode for mode in MODES if mode != 'ecn-cake')
 DEFAULT = dict(version=1, target_us=5000, interval_us=100000, threshold_us=0, dctcp_threshold_us=1000)
 SYSCTL = '/usr/sbin/sysctl'

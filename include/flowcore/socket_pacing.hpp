@@ -87,7 +87,7 @@ private:
     bool active_ = false;
 };
 
-enum class Strategy { Static, Queue, Slo, Hybrid, Ecn, Deadline };
+enum class Strategy { Static, Queue, Slo, Hybrid, Ecn, Deadline, Integrated };
 enum class Decision { Hold, Adjust, Rollback, Fallback, ClassOnly };
 struct Observation {
     Rate capacity = 0, throughput = 0, background_demand = 0;
@@ -96,6 +96,7 @@ struct Observation {
     unsigned active_sockets = 0;
     bool valid = false, class_controller_active = false, class_transition = false, ecn_pre_loss = false,
          deadline_pressure = false;
+    Rate background_guarantee = 0; // aggregate bytes/s from verified HTB readback
 };
 struct Proposal { Decision decision; Rate rate; };
 

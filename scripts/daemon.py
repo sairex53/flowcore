@@ -189,6 +189,8 @@ class Service:
         if not isinstance(op,str):
             raise ValueError('expected operation name')
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
+        if self.research_mode == 'integrated' and op in ('controller_start', 'strategy_activate'):
+            raise ValueError('integrated research reserves adaptive authority for owned sockets')
         if op.startswith('strategy_'):
             return self.strategy_engine.command(request)
         if self.strategy_engine.experiment and op in (
@@ -336,6 +338,9 @@ class Service:
             if request.get('deadline') is True:
                 from deadline_runtime import evidence
                 extras['deadline_evidence'] = evidence(self, time.monotonic_ns())
+            if self.research_mode == 'integrated':
+                extras['integrated_quality'] = bool(self.research_link_up and not self.error
+                    and not self.observer.errors and not self.observer.truncated)
             return dict(time_ns=view['time_ns'], tc=self.telemetry, overhead=view['overhead'],
                         telemetry_timing=self.telemetry_timing,
                         backend=view['bpf'], state=self.controller.status(),
