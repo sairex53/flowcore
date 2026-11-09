@@ -69,12 +69,15 @@ class Service:
         self.research_link_up = True
         self.research_mode = None
         self.research_step_done = False
+        from strategy_engine import Engine
+        self.strategy_engine = Engine(self)
 
     def log(self, event, **fields):
         if self.config['log_level'] == 'info' or event == 'error':
             print(json.dumps(dict(time=time.time(), event=event, **fields)), flush=True)
 
     def close_lab(self):
+        self.strategy_engine.detach()
         self.diagnostics.lab.reset('lab closed or replaced')
         self.incident.reset()
         self.container_attachment = None
@@ -186,6 +189,13 @@ class Service:
         if not isinstance(op,str):
             raise ValueError('expected operation name')
         authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
+        if op.startswith('strategy_'):
+            return self.strategy_engine.command(request)
+        if self.strategy_engine.experiment and op in (
+                'controller_start', 'controller_shadow', 'controller_observe', 'controller_stop',
+                'controller_fallback', 'lab_up', 'lab_configure', 'policy_apply', 'ops_reload',
+                'diagnostic_intervention', 'platform_apply_intent', 'platform_container_attach'):
+            raise ValueError('strategy canary owns the controller; roll it back first')
         if op in MONITOR_OPS:
             return monitor_request(self, request)
         if op in ('diagnose', 'incident_list', 'incident_inspect', 'incident_export'):
@@ -287,6 +297,10 @@ class Service:
             if not self.research:
                 raise ValueError('research commands require a research daemon')
             if op == 'research_conditions':
+                if self.strategy_engine.experiment:
+                    outcome = self.strategy_engine.rollback('scheduled_network_change')
+                    if outcome['state'] == 'FAULTED':
+                        raise RuntimeError('canary rollback failed before scheduled network change')
                 from research_faults import apply_conditions
                 try:
                     applied = apply_conditions(self, request.get('network'), request.get('mode'), request.get('seed'), request.get('link_up'), request.get('ecn'))
@@ -650,6 +664,11 @@ def main():
                     while not stopped:
                         if reload_pending:
                             reload_pending=False
+                            if service.strategy_engine.experiment:
+                                outcome = service.strategy_engine.rollback('configuration_reload')
+                                if outcome['state'] == 'FAULTED':
+                                    service.log('error', detail='reload blocked: strategy rollback unverified')
+                                    continue
                             try:service.operations.reload()
                             except (OSError,ValueError,RuntimeError) as error:service.log('error',detail='reload rejected: '+str(error))
                         watchers = [host, *service.watches]
@@ -671,6 +690,8 @@ def main():
                         if service.lab and time.monotonic()-service.sampled >= service.config['telemetry_seconds']:
                             service.poll_metrics()
                         service.intent_api.expire()
+                        # Check the canary lease and scope before allowing any further actuator writes.
+                        service.strategy_engine.tick()
                         service.controller.safe_tick()
                         if time.monotonic()-inventory_tick>=2:
                             service.inventory.refresh()

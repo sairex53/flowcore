@@ -11,6 +11,7 @@ from deadline_runtime import PACING_BASELINE
 from ipc_security import private_lock
 from ecn_feedback import estimate
 from paths import BINDIR, INSTALLED, ROOT
+from strategy_registry import STRATEGIES as REGISTRY
 
 FLOOR = 50_000
 CEILING = 1_500_000
@@ -40,6 +41,7 @@ def library():
         'controller': (P, [c.c_uint, U64, U64, U64, c.c_uint32]),
         'delete_controller': (None, [P]),
         'evaluate_v3': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
+        'shadow_v1': (c.c_uint, [P, c.POINTER(U64), U64, c.POINTER(U64)]),
         'confirm': (None, [P, c.c_bool]),
     }
     for name, (restype, argtypes) in signatures.items():
@@ -54,7 +56,7 @@ def checked(status, operation):
 
 
 class PacingWorkload:
-    def __init__(self, output, mode, deadline_floor=None):
+    def __init__(self, output, mode, deadline_floor=None, shadow_names=()):
         self.output = output
         self.mode = mode
         self.lib = library()
@@ -93,6 +95,9 @@ class PacingWorkload:
         self.peak_notsent = 0
         self.observed_notsent = 0
         self.background_attaches = 0
+        self.shadow_names = tuple(shadow_names)
+        self.shadows = {}
+        self.shadow_cpu_ns = self.shadow_evaluations = 0
 
     def add(self, flow, sock):
         if flow in self.sockets or len(self.sockets) >= 32:
@@ -177,17 +182,21 @@ class PacingWorkload:
                 scope_matches=self.mode != 'ecn-cake')
             if fresh:
                 self.previous_ecn, self.previous_aqm = current_ecn, aqm
-        if self.controller and (fresh or not when or now-when > 2_500_000_000):
+        shadow = {}
+        if (self.controller or self.shadow_names) and (fresh or not when or now-when > 2_500_000_000):
             inputs = (U64*13)(capacity, throughput, demand, feed.get('backlog_bytes', 0),
                               max(rtts, default=0), min(round(p99_ms*1000), 30_000_000),
                               requests, len(info), valid, feed.get('class_active', False),
                               feed.get('transition', False), bool(congestion and congestion['early']), deadline_pressure)
-            next_rate = U64()
-            answer = self.lib.fc_pacing_evaluate_v3(self.controller, inputs, self.rate, c.byref(next_rate))
-            decision = ('hold', 'adjust', 'rollback', 'fallback', 'class-only')[answer]
-            proposed = next_rate.value
-            if decision in ('adjust', 'rollback', 'fallback'):
-                verified = self.apply(proposed, decision)
+            if self.shadow_names:
+                shadow = self.shadow(inputs, valid, congestion, feed)
+            if self.controller:
+                next_rate = U64()
+                answer = self.lib.fc_pacing_evaluate_v3(self.controller, inputs, self.rate, c.byref(next_rate))
+                decision = ('hold', 'adjust', 'rollback', 'fallback', 'class-only')[answer]
+                proposed = next_rate.value
+                if decision in ('adjust', 'rollback', 'fallback'):
+                    verified = self.apply(proposed, decision)
 
         with (self.output/'socket-pacing.jsonl').open('a') as log:
             log.write(json.dumps(dict(time_ns=now, fresh=fresh, valid=valid, decision=decision,
@@ -196,8 +205,40 @@ class PacingWorkload:
                 throughput_bytes_s=throughput, background_demand_bytes_s=demand, backlog_bytes=feed.get('backlog_bytes'),
                 class_active=feed.get('class_active'), transition=feed.get('transition'),
                 request_p99_ms=p99_ms, requests=requests, congestion=congestion,
-                deadline_pressure=deadline_pressure, sockets=info))+'\n')
+                deadline_pressure=deadline_pressure, shadow=shadow, sockets=info))+'\n')
         self.polls += 1
+
+    def shadow(self, inputs, valid, congestion, feed):
+        start = time.process_time_ns()
+        proposals = {}
+        for name in self.shadow_names:
+            item = dict(strategy=name, domain='socket', evidence='prediction', action='hold', proposed=None,
+                        expected=None, requirements=['owned_socket','bounded_cap','fresh_pacing_feedback'],
+                        constraints=dict(floor_bytes_s=self.floor, ceiling_bytes_s=CEILING))
+            if name=='ecn-aware' and not (congestion and 'ecn_aqm' in feed):
+                item['reason'] = 'ECN profile observations unavailable'
+            elif name=='deadline-aware' and not (self.mode.startswith('deadline-') and feed.get('deadline_evidence')):
+                item['reason'] = 'deadline profile observations unavailable'
+            elif not self.rate or not valid:
+                item['reason'] = 'fresh bounded socket observation unavailable'
+            else:
+                if name not in self.shadows:
+                    self.shadows[name] = self.lib.fc_pacing_controller(STRATEGIES[REGISTRY[name][1]],
+                        self.floor, CEILING, self.rate, SLO_TARGET)
+                handle = self.shadows[name]
+                if not handle:
+                    item['reason'] = 'shadow planner unavailable'
+                else:
+                    next_rate = U64()
+                    answer = self.lib.fc_pacing_shadow_v1(handle, inputs, self.rate, c.byref(next_rate))
+                    item['action'] = ('hold','adjust','rollback','fallback','class-only')[answer]
+                    if item['action'] == 'adjust':
+                        item.update(proposed={'cap_bytes_s':next_rate.value},
+                                    expected='bounded pacing change under current socket pressure')
+                    self.shadow_evaluations += 1
+            proposals[name] = item
+        self.shadow_cpu_ns += time.process_time_ns()-start
+        return proposals
 
     def apply(self, rate, decision):
         applied = []
@@ -242,6 +283,10 @@ class PacingWorkload:
             self.sample_cpu_ns += time.process_time_ns()-begin
 
     def finish(self):
+        for handle in self.shadows.values():
+            if handle:
+                self.lib.fc_pacing_delete_controller(handle)
+        self.shadows.clear()
         if self.controller:
             self.lib.fc_pacing_delete_controller(self.controller)
             self.controller = None
@@ -252,4 +297,5 @@ class PacingWorkload:
                     drain_waits_over_ms=self.drain_over_ms, sampler_cpu_ms=self.sample_cpu_ns/1e6,
                     workload_cpu_seconds=time.process_time()-self.started_cpu,
                     requested_cc=self.algorithm, background_attaches=self.background_attaches,
+                    shadow_evaluations=self.shadow_evaluations, shadow_cpu_ns=self.shadow_cpu_ns,
                     notsent_lowat=self.lowat or None)

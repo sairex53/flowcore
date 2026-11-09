@@ -179,6 +179,19 @@ void decision_logic() {
     ecn.confirm(true);
     observation.class_transition = true;
     CHECK(ecn.evaluate(observation, 350'000, t+2s).decision == p::Decision::Hold);
+    p::Controller shadow(p::Strategy::Hybrid, 50'000, 500'000, 400'000);
+    observation.class_transition = false;
+    observation.ecn_pre_loss = false;
+    observation.backlog_bytes = 20'000;
+    observation.request_p99_us = 55'000;
+    observation.rtt_us = 20'000;
+    observation.valid = true;
+    const auto first_preview = shadow.preview(observation, 400'000, t);
+    const auto second_preview = shadow.preview(observation, 400'000, t+1s);
+    CHECK(first_preview.decision == p::Decision::Hold);
+    CHECK(second_preview.decision == p::Decision::Adjust && second_preview.rate == 300'000);
+    CHECK(shadow.preview(observation, 400'000, t+2s).decision == p::Decision::Hold);
+    CHECK(shadow.preview(observation, 400'000, t+3s).decision == p::Decision::Adjust);
 }
 
 void intent_attestation(const char* path) {

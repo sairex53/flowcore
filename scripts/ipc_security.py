@@ -7,7 +7,7 @@ import stat
 from service_config import unique
 
 READ = frozenset(('ops_status','ops_validate','ops_diagnostics','status','lab_status','interfaces','observe','health','metrics','events','connections',
-                  'congestion','inspect','bottleneck_inspect','capacity_estimate','qos_direction','path_diagnostics','diagnose','incident_list','incident_inspect','incident_export','policies','intent_list','intent_inspect','controller_status',
+                  'congestion','inspect','strategy_list','strategy_inspect','bottleneck_inspect','capacity_estimate','qos_direction','path_diagnostics','diagnose','incident_list','incident_inspect','incident_export','policies','intent_list','intent_inspect','controller_status',
                   'policy_history','monitor_snapshot','monitor_incident','policy_explain','policy_optimize','platform_interfaces','platform_policies',
                   'platform_resolve','platform_container_status','lifecycles','workload_list','platform_workload_classifiers'))
 

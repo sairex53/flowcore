@@ -302,8 +302,17 @@ def trial(directory, m, rep, mode, seed=None):
     if mode == 'slo-long':
         cfg['adaptive']['window_seconds'] = min(30,2*m['controller']['window_seconds'])
         cfg['adaptive']['cooldown_seconds'] = max(8,2*cfg['adaptive']['window_seconds'])
-    if mode in ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]) or (mode.startswith('static') and mode != 'static-step'):
-        reserve = m['static_critical_pct'] if mode in ('static','pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]) else int(mode.removeprefix('static'))
+    online = m.get('online')
+    if online:
+        cfg['observability']['max_sockets'] = 1024
+    configured_reserve = ('static', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:])
+    if online or mode in configured_reserve:
+        reserve = m['static_critical_pct']
+    elif mode.startswith('static') and mode != 'static-step':
+        reserve = int(mode.removeprefix('static'))
+    else:
+        reserve = None
+    if reserve is not None:
         cfg['policies']['default']['classes']['critical']['min_pct'] = reserve
         cfg['policies']['default']['classes']['background']['min_pct'] = 60-reserve
     if mode in ('cake','ecn-cake'):
@@ -403,6 +412,7 @@ def trial(directory, m, rep, mode, seed=None):
                 settings['ecn_socket_algorithm'] = 'dctcp'
             if pacing:
                 settings['socket_pacing_mode'] = mode
+                settings['socket_shadows'] = m.get('socket_shadows', [])
                 pacing_lock = resources.enter_context(private_lock(directory/'pacing.lock'))
             save(plan,settings)
             options = ['--duration',str(m['duration_seconds']), '--payload',str(workload['payload_bytes']),
@@ -463,6 +473,9 @@ def trial(directory, m, rep, mode, seed=None):
             def sample():
                 begin = time.monotonic_ns()
                 value = request('research_sample', **({'deadline': True} if deadline_profile else {}))
+                if mode == 'online-select':
+                    status = request('strategy_inspect')
+                    value['online_strategy'] = {key: status[key] for key in ('state','active','switches','regressions','shadow')}
                 value['runner_ipc_ns'] = time.monotonic_ns()-begin
                 samples.append(value)
                 pacing_feedback(value)
@@ -472,6 +485,10 @@ def trial(directory, m, rep, mode, seed=None):
                 time.sleep(max(0, start-time.monotonic()))
                 snapshot('measurement_start')
                 host_before = v2.host_sample()
+            if mode == 'online-select':
+                request('strategy_shadow',names=online['shadows'],seconds=online['seconds']+5)
+                request('strategy_activate',name=online['candidate'],scope='owned-fc0',
+                        seconds=online['seconds'],guards=online['guards'],confirm=True)
             sample()
             next_sample = start+1
             link_up = True
@@ -621,6 +638,11 @@ def trial(directory, m, rep, mode, seed=None):
                 host_after = v2.host_sample()
                 save(directory/'host-noise.json', dict(start=host_before, end=host_after))
             finish_ticks = cpu_ticks()
+            online_status = request('strategy_rollback') if mode=='online-select' else None
+            if online_status:
+                save(directory/'strategy.json', online_status)
+                if online_status['state'] == 'FAULTED':
+                    raise RuntimeError('online canary rollback could not be verified')
             code = client.wait(timeout=12)
             if code not in (0,2) or server.poll() is not None:
                 raise RuntimeError(f'workload infrastructure failed, exit={code}')
@@ -638,6 +660,8 @@ def trial(directory, m, rep, mode, seed=None):
                 raise RuntimeError(f'namespace holder identity changed: expected {[sender,receiver]}, got {final_inspect["namespaces"]}')
             result = summarize(directory,m,rep,mode,samples,history,start,end,
                                tuple(b-a for a,b in zip(begin_ticks,finish_ticks)))
+            if online_status:
+                result['online_strategy'] = {key: online_status[key] for key in ('switches','regressions','shadow_evaluations','shadow_cpu_ns')}
             if pacing:
                 report = result.get('socket_pacing', {})
                 if report.get('mode') != mode or not report.get('background_attaches'):

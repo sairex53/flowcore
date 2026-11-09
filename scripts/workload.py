@@ -158,7 +158,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
     pacing = None
     if research and 'socket_pacing_mode' in research:
         from pacing_workload import PacingWorkload
-        pacing = PacingWorkload(output, research['socket_pacing_mode'], research.get('deadline_pacing_floor'))
+        pacing = PacingWorkload(output, research['socket_pacing_mode'], research.get('deadline_pacing_floor'),
+                                research.get('socket_shadows', ()))
     admission = None
     if research and 'deadline_admission' in research:
         from deadline_workload import AdmissionWorkload

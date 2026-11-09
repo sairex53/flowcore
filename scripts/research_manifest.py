@@ -6,6 +6,7 @@ from pathlib import Path
 
 import ecn_policy
 import deadline_runtime
+from strategy_registry import CLASS, SOCKET, guards, names
 from service_config import keys, number, profile, unique
 
 LEGACY_MODES = ('linux', 'fifo', 'fq_codel', 'cake', 'static', 'threshold', 'slo')
@@ -13,9 +14,9 @@ STATIC_MODES = tuple(f'static{pct}' for pct in range(20, 41))
 FQ_MODES = ('tcp-fq', 'pacing-static', 'pacing-queue', 'pacing-slo', 'pacing-lowat',
             'tcp-cubic', 'tcp-reno', 'tcp-bbr')
 PACING_MODES = (*FQ_MODES, 'pacing-hybrid')
-MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', *PACING_MODES, *ecn_policy.MODES, *deadline_runtime.MODES)
+MODES = (*LEGACY_MODES, 'linux-default', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'online-select', *PACING_MODES, *ecn_policy.MODES, *deadline_runtime.MODES)
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
+CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'online-select', 'pacing-hybrid', *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)
@@ -41,8 +42,8 @@ def validate(value):
     v3 = version == 3
     fields = ('version', 'topology', 'network', 'workload', 'duration_seconds', 'repetitions',
               'seed', 'modes', 'static_critical_pct', 'controller', 'faults', 'regression')
-    keys(value, fields + (('gates',) if v2 else ()) +
-         (('stages', 'events') if v3 else ()) + (('ecn',) if 'ecn' in value else ()) + (('deadline',) if 'deadline' in value else ()))
+    optional = tuple(key for key in ('ecn', 'deadline', 'online', 'socket_shadows') if key in value)
+    keys(value, fields + (('gates',) if v2 else ()) + (('stages', 'events') if v3 else ()) + optional)
     number(version, 1, 3, True)
     if value['topology'] != 'veth-pair':
         raise ValueError('only the owned veth-pair topology is supported')
@@ -53,6 +54,23 @@ def validate(value):
     modes = value['modes']
     if not isinstance(modes, list) or not modes or any(not isinstance(mode, str) or mode not in (V2_MODES if v2 else LEGACY_MODES) for mode in modes) or len(set(modes)) != len(modes):
         raise ValueError('modes must be unique supported comparisons')
+    if 'socket_shadows' in value:
+        names(value['socket_shadows'], SOCKET)
+        if not v2 or not set(modes) & {*PACING_MODES,*ecn_policy.MODES,*deadline_runtime.MODES}:
+            raise ValueError('socket shadows require instrumented Research Lab socket profiles')
+    if ('online-select' in modes) != ('online' in value):
+        raise ValueError('online-select requires its versioned experiment profile')
+    if 'online' in value:
+        online = value['online']
+        keys(online, ('version','candidate','shadows','seconds','guards'))
+        number(online['version'], 1, 1, True)
+        number(online['seconds'], 8, min(45,value['duration_seconds']), True)
+        if version != 2 or online['candidate'] not in CLASS[1:]:
+            raise ValueError('online canary requires a v2 manifest and a class candidate')
+        if set(modes) - {*CLASS, 'online-select'}:
+            raise ValueError('online trials require comparable classified class modes')
+        names(online['shadows'], CLASS)
+        guards(online['guards'])
     ecn_modes = set(modes) & set(ecn_policy.MODES)
     if bool(ecn_modes) != ('ecn' in value) or (ecn_modes and ecn_modes != set(modes)):
         raise ValueError('ECN comparisons require a versioned profile and exclusively ECN modes')
@@ -140,6 +158,9 @@ def validate(value):
     keys(controller, ('target_p99_ms', 'window_seconds', 'minimum_samples', 'bpf'))
     number(controller['target_p99_ms'], .001, 600000)
     number(controller['window_seconds'], 2, 30, True)
+    if 'online' in value and (controller['window_seconds'] > 8 or
+                              value['online']['seconds'] < 3*controller['window_seconds']+2):
+        raise ValueError('online lease must fit baseline, wash-in and candidate windows')
     number(controller['minimum_samples'], 1, 10000, True)
     if controller['bpf'] not in ('auto', 'off'):
         raise ValueError('bpf must be auto or off')

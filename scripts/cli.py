@@ -126,6 +126,8 @@ def main():
     add_fleet(commands)
     from ecn_cli import add_commands as add_ecn
     add_ecn(commands)
+    from strategy_cli import add_commands as add_strategy
+    add_strategy(commands)
     args = parser.parse_args()
     watch = getattr(args, 'watch', None)
     if watch is not None and not .1 <= watch <= 60:
@@ -133,6 +135,10 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command == "strategy":
+            from strategy_cli import dispatch
+            print(json.dumps(dispatch(args), indent=2))
+            return 0
         if args.command == 'ecn':
             from ecn_cli import dispatch
             return dispatch(args)

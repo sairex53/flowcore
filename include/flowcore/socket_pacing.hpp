@@ -103,6 +103,8 @@ class Controller {
 public:
     Controller(Strategy, Rate floor, Rate ceiling, Rate fallback, std::uint32_t target_us = 30'000);
     Proposal evaluate(const Observation&, Rate current, Clock::time_point now) noexcept;
+    // Evaluate one shadow sample without recording a kernel action or counterfactual outcome.
+    Proposal preview(const Observation&, Rate current, Clock::time_point now) noexcept;
     // Record the result after the caller verifies its entire local socket update.
     void confirm(bool success) noexcept;
 private:

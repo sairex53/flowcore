@@ -363,3 +363,7 @@ add_test(NAME cooperative_slo COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURC
 set_tests_properties(cooperative_slo PROPERTIES TIMEOUT 20)
 install(FILES include/flowcore/cooperative_slo.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 install(FILES DISTRIBUTED_SLO.md REQUEST_COORDINATION.md COOPERATIVE_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME strategy_engine COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/strategy_test.py")
+set_tests_properties(strategy_engine PROPERTIES TIMEOUT 20)
+install(FILES STRATEGY_ENGINE.md ONLINE_EXPERIMENTATION.md STRATEGY_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

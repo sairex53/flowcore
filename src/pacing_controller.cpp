@@ -88,6 +88,25 @@ Proposal Controller::evaluate(const Observation& o, Rate current, Clock::time_po
     return propose(Decision::Adjust, desired);
 }
 
+Proposal Controller::preview(const Observation& observation, Rate current, Clock::time_point now) noexcept {
+    const auto previous = previous_;
+    const auto last_throughput = last_throughput_;
+    const auto prior_p99 = prior_p99_;
+    const auto last_action = last_action_;
+    const auto actions = actions_;
+    const auto evaluating = evaluating_;
+    const auto proposed = proposed_;
+    const auto result = evaluate(observation, current, now);
+    previous_ = previous;
+    last_throughput_ = last_throughput;
+    prior_p99_ = prior_p99;
+    last_action_ = last_action;
+    actions_ = actions;
+    evaluating_ = evaluating;
+    proposed_ = proposed;
+    return result;
+}
+
 void Controller::confirm(bool success) noexcept {
     if (proposed_ == Decision::Hold) return;
     evaluating_ = success && proposed_ == Decision::Adjust;
