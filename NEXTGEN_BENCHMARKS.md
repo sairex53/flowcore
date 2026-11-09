@@ -80,3 +80,10 @@ A separate 12→2 Mbit/s collapse trial confirmed one pacing update before the f
 The first observer-auto trial ran with the build's original BPF option disabled. The observer explicitly reported unavailable CO-RE artifacts, the integrated trial completed with INET_DIAG, and the standalone TCX fixture refused to attach. Capability discovery now honors the build marker even when old BPF artifacts remain in the build directory. That fallback trial is retained under `results/research-1794206847478149959`.
 
 With BPF rebuilt and enabled, the matched-seed smoke processed 4,392 tracepoint events with zero recorded reserve, transport, decode or parse losses. Collector CPU increased by 0.04 s at procfs sampling resolution and peak collector RSS was 5.10 MiB. Total daemon and child CPU was 1.770 s in the active-BPF smoke versus 1.089 s in the BPF-off final smoke. These are individual runs with different socket action counts. They cannot isolate the causal cost of BPF. Raw active-observer evidence is under `results/research-1794206937673989597`. The separate TCX dual-stack and churn test passed under `results/flow-engine-1794206953979320799`.
+
+
+## Socket cohort handoff follow-up
+
+Replay `scenarios/nextgen-cohort.json` to exercise a 1→6→2→6 sender sequence at constant 12 Mbit/s. The three independent lab runs offered 471 requests each with zero failures. Every 6→2 change lifted the surviving cohort's 187,500 bytes/s cap back to 1,500,000 bytes/s on the first leave. Every 2→6 change lifted the existing cohort's 562,500 bytes/s cap before the first new sender joined. All six compensations were verified within the membership callbacks. Median callback-to-verification time was 0.636 ms.
+
+The report separates cohort compensation from a scheduled capacity transition. The loopback regression tests real TCP cap readback before the next planner tick and inject a compensation failure to verify the fault latch and owned-socket shutdown. This study establishes the handoff behavior. The earlier comparative performance matrix predates this change. Raw evidence is under `results/research-1794207126656970957`.

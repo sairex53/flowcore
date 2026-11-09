@@ -4,6 +4,7 @@ import errno
 import fcntl
 import json
 import os
+import socket
 import time
 
 from durable_state import read_json
@@ -66,6 +67,9 @@ class PacingWorkload:
         self.integrated = mode == 'integrated'
         self.generation = None
         self.scope_stamp = 0
+        self.cohort_revision = self.observed_cohort_revision = 0
+        self.cohort_fallbacks = 0
+        self.cohort_failed = False
         self.decision_cpu_ns = 0
         self.actuation_wall_ns = 0
         self.apply_failures = 0
@@ -109,6 +113,10 @@ class PacingWorkload:
     def add(self, flow, sock):
         if flow in self.sockets or len(self.sockets) >= 32:
             raise RuntimeError('background socket quota or overlap')
+        if self.integrated:
+            if self.cohort_failed:
+                raise RuntimeError('integrated socket cohort is faulted')
+            self.cohort_changed('join', flow)
         handle = None
         if self.rate or self.lowat:
             failure = c.c_int()
@@ -120,11 +128,47 @@ class PacingWorkload:
 
     def remove(self, flow):
         _, handle = self.sockets.pop(flow)
-        if handle:
-            status = self.lib.fc_pacing_close(handle)
-            # An asynchronously closed connection has no reachable socket policy.
-            if status not in (0, errno.EBADF):
-                checked(status, 'restore socket policy')
+        try:
+            if self.integrated and not self.cohort_failed:
+                self.cohort_changed('leave', flow)
+        finally:
+            if handle:
+                status = self.lib.fc_pacing_close(handle)
+                # A closed connection has no reachable socket policy.
+                if status not in (0, errno.EBADF):
+                    checked(status, 'restore socket policy')
+
+    def cohort_changed(self, event, flow):
+        # The asyncio worker owns this cohort. This callback has no await and
+        # cannot interleave with the planner. Restoration only lifts a cap.
+        self.cohort_revision += 1
+        self.previous.clear()
+        self.previous_ecn.clear()
+        self.previous_aqm.clear()
+        if self.rate == CEILING:
+            return
+        if not self.sockets:
+            self.rate = CEILING
+            return
+        began = time.monotonic_ns()
+        previous = self.rate
+        verified = False
+        try:
+            verified = self.timed_apply(CEILING, 'fallback')
+        except (OSError, RuntimeError):
+            self.cohort_failed = True
+            for sock, _ in self.sockets.values():
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            raise
+        finally:
+            with (self.output/'socket-cohort.jsonl').open('a') as log:
+                log.write(json.dumps(dict(event=event, flow=flow, revision=self.cohort_revision,
+                    started_ns=began, completed_ns=time.monotonic_ns(), surviving_sockets=len(self.sockets),
+                    previous_bytes_s=previous, cap_bytes_s=self.rate, verified=verified))+'\n')
+        self.cohort_fallbacks += 1
 
     def drain(self, elapsed_ns):
         self.drain_count += 1
@@ -132,6 +176,8 @@ class PacingWorkload:
         self.drain_over_ms += elapsed_ns >= 1_000_000
 
     def observe(self, now, p99_ms, requests, deadline_pressure, failures):
+        if self.cohort_failed:
+            raise RuntimeError('integrated socket cohort is faulted')
         info = []
         for flow, (sock, _) in self.sockets.items():
             values = (U64*len(SETTINGS))()
@@ -183,7 +229,7 @@ class PacingWorkload:
         repeated_sample = False
         if self.integrated:
             changed = self.generation is not None and self.generation != scope.get('generation')
-            transition = transition or changed
+            transition = transition or changed or self.cohort_revision != self.observed_cohort_revision
             if fresh:
                 self.generation = scope.get('generation')
             verified_scope = (scope.get('verified') is True and type(stamp) is int
@@ -220,17 +266,11 @@ class PacingWorkload:
                 begin = time.process_time_ns()
                 answer = evaluate(self.controller, inputs, self.rate, c.byref(next_rate))
                 self.decision_cpu_ns += time.process_time_ns()-begin
+                self.observed_cohort_revision = self.cohort_revision
                 decision = ('hold', 'adjust', 'rollback', 'fallback', 'class-only')[answer]
                 proposed = next_rate.value
                 if decision in ('adjust', 'rollback', 'fallback'):
-                    began = time.monotonic_ns()
-                    try:
-                        verified = self.apply(proposed, decision)
-                    finally:
-                        self.actuation_wall_ns += time.monotonic_ns()-began
-                    self.apply_failures += verified is False
-                    if self.integrated and verified is False and decision in ('rollback', 'fallback'):
-                        raise RuntimeError('integrated socket compensation was refused')
+                    verified = self.timed_apply(proposed, decision)
 
         with (self.output/'socket-pacing.jsonl').open('a') as log:
             log.write(json.dumps(dict(time_ns=now, fresh=fresh, valid=valid, decision=decision,
@@ -239,6 +279,7 @@ class PacingWorkload:
                 throughput_bytes_s=throughput, background_demand_bytes_s=demand, backlog_bytes=feed.get('backlog_bytes'),
                 class_active=feed.get('class_active'), transition=transition,
                 integrated_scope=scope if self.integrated else None,
+                cohort_revision=self.cohort_revision if self.integrated else None,
                 request_p99_ms=p99_ms, requests=requests, congestion=congestion,
                 deadline_pressure=deadline_pressure, shadow=shadow, sockets=info))+'\n')
         self.polls += 1
@@ -274,6 +315,17 @@ class PacingWorkload:
             proposals[name] = item
         self.shadow_cpu_ns += time.process_time_ns()-start
         return proposals
+
+    def timed_apply(self, rate, decision):
+        began = time.monotonic_ns()
+        try:
+            verified = self.apply(rate, decision)
+        finally:
+            self.actuation_wall_ns += time.monotonic_ns()-began
+        self.apply_failures += verified is False
+        if self.integrated and not verified and decision in ('rollback', 'fallback'):
+            raise RuntimeError('integrated socket compensation was refused')
+        return verified
 
     def apply(self, rate, decision):
         applied = []
@@ -334,5 +386,5 @@ class PacingWorkload:
                     requested_cc=self.algorithm, background_attaches=self.background_attaches,
                     shadow_evaluations=self.shadow_evaluations, shadow_cpu_ns=self.shadow_cpu_ns,
                     decision_cpu_ns=self.decision_cpu_ns, actuation_wall_ns=self.actuation_wall_ns,
-                    apply_failures=self.apply_failures,
+                    apply_failures=self.apply_failures, cohort_fallbacks=self.cohort_fallbacks,
                     notsent_lowat=self.lowat or None)

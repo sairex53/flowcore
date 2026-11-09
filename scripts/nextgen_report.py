@@ -25,6 +25,7 @@ def report(path):
         rows = [r for r in summary['runs'] if r['mode'] == mode and r['valid']]
         pacing = [r['socket_pacing'] for r in rows if r.get('socket_pacing')]
         times = []
+        cohort_times = []
         ipc = []
         observer = []
         for run in rows:
@@ -35,6 +36,12 @@ def report(path):
                             for sample in timeline if 'observer_ns' in sample.get('telemetry_timing', {}))
             if mode != 'integrated':
                 continue
+            cohort = read_records(directory/'socket-cohort.jsonl')
+            if cohort:
+                start_ns, end_ns = round(run['start']*1e9), round(run['end']*1e9)
+                cohort_times.extend((event['completed_ns']-event['started_ns'])/1e6
+                                    for event in cohort if event.get('verified') is True
+                                    and start_ns <= event['started_ns'] < end_ns)
             transitions = read_records(directory/'transitions.jsonl')
             pacing_rows = read_records(directory/'socket-pacing.jsonl')
             for generation, transition in enumerate(transitions[1:], 1):
@@ -65,6 +72,8 @@ def report(path):
             sampling_rpc_median_ms=median(ipc) if ipc else None,
             observer_median_ms=median(observer) if observer else None,
             link_utilization_ratio_median=median(ratios) if ratios else None,
+            cohort_compensation_samples=len(cohort_times),
+            cohort_compensation_median_ms=median(cohort_times) if cohort_times else None,
             transition_compensation_samples=len(times),
             transition_compensation_median_ms=median(times) if times else None,
         )

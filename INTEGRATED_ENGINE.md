@@ -10,7 +10,7 @@
 | Scheduled class rebase | Research daemon only. Runner locks the transition, advances generation, runs existing namespace-owned TC updates, verifies the result and publishes fresh scope. |
 | Classification, socket priority/low-water mark, MPTCP and admission | Separate existing authorities. Setup installs and verifies port classification. Other actuators remain disabled in this planner pending a common ownership and compensation protocol. |
 
-The class baseline defines the aggregate minimum background reservation. The per-socket lower bound uses the initial reservation divided by the number of live managed bulk sockets, rounded up. It stays conservative across a bounded capacity decrease. Cohort membership is checked on the next pacing sample, so a closing socket can temporarily change the aggregate cap before compensation. This is a bound on configured caps. It does not guarantee that TCP or the receiver can deliver that rate.
+The class baseline defines the aggregate minimum background reservation. The per-socket lower bound uses the initial reservation divided by the number of live managed bulk sockets, rounded up. It stays conservative across a bounded capacity decrease. On a managed socket join or leave, the workload restores the nonbinding cap on surviving sockets synchronously, before admitting the join or returning from the leave callback. The next planner sample discards history for the old cohort. This is a bound on configured caps. It does not guarantee that TCP or the receiver can deliver that rate.
 
 ## Observation and decision
 
@@ -26,9 +26,10 @@ The next eligible sample checks aggregate bulk progress and successful request P
 ./build/flowcore nextgen capabilities
 ./build/flowcore nextgen capabilities --fabric-config operator.json
 sudo ./build/flowcore bench replay scenarios/nextgen-smoke.json
+sudo ./build/flowcore bench replay scenarios/nextgen-cohort.json
 ./build/flowcore nextgen report results/<experiment>/summary.json
 ~~~
 
-Capabilities include an explicit scope and evidence level. A local socket probe or native estimator fixture does not attest to another namespace, connection or workload. The planner retains static HTB if fresh feedback becomes unavailable. A rejected group update compensates accepted writes and latches native actuation failure. An unverifiable compensation fails the experiment and closes the owned workload. Namespace removal and daemon restart terminate the old lab authority.
+Capabilities include an explicit scope and evidence level. A local socket probe or native estimator fixture does not attest to another namespace, connection or workload. The planner retains static HTB if fresh feedback becomes unavailable. A rejected group update compensates accepted writes and latches native actuation failure. An unverifiable compensation fails the experiment. A refused cohort restore latches the worker, shuts down the remaining owned senders and disallows further caps and joins. Namespace removal and daemon restart terminate the old lab authority.
 
 The static, queue-aware, SLO-aware, predictive and deadline-aware strategies retain their existing registry paths. This experiment combines the validated observation and actuator paths in one domain. Promotion requires new workloads, safe handoff testing and measured value.

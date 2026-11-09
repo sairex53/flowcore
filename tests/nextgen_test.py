@@ -1,8 +1,10 @@
 """Integrated mode parser and rollback regression tests."""
 import copy
+from contextlib import ExitStack
 from pathlib import Path
 import sys
 import socket
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -11,7 +13,7 @@ sys.path.insert(0, str(ROOT/'scripts'))
 from nextgen_capabilities import mptcp_loopback
 from multipath import PROTOCOL
 from nextgen_scope import feedback
-from pacing_workload import PacingWorkload
+from pacing_workload import CEILING, PacingWorkload, SETTINGS, U64
 from service_config import CLASSES, load
 from research_manifest import load_manifest, validate
 
@@ -71,6 +73,73 @@ class Integrated(unittest.TestCase):
         fallback = mptcp_loopback(socket.IPPROTO_TCP)
         self.assertTrue(fallback['connected'])
         self.assertIs(fallback['negotiated'], False)
+
+    def test_cohort_change_restores_live_tcp_caps_before_next_sample(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build', prefix='cohort-test-') as temp, ExitStack() as resources:
+            listener = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            listener.settimeout(1)
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(3)
+            worker = PacingWorkload(Path(temp), 'integrated')
+            resources.callback(worker.finish)
+
+            def connection():
+                sender = resources.enter_context(socket.create_connection(listener.getsockname(), timeout=1))
+                peer, _ = listener.accept()
+                resources.enter_context(peer)
+                return sender
+
+            def cap(sock):
+                values = (U64*len(SETTINGS))()
+                self.assertEqual(worker.lib.fc_pacing_inspect_v2(sock.fileno(), values), 0)
+                return values[1]
+
+            first, remaining, replacement = connection(), connection(), connection()
+            original_first = cap(first)
+
+            def detach_remaining():
+                for flow in tuple(worker.sockets):
+                    worker.remove(flow)
+
+            resources.callback(detach_remaining)
+            worker.add(0, first)
+            worker.add(1, remaining)
+            self.assertTrue(worker.apply(150_000, 'adjust'))
+            worker.remove(0)
+            self.assertEqual(cap(first), original_first)
+            self.assertEqual(cap(remaining), CEILING)
+            self.assertEqual(worker.cohort_fallbacks, 1)
+
+            self.assertTrue(worker.apply(150_000, 'adjust'))
+            worker.add(0, replacement)
+            self.assertEqual((cap(remaining), cap(replacement)), (CEILING, CEILING))
+            self.assertEqual(worker.cohort_fallbacks, 2)
+            self.assertEqual(worker.polls, 0)
+            self.assertEqual(worker.cohort_revision, 4)
+
+    def test_failed_cohort_compensation_latches_and_shuts_down_survivors(self):
+        worker = PacingWorkload.__new__(PacingWorkload)
+        worker.integrated = True
+        worker.cohort_failed = False
+        worker.cohort_revision = 0
+        worker.previous = {1: 100}
+        worker.previous_ecn = {}
+        worker.previous_aqm = {}
+        worker.rate = 150_000
+        closed = []
+        worker.sockets = {1: (SimpleNamespace(shutdown=closed.append), 1)}
+
+        def refused(*_):
+            raise RuntimeError('kernel refused cap restoration')
+
+        worker.timed_apply = refused
+        with tempfile.TemporaryDirectory(dir=ROOT/'build', prefix='cohort-fault-') as temp:
+            worker.output = Path(temp)
+            with self.assertRaisesRegex(RuntimeError, 'kernel refused'):
+                worker.cohort_changed('leave', 0)
+        self.assertTrue(worker.cohort_failed)
+        self.assertEqual(closed, [socket.SHUT_RDWR])
+        self.assertFalse(worker.previous)
 
     def test_group_write_refusal_compensates_prior_socket(self):
         old, wanted = 1_500_000, 200_000
