@@ -1,5 +1,6 @@
 #include "flowcore/intent_v2.hpp"
 #include "intent_transport.hpp"
+#include "flowcore/udp_intent.hpp"
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -56,7 +57,10 @@ struct Channel {
     std::size_t head=0, count=0;
     bool stopping=false, busy=false;
     std::string lease;
-    std::atomic<bool> connected{false}, absolute_deadlines{false};
+    std::atomic<bool> connected{false}, absolute_deadlines{false}, udp_authorized{false};
+    std::uint32_t udp_socket_mark=0, udp_rate_pps=0, udp_burst=0, udp_max_deadline_ms=0;
+    std::uint64_t udp_expires_ns=0;
+    std::shared_ptr<flowcore::udp::UrgencyBudget> udp_budget;
     std::atomic<std::uint64_t> sequence{0}, generation{0}, queued{0}, accepted{0}, dropped{0}, rejected{0}, errors{0};
     std::atomic<std::uint32_t> notifications{0};
     std::atomic<Error> last_error{Error::None};
@@ -88,6 +92,8 @@ struct Channel {
         { std::lock_guard lock(mutex); stopping=true; dropped+=count; count=0; }
         changed.notify_all();
         worker.join();
+        if (udp_budget) udp_budget->revoke();
+        udp_authorized=false;
     }
     bool push(Event e) noexcept {
         if (getpid()!=owner || !connected) { ++dropped; return false; }
@@ -130,15 +136,44 @@ struct Channel {
                     { std::lock_guard lock(mutex); lease=next; token=next; }
                     can_renew=reply.find("\"renewable\": true")!=std::string::npos;
                     absolute_deadlines=reply.find("\"deadline_admission_v1\"")!=std::string::npos;
-                    notifications=0;notification_time=0;
-                    ++generation;
+                    std::uint32_t socket_mark=0, rate=0, burst=0, horizon=0;
+                    std::uint64_t expires=0;
+                    const bool authorized=reply.find("\"udp_message\": {\"authorized\": true")!=std::string::npos;
+                    if (authorized) {
+                        auto bounded = [&](std::string_view key, std::uint64_t maximum) {
+                            auto value=integer(reply,key);
+                            if (!value || value>maximum) throw std::runtime_error("invalid UDP message grant");
+                            return static_cast<std::uint32_t>(value);
+                        };
+                        socket_mark=bounded("\"socket_mark\": ",UINT32_MAX);
+                        rate=bounded("\"urgent_rate_pps\": ",100000);
+                        burst=bounded("\"urgent_burst\": ",10000);
+                        horizon=bounded("\"max_deadline_ms\": ",10000);
+                        expires=integer(reply,"\"expires_ns\": ");
+                    }
+                    {
+                        std::lock_guard lock(mutex);
+                        if (udp_budget) udp_budget->revoke();
+                        udp_budget.reset();
+                        udp_socket_mark=socket_mark; udp_rate_pps=rate; udp_burst=burst; udp_max_deadline_ms=horizon;
+                        udp_expires_ns=expires;
+                        udp_authorized=authorized && expires>deadline::monotonic_ns();
+                        notifications=0;notification_time=0;
+                        ++generation;
+                    }
                     connected=true;
                     renew_after=deadline::monotonic_ns()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
                     last_error=Error::None;
                     dropped+=size;
                 } else {
                     if (can_renew && deadline::monotonic_ns()>=renew_after) {
-                        transport.exchange(envelope("renew",token)+"}");
+                        auto renewal=transport.exchange(envelope("renew",token)+"}");
+                        if (udp_authorized) {
+                            const auto expiry=integer(renewal,"\"expires_ns\": ");
+                            std::lock_guard lock(mutex);
+                            udp_expires_ns=expiry;
+                            if (udp_budget) udp_budget->renew(expiry);
+                        }
                         renew_after=deadline::monotonic_ns()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
                     }
                     std::string message=envelope("batch",token)+",\"events\":[";
@@ -175,15 +210,18 @@ struct Channel {
             } catch (const RpcError& error) {
                 ++errors; dropped+=size; last_error=error.code;
                 if (error.retry_registration) connected=false;
+                { std::lock_guard lock(mutex); if (udp_budget) udp_budget->revoke(); udp_authorized=false; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             } catch (const std::exception& error) {
                 ++errors; dropped+=size; last_error=Error::TransportUnavailable;
+                { std::lock_guard lock(mutex); if (udp_budget) udp_budget->revoke(); udp_authorized=false; }
                 // Preserve a known lease on transport ambiguity; retries must not leak leases.
                 // A restarted daemon rejects the stale lease and permits fresh registration.
                 if (std::string_view(error.what())=="FLOWCORE operation forbidden") { connected=false;last_error=Error::AuthorizationDenied; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             } catch (...) {
                 ++errors; dropped+=size; connected=false; last_error=Error::ProtocolError;
+                { std::lock_guard lock(mutex); if (udp_budget) udp_budget->revoke(); udp_authorized=false; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
             { std::lock_guard lock(mutex); busy=false; }
@@ -218,6 +256,16 @@ Error Service::last_error() const noexcept { return channel_->last_error; }
 std::uint64_t Service::registration_generation() const noexcept { return channel_->generation; }
 std::uint64_t Service::notifications_time_ns() const noexcept { return channel_->notification_time; }
 std::uint32_t Service::notifications() const noexcept { return channel_->notifications; }
+std::unique_ptr<flowcore::udp::MessageSender> Service::udp_message_sender(int fd, bool enable_timestamps) const {
+    if (channel_->owner!=getpid() || !ready()) throw std::runtime_error("daemon unavailable or service inherited across fork");
+    std::lock_guard lock(channel_->mutex);
+    if (!ready() || !channel_->udp_authorized || channel_->udp_expires_ns<=deadline::monotonic_ns())
+        throw std::system_error(EPERM,std::generic_category(),"UDP per-message intent is not authorized for this service");
+    if (!channel_->udp_budget)
+        channel_->udp_budget=flowcore::udp::UrgencyBudget::create(channel_->udp_rate_pps,channel_->udp_burst,channel_->udp_expires_ns);
+    return std::unique_ptr<flowcore::udp::MessageSender>(new flowcore::udp::MessageSender(
+        fd,channel_->udp_socket_mark,channel_->udp_max_deadline_ms,channel_->udp_budget,enable_timestamps));
+}
 std::uint64_t Service::associate_socket(int fd) const {
     std::string token;
     { std::lock_guard lock(channel_->mutex);

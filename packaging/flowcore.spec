@@ -51,6 +51,7 @@ DESTDIR=%{buildroot} cmake --install build
 %{_bindir}/flowcore
 %{_bindir}/flowcored
 %{_bindir}/flowcore-sdk-request
+%{_bindir}/flowcore-udp-intent-demo
 %{_bindir}/flowid-client
 %{_bindir}/flowcore-container-request
 %{_datadir}/flowcore/

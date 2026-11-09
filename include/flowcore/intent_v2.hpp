@@ -6,6 +6,8 @@
 #include <memory>
 #include <string>
 
+namespace flowcore::udp { class MessageSender; }
+
 namespace flowcore::v2 {
 enum class Error : std::uint32_t { None, TransportUnavailable, AuthorizationDenied, InvalidRequest, EventRejected, ProtocolError };
 struct TransportStatistics { std::uint64_t session_connections, session_requests, legacy_requests; };
@@ -90,6 +92,8 @@ public:
     std::uint64_t notifications_time_ns() const noexcept;
     // Blocking setup operation. Returned cookie is attested by a received FD.
     std::uint64_t associate_socket(int fd) const;
+    // Requires a daemon-authorized service lease and a socket bearing the operator-required SO_MARK.
+    std::unique_ptr<flowcore::udp::MessageSender> udp_message_sender(int fd, bool enable_timestamps = false) const;
     // Blocking setup/diagnostic operations, never required in a request hot path.
     void declare_transport(const TransportHints&) const;
     void report_transport_state(const std::string& session, bool degraded,

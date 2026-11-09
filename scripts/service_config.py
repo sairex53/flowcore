@@ -51,10 +51,36 @@ def load(path):
         if isinstance(supplied, dict):
             cfg['adaptive'] = dict(ADAPTIVE_DEFAULT, **supplied)
     api = cfg.pop('intent_api', {'priorities':['standard']}) if isinstance(cfg,dict) else {}
-    keys(api, ('priorities',))
+    if isinstance(api, dict):
+        api.setdefault('udp_message_policies', {})
+    keys(api, ('priorities', 'udp_message_policies'))
     if (not isinstance(api['priorities'],list) or not api['priorities']
             or any(item not in ('critical','interactive','standard') for item in api['priorities'])):
         raise ValueError('invalid intent API priority permissions')
+    udp_policies = api['udp_message_policies']
+    if not isinstance(udp_policies, dict) or len(udp_policies) > 16:
+        raise ValueError('UDP message policies must be an object with at most 16 services')
+    for service, policy in udp_policies.items():
+        if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', service):
+            raise ValueError('invalid UDP message service name')
+        keys(policy, ('priority', 'uids', 'cgroup_prefix', 'socket_mark',
+                      'urgent_rate_pps', 'urgent_burst', 'max_deadline_ms'))
+        if policy['priority'] != 'critical':
+            raise ValueError('UDP urgency requires the critical priority ceiling')
+        if policy['priority'] not in api['priorities']:
+            raise ValueError('UDP message priority is not enabled for the intent API')
+        uids = policy['uids']
+        if (not isinstance(uids, list) or not uids or len(uids) > 16 or
+                any(type(uid) is not int or not 0 <= uid < 2**32 for uid in uids) or len(set(uids)) != len(uids)):
+            raise ValueError('invalid UDP message service uid allowlist')
+        prefix = policy['cgroup_prefix']
+        if (not isinstance(prefix, str) or not prefix.startswith('/') or len(prefix) > 256 or
+                any(part in ('', '.', '..') for part in prefix[1:].split('/')) or '\x00' in prefix):
+            raise ValueError('invalid UDP message cgroup prefix')
+        number(policy['socket_mark'], 1, 2**32-1, integer=True)
+        number(policy['urgent_rate_pps'], 1, 100000, integer=True)
+        number(policy['urgent_burst'], 1, 10000, integer=True)
+        number(policy['max_deadline_ms'], 1, 10000, integer=True)
     keys(cfg, ('version', 'interface', 'lab', 'telemetry_seconds', 'log_level', 'policies', 'observability', 'adaptive'))
     validate(cfg['observability'])
     settings = cfg['adaptive']

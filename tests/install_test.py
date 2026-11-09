@@ -30,6 +30,9 @@ def main():
         assert (docs/'LICENSE').read_bytes() == (ROOT/'LICENSE').read_bytes()
         assert (docs/'BOTTLENECK_ENGINE.md').is_file()
         assert (docs/'POLICY_OPTIMIZER.md').is_file()
+        assert all((docs/name).is_file() for name in
+                   ('PER_MESSAGE_INTENTS.md', 'UDP_INTENT_SDK.md', 'MESSAGE_SCHEDULING_RESULTS.md'))
+        assert (prefix/'bin/flowcore-udp-intent-demo').is_file()
         manifest = [stage/line.lstrip('/') for line in (build/'install_manifest.txt').read_text().splitlines()]
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)
         cli,daemon = (prefix/'bin'/name for name in ('flowcore','flowcored'))
@@ -99,6 +102,7 @@ def main():
         assert any((base/'etc/flowcore/helper.json').is_file() for base in (stage, prefix))
         assert (stage/'usr/lib/sysusers.d/flowcore-operator.conf').is_file()
         assert 'network' in command([cli,'--help'])
+        assert 'software_tx_timestamping' in command([cli,'udp-intent','capabilities','--json'])
         command(['systemd-analyze','verify',verify,service,units/'flowcore-network.socket'])
         sdk = work/'consumer'
         sdk.mkdir()
@@ -106,8 +110,8 @@ def main():
             'find_package(flowcore CONFIG REQUIRED)\nadd_executable(consumer main.cpp)\n'
             'target_link_libraries(consumer PRIVATE flowcore::sdk)\n')
         (sdk/'main.cpp').write_text(
-            '#include <flowcore/client.hpp>\n#include <flowcore/intent_v2.hpp>\n'
-            'int main(int argc,char** argv){flowcore::Client c("/nonexistent");'
+            '#include <flowcore/client.hpp>\n#include <flowcore/intent_v2.hpp>\n#include <flowcore/udp_intent.hpp>\n'
+            'int main(int argc,char** argv){(void)flowcore::udp::MessageSender::detect_capabilities();flowcore::Client c("/nonexistent");'
             'flowcore::v2::Intent i;i.service="installed";'
             'flowcore::v2::Service s(argc==2?argv[1]:"/nonexistent",i);'
             'if(argc==2){if(!s.wait_ready(std::chrono::seconds(3)))return 2;'

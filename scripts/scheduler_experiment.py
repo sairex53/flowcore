@@ -73,7 +73,11 @@ def class_change(lab, handle, rate, ceil, parent='1:1', priority=0):
            'burst', '16k', 'cburst', '16k', 'quantum', '1514')
 
 
-def install(lab, mode):
+def install(lab, mode, protocol="ip", *, urgent_police=None):
+    if urgent_police is not None and (mode != 'intent' or
+            not all(type(value) is int and 1 <= value <= limit
+                    for value, limit in zip(urgent_police, (100000, 10000), strict=True))):
+        raise ValueError('invalid urgent aggregate policer')
     if mode in CAKE_MODES:
         lab.tc('qdisc', 'add', 'dev', 'fc0', 'root', 'handle', '1:', 'cake',
                'bandwidth', f'{CAPACITY}kbit', CAKE_MODES[mode], 'flows', 'rtt', '40ms', 'memlimit', '1mb')
@@ -100,8 +104,13 @@ def install(lab, mode):
                'fq_codel', 'limit', '256', 'memory_limit', '1mb', 'target', '5ms', 'interval', '100ms')
 
     if mode != 'fq_codel':
-        lab.tc('filter', 'add', 'dev', 'fc0', 'parent', '1:', 'protocol', 'ip', 'pref', '10',
-               'basic', 'match', *match, 'flowid', '1:10')
+        action = []
+        if urgent_police is not None:
+            rate, burst = urgent_police
+            action = ['action', 'police', 'pkts_rate', str(rate), 'pkts_burst', str(burst),
+                      'conform-exceed', 'continue/ok']
+        lab.tc('filter', 'add', 'dev', 'fc0', 'parent', '1:', 'protocol', protocol, 'pref', '10',
+               'basic', 'match', *match, 'flowid', '1:10', *action)
 
 
 def verify(rows, mode, capacity):
@@ -170,26 +179,29 @@ def collapse(lab, mode):
     return dict(elapsed_ns=time.monotonic_ns()-began, capacity_kbit=capacity, readback=rows)
 
 
-def workload(lab, rows, duration, mode, capacity_collapse=False):
+def workload(lab, rows, duration, mode, capacity_collapse=False, *,
+             sdk=None, family=socket.AF_INET, address='10.203.0.2', enable_timestamps=True):
     with ExitStack() as stack:
         poll = stack.enter_context(selectors.DefaultSelector())
-        receiver = open_socket(lab, stack, 1, socket.AF_INET, socket.SOCK_DGRAM)
-        receiver.bind(('10.203.0.2', 0))
+        receiver = open_socket(lab, stack, 1, family, socket.SOCK_DGRAM)
+        receiver.bind((address, 0))
         receiver.setblocking(False)
         poll.register(receiver, selectors.EVENT_READ, True)
-        sender = open_socket(lab, stack, 0, socket.AF_INET, socket.SOCK_DGRAM)
+        sender = open_socket(lab, stack, 0, family, socket.SOCK_DGRAM)
         sender.setsockopt(socket.SOL_SOCKET, MARK, 42)
         # Bound socket memory consistently and let qdisc contention dominate.
         sender.setsockopt(socket.SOL_SOCKET, 32, 1024*1024)  # SO_SNDBUFFORCE
         sender.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256*1024)
         sndbuf = sender.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
-        sender.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING_NEW, SOFTWARE|OPT_ID|OPT_TSONLY)
+        if enable_timestamps:
+            sender.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPING_NEW, SOFTWARE|OPT_ID|OPT_TSONLY)
         sender.setblocking(False)
         sender.connect(receiver.getsockname())
+        native = stack.enter_context(sdk(sender)) if sdk else None
         poll.register(sender, selectors.EVENT_READ, False)
         background = []
         for _ in range(BG_FLOWS):
-            sock = open_socket(lab, stack, 0, socket.AF_INET, socket.SOCK_DGRAM)
+            sock = open_socket(lab, stack, 0, family, socket.SOCK_DGRAM)
             sock.setblocking(False)
             sock.connect(receiver.getsockname())
             background.append(sock)
@@ -199,6 +211,7 @@ def workload(lab, rows, duration, mode, capacity_collapse=False):
         sends_failed = [0, 0, 0]
         send_errors = {}
         delay_samples = []
+        submit_samples = []
         routine = 0
         index = 0
         update = None
@@ -224,20 +237,31 @@ def workload(lab, rows, duration, mode, capacity_collapse=False):
                 if kind == PROBE:
                     sent[ident] = before
                     tx[ident] = [None, None]
-                    priority = 6 if urgent(before+DEADLINE_NS, before) else 0
-                    control = [(socket.IPPROTO_IP, socket.IP_TOS, struct.pack('=i', 46 << 2)),
-                               (socket.SOL_SOCKET, PRIORITY, struct.pack('=i', priority)),
-                               (socket.SOL_SOCKET, SO_TIMESTAMPING_NEW, struct.pack('=I', TX_SOFTWARE|TX_SCHED)),
-                               (socket.SOL_SOCKET, SCM_TS_OPT_ID, struct.pack('=I', ident))]
+                    if not native:
+                        priority = 6 if urgent(before+DEADLINE_NS, before) else 0
+                        tos = ((socket.IPPROTO_IP, socket.IP_TOS) if family == socket.AF_INET else
+                               (socket.IPPROTO_IPV6, socket.IPV6_TCLASS))
+                        control = [(*tos, struct.pack('=i', 46 << 2)),
+                                   (socket.SOL_SOCKET, PRIORITY, struct.pack('=i', priority))]
+                        if enable_timestamps:
+                            control += [(socket.SOL_SOCKET, SO_TIMESTAMPING_NEW, struct.pack('=I', TX_SOFTWARE|TX_SCHED)),
+                                        (socket.SOL_SOCKET, SCM_TS_OPT_ID, struct.pack('=I', ident))]
                 try:
-                    sock.sendmsg([packet], control)
+                    if native and kind != BACKGROUND:
+                        native(packet, before+DEADLINE_NS if kind == PROBE else 0, ident+1)
+                    else:
+                        sock.sendmsg([packet], control)
                 except OSError as error:
-                    if error.errno not in (errno.ENOBUFS, errno.EAGAIN):
+                    if error.errno not in (errno.ENOBUFS, errno.EAGAIN, errno.ETIMEDOUT):
                         raise
                     sends_failed[kind] += 1
                     name = errno.errorcode[error.errno]
                     send_errors[name] = send_errors.get(name, 0)+1
-            timestamps(sender, tx)
+                finally:
+                    if kind != BACKGROUND:
+                        submit_samples.append(time.monotonic_ns()-before)
+            if enable_timestamps:
+                timestamps(sender, tx)
             next_send = start+rows[index][0] if index < len(rows) else until
             for key, _ in poll.select(max(0, min(.002, (next_send-time.monotonic_ns())/1e9))):
                 for _ in range(256):
@@ -260,7 +284,8 @@ def workload(lab, rows, duration, mode, capacity_collapse=False):
                     else:
                         require(kind == PROBE and ident in sent and ident not in completed, 'unexpected echo')
                         completed[ident] = time.monotonic_ns()-sent[ident]
-        timestamps(sender, tx)
+        if enable_timestamps:
+            timestamps(sender, tx)
         cpu_after, rss = usage()
     offered = sum(kind == PROBE for _, kind, _ in rows)
     completed_ms = [value/1e6 for value in completed.values()]
@@ -268,6 +293,11 @@ def workload(lab, rows, duration, mode, capacity_collapse=False):
     jain = sum(delivered)**2/(BG_FLOWS*sum(value*value for value in delivered)) if any(delivered) else 0
     return dict(offered=offered, sent_to_socket=len(sent)-sends_failed[PROBE], completed=len(completed),
                 failure_ratio=1-len(completed)/offered, p99_ms=percentile(completed_ms, .99),
+                late_responses=sum(value > DEADLINE_NS for value in completed.values()),
+                missing_responses=offered-sends_failed[PROBE]-len(completed),
+                local_probe_failures=sends_failed[PROBE],
+                submit_p50_us=percentile([value/1000 for value in submit_samples], .5),
+                submit_p99_us=percentile([value/1000 for value in submit_samples], .99),
                 deadline_attainment=sum(value <= DEADLINE_NS for value in completed.values())/offered,
                 probe_queue_span_p99_ms=percentile(sojourn, .99), timestamp_pairs=len(sojourn),
                 probe_samples=[dict(id=ident, rtt_ns=completed.get(ident), sched_ns=pair[1], tx_ns=pair[0])

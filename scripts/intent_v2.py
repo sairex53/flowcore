@@ -7,6 +7,18 @@ from collections import Counter, deque
 from service_config import keys, number
 
 
+def cgroup_matches(raw, prefix):
+    if not isinstance(raw, str):
+        return False
+    for line in raw.splitlines():
+        fields = line.split(':', 2)
+        if len(fields) == 3 and fields[0] == '0' and fields[1] == '':
+            path = fields[2]
+            prefix = prefix.rstrip('/')
+            return path == prefix or path.startswith(prefix + '/')
+    return False
+
+
 def identity(pid):
     with open(f'/proc/{pid}/stat','rb') as stream:
         raw=stream.read(4096)
@@ -103,6 +115,16 @@ class IntentAPI:
             if intent['persistent'] or intent['ttl_seconds']>3600:
                 raise ValueError('v2 requires ephemeral leases of at most one hour')
             start,cgroup=identity(pid)
+            udp_policy=self.service.config.get('intent_api',{}).get('udp_message_policies',{}).get(intent['name'])
+            udp_grant=None
+            if udp_policy is not None:
+                if intent['priority'] != udp_policy['priority']:
+                    raise PermissionError('UDP message service priority does not match operator policy')
+                if uid not in udp_policy['uids'] or not cgroup_matches(cgroup,udp_policy['cgroup_prefix']):
+                    raise PermissionError('UDP message service identity is not authorized')
+                udp_grant=dict(priority=udp_policy['priority'],socket_mark=udp_policy['socket_mark'],
+                    urgent_rate_pps=udp_policy['urgent_rate_pps'],urgent_burst=udp_policy['urgent_burst'],
+                    max_deadline_ms=udp_policy['max_deadline_ms'])
             registry=self.service.controller.registry
             old=getattr(registry,'shared_classes',False)
             if self.service.controller.mode=='off':
@@ -116,16 +138,19 @@ class IntentAPI:
                 cgroup=cgroup,registered_ns=time.monotonic_ns(),ttl_seconds=intent['ttl_seconds'],expires_ns=time.monotonic_ns()+intent['ttl_seconds']*10**9,
                 requests={},completed=deque(maxlen=256),cookies=set(),notifications={},
                 expired_requests=0,abandoned_requests=0,deadline_ms=intent['deadline_ms'],outcomes=Counter(),
-                credits=4096,credit_ns=time.monotonic_ns())
+                credits=4096,credit_ns=time.monotonic_ns(),udp_message=udp_grant)
             row=registry.rows[intent['name']]
             row['monotonic_expiry']=max(row['monotonic_expiry'],self.leases[token]['expires_ns']/10**9)
             row['expires']=time.time()+max(0,row['monotonic_expiry']-time.monotonic())
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='registered',uid=uid,service=intent['name'],pid=pid,process_start=start))
             self.service.log('intent_v2_registered',uid=uid,service=intent['name'],pid=pid,process_start=start)
-            return dict(version=2,lease=token,renewable=True,
-                        features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality','transport_sessions_v1','deadline_admission_v1'],
+            response=dict(version=2,lease=token,renewable=True,
+                        features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality','transport_sessions_v1','deadline_admission_v1','udp_per_message_intents_v1'],
                         isolation='preference_only',identity='SO_PEERCRED+process_start',
                         constraints='class contracts require admitted HTB lab',notifications={})
+            if udp_grant is not None:
+                response['udp_message'] = dict(authorized=True, expires_ns=self.leases[token]['expires_ns'], **udp_grant)
+            return response
         token=request.get('lease')
         lease=self.leases.get(token) if isinstance(token,str) else None
         if not lease or (lease['uid'],lease['pid'])!=(uid,pid) or identity(pid)[0]!=lease['process_start']:
@@ -149,6 +174,13 @@ class IntentAPI:
             return result
         if action=='renew':
             keys(request,('op','version','action','lease'))
+            if lease['udp_message'] is not None:
+                policy=self.service.config['intent_api']['udp_message_policies'].get(lease['name'])
+                _,cgroup=identity(pid)
+                if (not policy or uid not in policy['uids'] or not cgroup_matches(cgroup,policy['cgroup_prefix'])
+                        or any(policy[key]!=value for key,value in lease['udp_message'].items())):
+                    self.release(token,'udp_authorization_changed')
+                    raise UnknownLease('UDP message authorization changed')
             lease['expires_ns']=time.monotonic_ns()+lease['ttl_seconds']*10**9
             row=self.service.controller.registry.rows[lease['name']]
             row['monotonic_expiry']=max(row['monotonic_expiry'],lease['expires_ns']/10**9)

@@ -51,6 +51,11 @@ def main():
             command.add_argument('--jsonl', action='store_true')
         if name == 'metrics':
             command.add_argument('--prometheus', action='store_true')
+    udp_intent = commands.add_parser('udp-intent', help='inspect per-message UDP scheduling support')
+    udp_intent_actions = udp_intent.add_subparsers(dest='action', required=True)
+    udp_caps = udp_intent_actions.add_parser('capabilities')
+    udp_caps.add_argument('--interface')
+    udp_caps.add_argument('--json', action='store_true')
     diagnose = commands.add_parser('diagnose', help='explain retained SLO and network evidence')
     diagnose.add_argument('--service')
     diagnose.add_argument('--lab-intervention', choices=('disable','freeze','restore'),
@@ -155,6 +160,9 @@ def main():
     if watch and (getattr(args, 'csv', False) or getattr(args, 'prometheus', False)):
         parser.error('--watch supports JSON and JSONL only')
     try:
+        if args.command == 'udp-intent':
+            from udp_intent_cli import dispatch
+            return dispatch(args)
         if args.command == 'slo':
             from durable_state import read_json
             from slo_optimizer import profile

@@ -29,7 +29,7 @@ configure_file(scripts/flowcored-installed.in flowcored-installed @ONLY)
 install(TARGETS flowcore RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/flowcored-installed" DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME flowcored)
 install(DIRECTORY scripts config scenarios DESTINATION "${FLOWCORE_DATA}"
-    FILES_MATCHING PATTERN "*.py" PATTERN "*.json" PATTERN "*.conf" PATTERN "__pycache__" EXCLUDE PATTERN "flow_engine_benchmark.py" EXCLUDE)
+    FILES_MATCHING PATTERN "*.py" PATTERN "*.json" PATTERN "*.conf" PATTERN "__pycache__" EXCLUDE PATTERN "flow_engine_benchmark.py" EXCLUDE PATTERN "udp_intent_lab.py" EXCLUDE)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/installed-layout" "${CMAKE_CURRENT_BINARY_DIR}/VERSION"
               "${CMAKE_CURRENT_BINARY_DIR}/bpf-enabled" DESTINATION "${FLOWCORE_DATA}")
 install(FILES config/service.json config/helper.json DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/flowcore")
@@ -94,7 +94,7 @@ endif()
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
 add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp
-    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp src/cooperative_slo.cpp)
+    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp src/cooperative_slo.cpp src/udp_intent.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -107,7 +107,7 @@ add_executable(flowcore-sdk-request examples/sdk_request.cpp)
 target_link_libraries(flowcore-sdk-request PRIVATE flowcore_sdk)
 install(TARGETS flowcore_sdk EXPORT FlowcoreTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(EXPORT FlowcoreTargets FILE flowcore-targets.cmake NAMESPACE flowcore:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
-install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp include/flowcore/deadline.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp include/flowcore/deadline.hpp include/flowcore/udp_intent.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
@@ -225,7 +225,6 @@ install(FILES REAL_APPLICATIONS.md GRPC_INTEGRATION.md DATABASE_INTEGRATION.md A
     DESTINATION "${FLOWCORE_DATA}/docs")
 install(DIRECTORY examples/real_apps DESTINATION "${FLOWCORE_DATA}/examples"
     PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
-install(FILES examples/python/flowcore_intent.py DESTINATION "${FLOWCORE_DATA}/examples/python")
 add_test(NAME real_apps_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/real_apps_test.py")
 
 
@@ -329,11 +328,29 @@ set_tests_properties(flowid_session PROPERTIES TIMEOUT 45)
 install(FILES FLOWID_PROTOCOL.md FLOWID_SECURITY.md FLOWID_EXPERIMENTS.md FLOWID_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
+
+add_library(flowcore_udp_intent_lab SHARED tests/udp_intent_lab_bridge.cpp)
+target_link_libraries(flowcore_udp_intent_lab PRIVATE flowcore_sdk)
+target_compile_options(flowcore_udp_intent_lab PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_executable(udp_intent_native_test tests/udp_intent_native.cpp)
+target_link_libraries(udp_intent_native_test PRIVATE flowcore_sdk)
+target_compile_options(udp_intent_native_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_executable(flowcore-udp-intent-demo examples/udp_intent_demo.cpp)
+target_link_libraries(flowcore-udp-intent-demo PRIVATE flowcore_sdk)
+target_compile_options(flowcore-udp-intent-demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
+install(TARGETS flowcore-udp-intent-demo RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+add_test(NAME udp_intent_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/udp_intent_test.py")
+add_test(NAME udp_intent_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/udp_intent_test.py" --live)
+set_tests_properties(udp_intent_live PROPERTIES SKIP_RETURN_CODE 77)
+set_tests_properties(udp_intent_unit udp_intent_live PROPERTIES TIMEOUT 40
+    ENVIRONMENT "FLOWCORE_UDP_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
+
 add_test(NAME scheduler_research COMMAND /usr/bin/python3 -B
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/scheduler_experiment_test.py")
 set_tests_properties(scheduler_research PROPERTIES TIMEOUT 15)
 install(FILES KERNEL_SCHEDULER_DESIGN.md SCHEDULER_PROTOTYPE.md SCHEDULER_BENCHMARKS.md
-    KERNEL_UPSTREAM_PLAN.md DESTINATION "${FLOWCORE_DATA}/docs")
+    KERNEL_UPSTREAM_PLAN.md PER_MESSAGE_INTENTS.md UDP_INTENT_SDK.md MESSAGE_SCHEDULING_RESULTS.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
 
 add_library(flowcore_pacing_lab SHARED src/pacing_lab_c.cpp src/hybrid.cpp)
 target_link_libraries(flowcore_pacing_lab PRIVATE flowcore_sdk)
