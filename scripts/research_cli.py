@@ -32,6 +32,8 @@ def add_commands(commands):
     tuning = bench.add_parser('tune-static')
     for name in ('pilot', 'evaluation', 'output'):
         tuning.add_argument(name, type=Path)
+    action_trace = bench.add_parser('actions', help='summarize adaptive probe outcomes from a decision ledger')
+    action_trace.add_argument('ledger', type=Path)
     overload = bench.add_parser('overload', help='inspect V3 request and kernel evidence')
     overload.add_argument('trial', type=Path)
     overload.add_argument('--against', type=Path, help='compare recorded configurations at matching stages')
@@ -130,6 +132,16 @@ def dispatch(args):
             from research_soak import run_soak
             return run_soak(manifest,args.cycles,mode,args.max_minutes,
                             args.max_rss_growth_mb,args.max_fd_growth,args.max_bpf_growth),0
+    if action == 'actions':
+        from adaptive_validation import summarize
+        from measurement import read_bounded
+        events = json.loads(read_bounded(args.ledger, 512*1024))
+        if not isinstance(events, list) or len(events) > 128 or any(not isinstance(row, dict) for row in events):
+            raise ValueError('invalid adaptive decision ledger')
+        try:
+            return summarize(events), 0
+        except (KeyError, TypeError) as error:
+            raise ValueError('invalid adaptive trace event') from error
     if action == 'overload':
         from overload import compare_configuration, diagnose
         result = diagnose(args.trial)

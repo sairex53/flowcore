@@ -81,3 +81,33 @@ def assess(before, after, *, background_loss, fairness_loss):
                 traffic_effect_observed=served or backlog, background_throughput_regressed=goodput_regressed,
                 fairness_regressed=fairness_regressed, background_demand_comparable=background,
                 active_classes_comparable=matching)
+
+
+def summarize(events):
+    """Classify verified probes whose verdict is outside the observed trace."""
+    from collections import Counter
+    reasons = Counter()
+    probes = {}
+    verdicts = {}
+    restored = set()
+    for event in events:
+        trace = event.get('trace')
+        if not isinstance(trace, dict) or trace.get('schema') != 1:
+            continue
+        reasons[trace['reason_code']] += 1
+        key = (event['controller_session'], event.get('proposal_id'))
+        if key[1] is None:
+            continue
+        if event['result'] == 'pending' and trace['reason_code'] == 'ACTION_APPLIED':
+            probes[key] = event
+        if event.get('outcome') in ('useful', 'harmful', 'inconclusive'):
+            verdicts[key] = event['outcome']
+        if trace['reason_code'] == 'ACTION_REVERTED':
+            restored.add(key)
+    rows = [dict(proposal_id=key[1], session=key[0], outcome=verdicts.get(key, 'inconclusive'),
+                 reason='observed_verdict' if key in verdicts else
+                        'interrupted_and_restored' if key in restored else 'right_censored',
+                 rollback_verified=key in restored)
+            for key in probes]
+    return dict(schema=1, reasons=dict(reasons), verified_probes=len(rows), probes=rows,
+                outcomes=dict(Counter(row['outcome'] for row in rows)))

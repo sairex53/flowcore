@@ -28,6 +28,7 @@ ctest --test-dir build --output-on-failure
 sudo build/flowcore bench run scenarios/adaptive-action-paired.json
 sudo build/flowcore bench run scenarios/adaptive-action-holdout.json
 sudo build/flowcore bench run scenarios/adaptive-action-transport-ablation.json
+sudo build/flowcore bench run scenarios/adaptive-action-local-holdout.json
 sudo python3 -B tests/optimizer_integration.py
 ~~~
 
@@ -126,3 +127,60 @@ Incidental traffic made the list of classes with any bytes change,
 so the fairness cohorts were incomparable. The revised guard
 requires matching material classes at a 1% share threshold and
 uses the explicit deadline-reporting denominator.
+
+The revised two-block retest at results/research-1794307576124270798
+also retained one invalid trial. This time r1-optimizer-local
+exceeded the release threshold at 39.31 ms. Its raw result,
+including the action and compensation, remains in the bundle.
+In the infrastructure-valid pair both arms completed all 2,200
+requests. The strict arm recorded P99 91.19 ms, 95.09% deadline
+attainment and 5.54 Mbit/s background goodput. The local arm
+recorded 79.96 ms, 97.77% and 5.63 Mbit/s. These are descriptive
+results from one pair in an invalid campaign.
+
+The valid local trial verified one reservation probe and one
+rollback. In the fixed action windows, class backlog P95 fell
+from 7,513 to 5,312 bytes, while application histogram P99 rose
+from 35.73 to 46.34 ms. The controller classified the probe as
+harmful under the 10% P99 guard and restored the prior allocation.
+The verdict used a comparable material-class cohort and was
+evaluated 6.11 s after kernel confirmation. The within-trial
+guard and the whole-run paired comparison use different intervals
+and answer different questions.
+
+The final isolated actuator repeat, recorded in
+results/action-validation/actuator-final.log, independently
+verified the ceiling and the harmful transfer. Critical wire
+rate rose from 6.04 to 6.98 Mbit/s during the transfer, while
+background fell from 6.03 to 4.99 Mbit/s. The allocation change
+took 19.09 ms through kernel verification. The verdict took
+3.79 s and rollback verified generation 3.
+
+## Final local-action holdout and test status
+
+The independent two-arm holdout at results/research-1794307734249579866
+used 9.4 Mbit/s, changed workload phases and fresh seed 1943629949.
+Both infrastructure-valid arms completed all 2,020 requests.
+Strict optimizer P99 was 55.52 ms with 98.42% deadline attainment.
+Optimizer-local P99 was 44.76 ms with 99.75% attainment. Background
+goodput was 4.49 and 4.48 Mbit/s respectively. Background Jain was
+approximately 0.99995 for both. Daemon and child CPU was 2.225 and
+2.276 s. This is one pair.
+
+The local optimizer verified one transfer late in the trial and
+the strict optimizer issued zero actions. The local verdict fell
+outside the recording window. The offline summary marks it as
+inconclusive and right-censored. Neither strategy reached the
+configured convergence criterion. The whole-trial P99 difference
+does not establish a causal effect or support enabling the local
+option by default.
+
+The Fedora ARM64 C++23 build, CTest, staged installation, optimizer
+actuator and scoped safety fixtures passed. CTest recorded 54
+passes and one privileged UDP skip. Fault evidence covers stale
+generations, unavailable telemetry, external capacity drift,
+failed updates, ambiguous acknowledgements, compensation, crash
+recovery and namespace cleanup. The two invalid ablation matrices
+remain available. All five campaign evidence digests verified.
+The action engine was exercised with owned HTB. No comparative
+socket pacing or MPTCP actuation result is claimed.

@@ -850,8 +850,11 @@ def trial(directory, m, rep, mode, seed=None):
                 socket_changes = (result.get('socket_pacing') or {}).get('socket_actions', 0)
                 result['slo_policy_updates'] = class_changes + (
                     hybrid.actions+hybrid.rollbacks if hybrid else socket_changes)
-                result['slo_harmful_actions'] = (sum(row['result']=='rolled_back' and bool(row.get('degraded'))
-                                                      for row in history) + (hybrid.adverse if hybrid else 0))
+                from adaptive_validation import summarize as summarize_actions
+                result['adaptive_action_validation'] = summarize_actions(history)
+                result['slo_harmful_actions'] = (sum(row.get('outcome') == 'harmful' or
+                    ('outcome' not in row and row['result']=='rolled_back' and bool(row.get('degraded')))
+                    for row in history) + (hybrid.adverse if hybrid else 0))
                 result['warnings'] = v2.noise(host_before, host_after, metrics, result['observed_rate_windows'])
                 if integrity:
                     result['measurement'] = measurement.classify(directory, result, m,

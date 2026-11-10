@@ -3,6 +3,7 @@
 ~~~sh
 build/flowcore controller trace
 build/flowcore policy history
+build/flowcore bench actions results/EXPERIMENT/r0-optimizer/decisions.json
 ~~~
 
 The trace uses the existing authenticated read-only Unix socket and
@@ -39,7 +40,9 @@ transactions, reverts and outcome classifications. They reset on
 activation. Static experiment arms can have no decision records.
 
 A zero-action trial is evaluated from its reason distribution and
-its observed workload. A shortage of samples or controller fault
+its observed workload. The offline summary labels an applied probe
+without a verdict as inconclusive, with the reason right_censored.
+A shortage of samples or controller fault
 carries a different interpretation from a well-observed idle path.
 A verified kernel mutation by itself does not establish performance
 benefit. The trace contains no estimate of per-request packet

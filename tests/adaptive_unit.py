@@ -282,6 +282,20 @@ class Unit(unittest.TestCase):
         self.assertEqual(engine.history[-1]['proposal_id'], 17)
         self.assertEqual(engine.action_counts['useful'], 1)
 
+    def test_trace_summary_censors_unobserved_verdict(self):
+        from adaptive_validation import summarize
+
+        def row(result, reason, proposal, **fields):
+            return dict(result=result, controller_session='fixture', proposal_id=proposal,
+                        trace=dict(schema=1, reason_code=reason), **fields)
+
+        result = summarize([row('pending','ACTION_APPLIED',1),
+                            row('pending','ACTION_APPLIED',2),
+                            row('rolled_back','ACTION_REVERTED',1,outcome='harmful')])
+        self.assertEqual(result['outcomes'], dict(harmful=1, inconclusive=1))
+        self.assertEqual(result['probes'][1]['reason'], 'right_censored')
+        self.assertFalse(result['probes'][1]['rollback_verified'])
+
     def test_stale_generation_blocks_before_planning_or_restoring(self):
         observer = Observer(copy.deepcopy(DEFAULT))
         observer.sampled_ns = time.monotonic_ns()
