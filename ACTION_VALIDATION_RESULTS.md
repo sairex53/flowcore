@@ -101,3 +101,28 @@ and verification, and the verdict was evaluated 4.17 s after
 kernel confirmation. The fixture also verified external capacity
 drift refusal and namespace cleanup. Raw evidence is in
 results/action-validation/actuator.log.
+
+## Transport coverage ablation
+
+The first two-block ablation at results/research-1794307428444881377
+retained one invalid baseline trial. Generator release P99 was
+25.79 ms versus the fixed 25 ms infrastructure limit. The remaining
+three trials had no failed requests. The strict optimizer issued
+no action. The two optimizer-local trials each verified one
+600 kbit/s transfer and one also verified restoration.
+
+In the first local probe, class backlog P95 fell from 7,513 to
+3,159 bytes while the application histogram P99 remained 42.50 ms.
+The verdict was inconclusive and the controller restored the prior
+allocation. The second probe recorded backlog P95 falling from
+23,171 to 3,159 bytes and application histogram P99 falling from
+131.07 to 71.47 ms in its fixed windows. The original controller
+retained it as useful under its then-current rules. These are local
+pre/post measurements. The invalid matrix and two repetitions
+provide insufficient evidence for comparative benefit.
+
+Those probes also exposed a fairness measurement edge case.
+Incidental traffic made the list of classes with any bytes change,
+so the fairness cohorts were incomparable. The revised guard
+requires matching material classes at a 1% share threshold and
+uses the explicit deadline-reporting denominator.

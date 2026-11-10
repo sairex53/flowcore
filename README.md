@@ -75,6 +75,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Cooperative SLO | [Distributed engine](DISTRIBUTED_SLO.md), [request coordination](REQUEST_COORDINATION.md), [experiments](COOPERATIVE_RESULTS.md) |
 | Next-generation integrated engine | [Architecture](NEXTGEN_ARCHITECTURE.md), [engine](INTEGRATED_ENGINE.md), [benchmarks](NEXTGEN_BENCHMARKS.md), [innovation](INNOVATION_REPORT.md) |
 | Safe online experimentation | [Strategy engine](STRATEGY_ENGINE.md), [experiment design](ONLINE_EXPERIMENTATION.md), [results](STRATEGY_RESULTS.md) |
+| Adaptive action validation | [Engine](ADAPTIVE_ACTION_ENGINE.md), [trace](DECISION_TRACE.md), [results](ACTION_VALIDATION_RESULTS.md) |
 | TCP socket intelligence | [Engine](TCP_PACING_ENGINE.md), [SDK](SOCKET_INTELLIGENCE.md), [results](TCP_PACING_RESULTS.md) |
 | Bandwidth-Preserving Hybrid V3 (lab) | [Engine](HYBRID_CONTROLLER_V3.md), [actuator coordination](ACTUATOR_COORDINATION.md), [results](HYBRID_V3_RESULTS.md) |
 | Multi-objective SLO optimization | [Engine](MULTIOBJECTIVE_OPTIMIZATION.md), [Pareto analysis](PARETO_ANALYSIS.md), [results](SLO_OPTIMIZATION_RESULTS.md) |
