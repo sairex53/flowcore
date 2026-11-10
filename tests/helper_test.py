@@ -46,6 +46,18 @@ class Helper(unittest.TestCase):
         net.create.assert_called_once()
         net.remove.assert_not_called()
 
+    def test_status_rechecks_kernel_ownership(self):
+        net = Mock(tag=b'flowcore:' + b'a'*32, indices=(3,4))
+        act = Actuator(net, dict(operators=[12], readers=[13]))
+        act.queue = 64
+        net.verify_queue.side_effect = RuntimeError('foreign qdisc')
+        with patch('network_helper.audit'):
+            status = act.run(13, {'op': 'status'})
+        net.verify_queue.assert_called_once_with(64)
+        self.assertFalse(status['verified'])
+        self.assertIsNone(status['lab_up'])
+        net.remove.assert_not_called()
+
     def test_config_and_paths(self):
         self.assertEqual(config(b'{"version":1,"operators":[42],"readers":[]}')['operators'], [42])
         for raw in (b'{}', b'{"version":1,"operators":[0],"readers":[]}',

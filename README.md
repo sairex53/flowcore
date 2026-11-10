@@ -83,6 +83,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Read-only network dashboard | [DASHBOARD.md](DASHBOARD.md) |
 | Deployment and troubleshooting | [DEPLOYMENT.md](DEPLOYMENT.md), [OPERATIONS.md](OPERATIONS.md), [RECOVERY.md](RECOVERY.md) |
 | Safety validation | [Invariants](SAFETY_INVARIANTS.md), [model test results](MODEL_TEST_RESULTS.md) |
+| Runtime safety and recovery | [Safety](RUNTIME_SAFETY.md), [recovery](RECOVERY_ENGINE.md), [fault tests](FAULT_INJECTION_RESULTS.md) |
 | Security and privileges | [SECURITY.md](SECURITY.md), [PRIVILEGES.md](PRIVILEGES.md) |
 | Release decision | [RELEASE_READINESS.md](RELEASE_READINESS.md), [RELEASE_VALIDATION.md](RELEASE_VALIDATION.md) |
 | Contribution and changes | [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md) |

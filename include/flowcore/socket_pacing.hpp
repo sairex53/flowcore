@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -74,12 +75,17 @@ public:
     std::expected<Snapshot, Error> snapshot() const;
     Error set_rate(Rate) noexcept;
     Error set_rate(Rate, RateTiming*) noexcept;
+    // Operations serialize per handle. Move and destruction require caller synchronization.
     // Call from the owner's timer even when there is no traffic.
     Error tick(Clock::time_point now = Clock::now()) noexcept;
     Error remove() noexcept;
 
 private:
     SocketPolicy(int fd, std::uint64_t cookie, Policy policy) noexcept;
+    Error tick_locked(Clock::time_point) noexcept;
+    Error remove_locked() noexcept;
+    Error restore(int pinned) noexcept;
+    mutable std::mutex mutex_;
     int fd_, owner_;
     std::uint64_t cookie_;
     Policy policy_;
@@ -90,7 +96,8 @@ private:
         int priority = 0;
     };
     Values original_, applied_;
-    bool active_ = false;
+    bool active_ = false, tainted_ = false;
+    Error removal_error_;
 };
 
 enum class Strategy { Static, Queue, Slo, Hybrid, Ecn, Deadline, Integrated, Guarded };

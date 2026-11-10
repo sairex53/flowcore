@@ -237,6 +237,12 @@ int main(int argc,char** argv) {
         struct bpf_prog_query_opts owned{}; owned.sz=sizeof(owned);
         require(!bpf_prog_query_opts(iface,BPF_TCX_EGRESS,&owned) && owned.prog_cnt==1,"attachment verification failed");
         const __u64 revision=owned.revision;
+        const auto check_scope = [&] {
+            struct bpf_prog_query_opts current{}; current.sz=sizeof(current);
+            require(if_nametoindex("fc0")==iface &&
+                !bpf_prog_query_opts(iface,BPF_TCX_EGRESS,&current) &&
+                current.prog_cnt==1 && current.revision==revision,"interface/TCX ownership changed");
+        };
         struct stat out{}; require(!fstat(STDOUT_FILENO,&out) && S_ISFIFO(out.st_mode) && fpathconf(STDOUT_FILENO,_PC_PIPE_BUF)>=4096,"output must be an atomic pipe");
         int flags=fcntl(STDOUT_FILENO,F_GETFL);
         require(flags>=0 && !fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK),"output setup failed");
@@ -261,15 +267,15 @@ int main(int argc,char** argv) {
                     try {
                         if (command=="dump") engine.snapshot(true);
                         else if (command.starts_with("page ")) engine.page_command(command);
-                        else engine.policy(command);
+                        else {
+                            check_scope();
+                            engine.policy(command);
+                        }
                     } catch (const std::invalid_argument&) { engine.output("{\"type\":\"error\",\"error\":\"operation rejected\"}\n"); }
                 }
             }
             if (std::chrono::steady_clock::now()>=next) {
-                struct bpf_prog_query_opts current{}; current.sz=sizeof(current);
-                require(if_nametoindex("fc0")==iface &&
-                    !bpf_prog_query_opts(iface,BPF_TCX_EGRESS,&current) &&
-                    current.prog_cnt==1 && current.revision==revision,"interface/TCX ownership changed");
+                check_scope();
                 if (std::chrono::steady_clock::now()>=engine.expires) engine.frozen.clear();
                 engine.snapshot(false); next=std::chrono::steady_clock::now()+std::chrono::seconds(1);
             }

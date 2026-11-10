@@ -4,6 +4,7 @@ import sys
 import os
 import socket
 import unittest
+from unittest.mock import Mock, patch
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -88,6 +89,21 @@ class Schema(unittest.TestCase):
             def counters(self): return dict(qdisc=[],traffic_classes={})
         with self.assertRaises(RuntimeError):
             FlowEngine.validate_htb(Unowned())
+
+    def test_lost_policy_ack_revokes_engine(self):
+        engine=FlowEngine()
+        engine.lab=Mock(assert_htb_layout=Mock())
+        engine.ready=True
+        engine.generation=1
+        with (patch.object(engine, 'validate_htb'),
+              patch.object(engine, 'send') as send,
+              patch.object(engine, 'wait', side_effect=TimeoutError)):
+            with self.assertRaisesRegex(RuntimeError,'detached'):
+                engine.set_policy(2,[])
+        send.assert_called_once()
+        self.assertFalse(engine.ready)
+        self.assertIsNone(engine.generation)
+        self.assertIsNone(engine.lab)
 
     def test_strict_rules(self):
         rule=dict(protocol=6,dport=9000,service=1,classid=0x10010)

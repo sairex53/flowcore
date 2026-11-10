@@ -234,8 +234,8 @@ def main():
                                       '--', '/usr/bin/ip']
                             subprocess.run([*target, 'link', 'add', 'foreign0', 'type', 'dummy'],
                                            pass_fds=(pinned.fileno(),), check=True, timeout=4)
-                            assert call(path, OPERATOR, 'lab.remove', epoch=epoch,
-                                        revision=2)['code'] == 'network_failed'
+                            stale_state = call(path, READER, 'status')['result']
+                            assert not stale_state['verified'] and stale_state['lab_up'] is None
                             assert proc.wait(timeout=4) == 1
                             rows = json.loads(subprocess.check_output([*target, '-j', 'link', 'show'],
                                                 pass_fds=(pinned.fileno(),), timeout=4))

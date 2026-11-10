@@ -127,11 +127,23 @@ class Actuator:
                     lab_up=None if self.failed else self.net.indices is not None,
                     limit_packets=self.queue)
 
+    def revoke(self, uid, op, error):
+        self.failed = True
+        self.net.indices = self.queue = None
+        audit('network_failed', uid=uid, op=op, epoch=self.epoch, revision=self.revision,
+              failure=type(error).__name__, errno=getattr(error, 'errno', None),
+              detail=str(error) if type(error) is RuntimeError else None)
+
     def run(self, uid, command):
         op = command['op']
         if uid not in (self.readers if op == 'status' else self.operators):
             raise Rejected('forbidden')
         if op == 'status':
+            if not self.failed and self.net.indices is not None:
+                try:
+                    self.net.verify_queue(self.queue)
+                except (OSError, RuntimeError, ValueError, KeyError, struct.error) as error:
+                    self.revoke(uid, op, error)
             return self.view()
         if self.failed:
             raise Rejected('network_failed')
@@ -161,11 +173,7 @@ class Actuator:
                 self.net.set_queue(self.queue, target)
                 self.queue = target
         except (OSError, RuntimeError, ValueError, KeyError, struct.error) as error:
-            self.failed = True
-            self.net.indices = self.queue = None
-            audit('network_failed', uid=uid, op=op, epoch=self.epoch, revision=self.revision,
-                  failure=type(error).__name__, errno=getattr(error, 'errno', None),
-                  detail=str(error) if type(error) is RuntimeError else None)
+            self.revoke(uid, op, error)
             raise Rejected('network_failed') from error
         self.revision += 1
         audit('network_committed', uid=uid, op=op, **self.view())

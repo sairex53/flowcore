@@ -26,8 +26,19 @@ def resize_htb(service, capacity, *, preserve_windows=False):
     policy = service.config['policies'][service.active]
     expected = {name: (old*c['min_pct']//100, old*c['max_pct']//100)
                 for name, c in policy['classes'].items()}
+    desired = {name: (capacity*c['min_pct']//100, capacity*c['max_pct']//100)
+               for name, c in policy['classes'].items()}
+    if mode == 'active':
+        expected = control.static_fallback(expected)
+        desired = control.static_fallback(desired)
+        if expected is None or desired is None:
+            raise RuntimeError('research capacity is incompatible with active hard bounds')
+    adaptive_tc.validate(capacity, desired)
     if adaptive_tc.read(lab, old, policy) != expected:
         raise RuntimeError('research resize refused unexpected HTB baseline')
+    scope = lab.htb_safety
+    if scope:
+        scope.begin(old, expected, scope.verified)
 
     def parent():
         lab.assert_owned_sender()
@@ -36,10 +47,8 @@ def resize_htb(service, capacity, *, preserve_windows=False):
     writing = time.monotonic_ns()
     if capacity > old:
         parent()
-    desired = {}
-    for name, c in policy['classes'].items():
-        rate, ceil = capacity*c['min_pct']//100, capacity*c['max_pct']//100
-        desired[name] = (rate, ceil)
+    for name, (rate, ceil) in desired.items():
+        c = policy['classes'][name]
         lab.assert_owned_sender()
         lab.tc('class', 'change', 'dev', 'fc0', 'parent', '1:1', 'classid', f'1:{CLASSES[name]}',
                *rate_args(rate, ceil), 'prio', c['priority'], 'quantum', '1514')
@@ -49,6 +58,8 @@ def resize_htb(service, capacity, *, preserve_windows=False):
     if adaptive_tc.read(lab, capacity, policy) != desired:
         raise RuntimeError('research resize readback failed')
     verified = time.monotonic_ns()
+    if scope:
+        scope.commit(capacity, desired)
     service.profile = dict(service.profile, bandwidth_kbit=capacity)
     # Counter deltas and feedback from the previous capacity must not arm probes.
     observer = service.observer
@@ -104,6 +115,8 @@ def apply_conditions(service, settings, mode, seed, link_up, ecn=None):
     except (OSError, ValueError, RuntimeError, KeyError, struct.error, subprocess.SubprocessError) as error:
         # qdisc, class and netem updates are separate kernel operations. An
         # uncertain partial update invalidates the trial and its disposable lab.
+        if lab.htb_safety:
+            lab.htb_safety.fail(error, 'UNVERIFIED')
         service.close_lab()
         service.error = f'research update failed; lab removed: {error}'
         raise RuntimeError(service.error) from error
@@ -113,6 +126,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
     from benchmark import TC
     from research_manifest import CLASSIFIED, FQ_MODES
     lab.assert_owned_sender()
+    lab.assert_owned_receiver()
     settings = settings or {}
     cap = profile['bandwidth_kbit']
     first = service.research_mode is None
@@ -130,6 +144,10 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
                     for name,cls in installed['classes'].items()}:
                 raise RuntimeError('refusing to replace unexpected baseline qdisc')
             lab.tc('qdisc','del','dev','fc0','root')
+            if lab.htb_safety:
+                lab.htb_safety.released()
+                service.last_actuation = lab.htb_safety.view()
+                lab.htb_safety = None
             if mode == 'linux-default':
                 lab.command(1, [TC, 'qdisc', 'del', 'dev', 'fc1', 'root'])
             else:
@@ -140,9 +158,19 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
                            'fq' if mode in FQ_MODES else 'pfifo' if mode=='fifo' else 'fq_codel',
                            'limit','1000')
         if mode == 'pacing-htb-fq':
+            scope = lab.htb_safety
+            if scope:
+                lab.assert_htb_layout(scope.layout)
             for minor in CLASSES.values():
                 lab.assert_owned_sender()
                 lab.tc('qdisc', 'replace', 'dev', 'fc0', 'parent', f'1:{minor}', 'fq', 'limit', '1000')
+            if scope:
+                root_layout, leaves, filters = lab.htb_layout()
+                if (root_layout != scope.layout[0] or filters != scope.layout[2]
+                        or {(parent,kind) for parent,kind,_ in leaves} !=
+                           {(f'1:{minor}','fq') for minor in CLASSES.values()}):
+                    raise RuntimeError('research FQ layout verification failed')
+                scope.layout = root_layout, leaves, filters
         service.research_mode = mode
     qdiscs = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
     if mode == 'linux-default':
@@ -191,6 +219,7 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
     netem_command.extend(['delay', f"{profile['delay_ms']}ms", f"{profile['jitter_ms']}ms",
                           *loss, 'duplicate', f"{settings.get('duplicate_pct', 0)}%",
                           'reorder', f"{profile['reorder_pct']}%", 'seed', seed])
+    lab.assert_owned_receiver()
     lab.command(1, netem_command)
     observed = root(json.loads(lab.command(1, receiver)), 'netem')['options']
     delay = observed.get('delay', {})

@@ -90,6 +90,8 @@ class Unit(unittest.TestCase):
         engine.base = baseline
         engine.revision = engine.registry.revision
         engine.mode = 'active'
+        engine.allocation_confirmed = True
+        service.error = None
         engine.write = lambda target: setattr(engine, 'current', target)
         window = {'queue':{'root':{'utilization':.9}},'backlog':{'p95_bytes':10000},
                   'application':{'demo':{'application':{'samples':150,'p99_us':100000}}}}
@@ -124,6 +126,7 @@ class Unit(unittest.TestCase):
             self.assertIn('oscillation', engine.error)
             self.assertEqual(engine.current, baseline)
             engine.mode = 'active'
+            engine.allocation_confirmed = True
             engine.current = boosted
             engine.last_tick = 0
             observer.errors['inet_diag'] = 'injected outage'
@@ -133,6 +136,7 @@ class Unit(unittest.TestCase):
             self.assertEqual(engine.current, baseline)
             observer.errors.clear()
             engine.mode = 'active'
+            engine.allocation_confirmed = True
             engine.current = boosted
             engine.next_action = 0
             window['application']['demo']['application']['p99_us'] = 5000
@@ -149,6 +153,23 @@ class Unit(unittest.TestCase):
             self.assertEqual(engine.current, baseline)
             self.assertEqual(engine.history[-1]['result'], 'released')
 
+    def test_fault_fallback_preserves_authorized_class_ceiling(self):
+        observer = Observer(copy.deepcopy(DEFAULT))
+        service = Mock(observer=observer, profile={'bandwidth_kbit':10000})
+        engine = Controller(service)
+        engine.registry.register({'name':'demo','max_kbit':7000}, 0)
+        engine.base = {'critical':(3000,10000),'interactive':(2000,10000),
+                       'standard':(2000,10000),'background':(3000,10000)}
+        engine.current = dict(engine.base, critical=(3500,7000), background=(2500,10000))
+        engine.mode = 'active'
+        engine.state.move('OBSERVING','test activation')
+        with (patch.object(engine,'tick',side_effect=RuntimeError('injected evaluation failure')),
+              patch.object(engine,'write') as write):
+            engine.safe_tick()
+        write.assert_called_once_with(dict(engine.base, critical=(3000,7000)))
+        self.assertEqual(engine.mode,'off')
+        self.assertEqual(engine.state.name,'SAFE_FALLBACK')
+
     def test_probe_cutoff_is_kernel_commit_and_deadline_is_independent(self):
         observer = Observer(copy.deepcopy(DEFAULT))
         service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
@@ -160,6 +181,8 @@ class Unit(unittest.TestCase):
         engine.base = engine.current = {'critical':(3000,10000),'interactive':(2000,10000),
                                        'standard':(2000,10000),'background':(3000,10000)}
         engine.mode = 'active'
+        engine.allocation_confirmed = True
+        service.error = None
         engine.revision = engine.registry.revision
         window = dict(queue={'root':{'utilization':.9},
                              'critical':dict(backlogged_samples=2,bytes_per_second=400000)},

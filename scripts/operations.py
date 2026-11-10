@@ -15,6 +15,8 @@ class Operations:
     def __init__(self,service,path,config_path):
         self.service=service
         self.path=path
+        self.actuation_path=path.with_name("actuation.json")
+        self.previous_actuation=None
         self.config_path=config_path
         self.reload_errors=0
         self.last_error=None
@@ -29,6 +31,17 @@ class Operations:
                 old['network_replay'] is not False):
                 raise ValueError('invalid recovery checkpoint')
         self.previous_unclean=bool(old and not old['clean_shutdown'])
+        try:
+            previous=read_json(self.actuation_path,16384)
+            if (not isinstance(previous,dict) or type(previous.get('schema')) is not int or previous['schema']!=1
+                    or previous.get('phase') not in ('PROPOSED','VERIFIED','REJECTED','QUARANTINED','RELEASED')):
+                raise ValueError('invalid actuation journal')
+            self.previous_actuation=dict(evidence=previous,reconciliation='HISTORICAL_NO_REPLAY')
+        except FileNotFoundError:
+            pass
+        except (OSError,ValueError,RecursionError) as error:
+            self.previous_actuation=dict(reconciliation='UNREADABLE_NO_REPLAY',error=str(error)[:200])
+
         self.checkpoint=dict(version=1,generation=(old['generation']+int(old['config_hash']!=digest(self.service.config))) if old else 0,
             starts=(old['starts']+1 if old else 1),clean_shutdown=False,
             config_hash=digest(self.service.config),
@@ -64,10 +77,13 @@ class Operations:
 
     def status(self):
         lab=self.service.lab
+        scope=getattr(lab,"htb_safety",None)
         return dict(checkpoint=self.checkpoint,previous_unclean=self.previous_unclean,
             reload_errors=self.reload_errors,last_error=self.last_error,
             reconciliation='observe_only_no_kernel_replay',
             owned_lab_active=lab is not None,
+            runtime_safety=scope.view() if scope else getattr(self.service,'last_actuation',None),
+            previous_actuation=self.previous_actuation,
             host_mutations_enabled=False,
             policy_revision=self.service.platform_policies.state['revision'],
             controller_state=self.service.controller.state.name,

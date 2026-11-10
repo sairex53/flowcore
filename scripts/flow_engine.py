@@ -84,11 +84,16 @@ class FlowEngine:
         self.ready=False
         self.decode_lost=0
         self.lab=None
+        self.layout=None
+        self.generation=None
         self.last_snapshot=dict(complete=False)
         self.export_failures=0
 
     @staticmethod
     def validate_htb(lab):
+        if not hasattr(lab, 'assert_owned_sender'):
+            raise RuntimeError('flow engine requires an owned sender')
+        lab.assert_owned_sender()
         lab.validate()
         state=lab.counters()
         if (not any(row.get('root') and row.get('kind')=='htb' and row.get('handle')=='1:'
@@ -111,6 +116,7 @@ class FlowEngine:
             return False
         try:
             self.validate_htb(lab)
+            self.layout=lab.htb_layout()
         except (OSError,RuntimeError,subprocess.SubprocessError) as error:
             self.reason=str(error)
             return False
@@ -128,8 +134,10 @@ class FlowEngine:
             os.set_blocking(self.proc.stdin.fileno(),False)
             self.wait(lambda:any(x.get('type')=='ready' for x in self.records))
             ready=next(row for row in self.records if row['type']=='ready')
-            if ready.get('protocol')!=2:
+            _, inode, ifindex, _ = lab.sender_owner
+            if (ready.get('protocol'), ready.get('netns'), ready.get('ifindex')) != (2, inode, ifindex):
                 raise RuntimeError('flow helper protocol mismatch; userspace fallback required')
+            self.generation=1
             self.ready=True
             self.reason='TCX attached only to owned fc0'
             return True
@@ -167,6 +175,7 @@ class FlowEngine:
                 self.decode_lost+=1
         if self.proc.poll() is not None:
             self.ready=False
+            self.generation=None
             self.reason='engine exited; userspace policy unchanged'
 
     def wait(self,predicate,timeout=3):
@@ -183,10 +192,13 @@ class FlowEngine:
     def set_policy(self,generation,rules):
         number(generation,2,2**64-1,True)
         rules=validate_rules(rules)
-        if self.lab is None:
-            raise RuntimeError('owned lab unavailable')
+        if self.lab is None or not self.ready or self.generation is None:
+            raise RuntimeError('owned flow engine unavailable')
+        if generation <= self.generation:
+            raise ValueError('stale BPF policy generation')
         try:
             self.validate_htb(self.lab)
+            self.lab.assert_htb_layout(self.layout)
         except (OSError,RuntimeError,subprocess.SubprocessError):
             self.close()
             raise RuntimeError('HTB ownership lost; engine detached') from None
@@ -195,11 +207,22 @@ class FlowEngine:
             message+=' '+' '.join(str(rule[key]) for key in
                 ('protocol','dport','service','classid','mark','cgroup','cookie'))
         self.records.clear()
-        self.send(message)
-        self.wait(lambda:any(row.get('generation')==generation and row['type']=='policy' or
-                             row['type']=='error' for row in self.records))
+        try:
+            self.send(message)
+            self.wait(lambda:any(row.get('generation')==generation and row['type']=='policy' or
+                                 row['type']=='error' for row in self.records))
+            if not self.ready:
+                raise RuntimeError('flow engine exited during policy change')
+        except (OSError, RuntimeError) as error:
+            # A dropped ACK can hide a successful map write. Exit the sole
+            # owner and release its unpinned link/maps before returning.
+            self.reason='policy generation unverified; detach pending'
+            self.close()
+            self.reason='policy acknowledgement lost; flow engine detached'
+            raise RuntimeError(self.reason) from error
         if any(row['type']=='error' for row in self.records):
             raise RuntimeError('policy rejected; previous generation remains active')
+        self.generation=generation
 
     def send(self,message):
         if not self.proc or not self.ready or '\n' in message or len(message)>4000:
@@ -258,6 +281,9 @@ class FlowEngine:
 
 
     def close(self):
+        self.ready=False
+        self.generation=None
+        self.layout=None
         if self.proc:
             if self.proc.poll() is None:
                 self.proc.terminate()

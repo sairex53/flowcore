@@ -9,6 +9,8 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
+#include <barrier>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -115,6 +117,35 @@ void descriptor_reuse_and_drift() {
     Fd datagram(socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP));
     auto rejected = p::SocketPolicy::attach(datagram.fd, settings());
     CHECK(!rejected && rejected.error() == std::errc::protocol_not_supported);
+}
+
+void concurrent_expiry() {
+    Pair sockets;
+    const auto before = p::inspect(sockets.sender.fd);
+    auto policy = p::SocketPolicy::attach(sockets.sender.fd, settings());
+    CHECK(before && policy);
+    std::barrier start(5);
+    std::atomic<unsigned> errors{0};
+    std::array<std::jthread, 4> writers;
+    for (auto& thread : writers) {
+        thread = std::jthread([&] {
+            start.arrive_and_wait();
+            for (unsigned i=0; i<500; ++i) {
+                const auto result = policy->set_rate(200'000 + i);
+                if (result && result != std::errc::state_not_recoverable &&
+                        result != std::errc::timed_out) ++errors;
+            }
+        });
+    }
+    start.arrive_and_wait();
+    const auto expiry = policy->tick(p::Clock::now()+2s);
+    CHECK(!expiry || expiry == std::errc::timed_out || expiry == std::errc::state_not_recoverable);
+    for (auto& thread : writers) thread.join();
+    CHECK(errors == 0);
+    CHECK(policy->set_rate(300'000) == std::errc::state_not_recoverable);
+    const auto after = p::inspect(sockets.sender.fd);
+    CHECK(after && after->maximum_rate == before->maximum_rate &&
+          after->notsent_lowat == before->notsent_lowat && after->priority == before->priority);
 }
 
 void readiness() {
@@ -355,6 +386,7 @@ int main(int argc, char** argv) {
         } else {
             lifecycle();
             descriptor_reuse_and_drift();
+            concurrent_expiry();
             decision_logic();
             integrated_policy();
             guarded_policy();

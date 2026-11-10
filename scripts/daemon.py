@@ -40,6 +40,7 @@ class Service:
     def __init__(self, config):
         self.config = config
         self.operations = None
+        self.last_actuation = None
         self.lab = None
         self.active = 'default'
         self.profile = config['lab']
@@ -93,17 +94,33 @@ class Service:
         with ExitStack() as cleanup:
             if lab:
                 cleanup.callback(lab.storage.cleanup)
-                cleanup.callback(lab.close)
+                cleanup.callback(self.close_owned_lab, lab)
             for watcher in watches:
                 cleanup.callback(watcher.close)
             cleanup.callback(self.observer.close)
             self.controller.detach()
+
+    def close_owned_lab(self, lab):
+        scope = lab.htb_safety
+        try:
+            lab.close()
+        except Exception as error:
+            if scope:
+                scope.fail(error, 'UNVERIFIED')
+            raise
+        else:
+            if scope:
+                scope.released()
+        finally:
+            if scope:
+                self.last_actuation = scope.view()
 
     def replace(self, name, settings, ingress=None):
         if name not in self.config['policies']:
             raise ValueError('unknown policy')
         profile(settings)
         if (self.lab and name == self.active and settings == self.profile
+                and (not self.lab.htb_safety or self.lab.htb_safety.verified is not None)
                 and all(holder.poll() is None for holder in self.lab.holders)):
             return False
         with ExitStack() as cleanup:
@@ -126,6 +143,9 @@ class Service:
                 cleanup.callback(watcher.close)
                 watches.append(watcher)
             self.close_lab()
+            if candidate.htb_safety and self.operations:
+                candidate.htb_safety.path = self.operations.actuation_path
+                candidate.htb_safety.save()
             cleanup.callback(self.observer.close)
             self.observer.start(candidate)
             self.lab, self.watches = candidate, watches
@@ -135,7 +155,6 @@ class Service:
         self.research_link_up = True
         self.research_mode = None
         self.research_step_done = False
-        self.observer.start(candidate)
         self.incident.policy(name, settings['bandwidth_kbit'])
         self.log('lab_ready', policy=name, profile=settings)
         return True
@@ -362,7 +381,8 @@ class Service:
                 extras['control_bounds_ns'] = [end-window*1_000_000_000, end]
             if self.research_mode in ('integrated', 'pacing-guarded', 'hybrid-v3'):
                 extras['integrated_quality'] = bool(self.research_link_up and not self.error
-                    and not self.observer.errors and not self.observer.truncated)
+                    and not self.observer.errors and not self.observer.truncated
+                    and (not hybrid or extras['hybrid']['allocation_verified']))
             return dict(time_ns=view['time_ns'], tc=self.telemetry, overhead=view['overhead'],
                         telemetry_timing=self.telemetry_timing,
                         backend=view['bpf'], state=self.controller.status(),
@@ -710,6 +730,8 @@ def main():
                         if monitor is not None:
                             inputs.append(monitor)
                         ready, _, _ = select.select(inputs, [], [], .25 if service.lab else 1)
+                        if stopped:
+                            break
                         if observer_fd is not None:
                             service.observer.drain()
                         for index, watcher in enumerate(watchers):
@@ -720,6 +742,8 @@ def main():
                         if monitor in ready:
                             handle(monitor, service, monitoring_uid)
                         sessions.poll(ready)
+                        if stopped:
+                            break
                         if service.lab and time.monotonic()-service.sampled >= service.config['telemetry_seconds']:
                             service.poll_metrics()
                         service.intent_api.expire()
@@ -746,9 +770,11 @@ def main():
                         service.incident.tick()
                 finally:
                     notify('STOPPING=1')
-                    service.close_lab()
-                    if SOCKET.exists() and SOCKET.lstat().st_ino==socket_inode:
-                        SOCKET.unlink()
+                    try:
+                        service.close_lab()
+                    finally:
+                        if SOCKET.exists() and SOCKET.lstat().st_ino==socket_inode:
+                            SOCKET.unlink()
                     service.operations.finish()
                     service.log('stopped')
     except (OSError, ValueError, RuntimeError) as error:

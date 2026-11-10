@@ -41,19 +41,24 @@ class Authority:
         return target
 
     def status(self):
-        return dict(revision=self.revision, boosted=self.boosted, allocation=self.allocation())
+        scope = getattr(self.service.lab, 'htb_safety', None)
+        allocation = self.allocation()
+        verified = bool(scope and scope.verified is not None and scope.allocation == allocation)
+        return dict(revision=self.revision, boosted=self.boosted, allocation=allocation if verified else None,
+                    allocation_verified=verified, kernel_generation=scope.verified if verified else None)
 
     def change(self, boost):
         service = self.service
         controller = service.controller
+        lab = service.lab
         capacity = controller.capacity()
         floor = capacity*controller.cfg['background_floor_pct']//100
-        if not service.lab or controller.mode != 'off' or controller.policy()['scheduler'] != 'htb':
+        if not lab or controller.mode != 'off' or controller.policy()['scheduler'] != 'htb':
             raise RuntimeError('Hybrid V3 lacks exclusive HTB authority')
         if boost == self.boosted:
             raise ValueError('requested HTB state is already active')
         try:
-            timing = adaptive_tc.change(service.lab, capacity, controller.policy(),
+            timing = adaptive_tc.change(lab, capacity, controller.policy(),
                                         self.allocation(), self.allocation(boost), background_floor=floor)
         except adaptive_tc.TransactionFailure as error:
             if not error.compensated:
@@ -63,6 +68,8 @@ class Authority:
         self.probes += boost
         self.revision += 1
         service.poll_metrics()
+        if service.lab is not lab:
+            raise RuntimeError('Hybrid V3 scope disappeared after kernel verification')
         service.log('hybrid_class_verified', revision=self.revision, boosted=boost, **timing)
         return dict(**self.status(), timing=timing)
 

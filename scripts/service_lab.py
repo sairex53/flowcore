@@ -9,6 +9,8 @@ from service_config import CLASSES
 
 
 class ServiceLab(Lab):
+    htb_safety = None
+
     def start_flow_engine(self,capacity=4096,observe=False):
         from flow_engine import FlowEngine
         if getattr(self,'flow_engine',None):
@@ -44,7 +46,7 @@ class ServiceLab(Lab):
             if getattr(self,'flow_engine',None):
                 self.flow_engine.close()
         finally:
-            self.sender_owner = self.receiver_index = None
+            self.sender_owner = self.receiver_owner = self.receiver_index = self.htb_safety = None
             super().close()
 
     def command(self, index, argv):
@@ -67,19 +69,27 @@ class ServiceLab(Lab):
             raise RuntimeError('sender ownership admission failed')
         ns = os.fstat(self.namespace_fds[0])
         self.sender_owner = (ns.st_dev,ns.st_ino,sender['index'],tag)
+        self.command(1,['ip','link','set','dev','fc1','alias',tag])
         receiver = next((row for row in self.network(1)['interfaces'] if row['name']=='fc1'),{})
-        if receiver.get('kind')!='veth':
+        if receiver.get('kind')!='veth' or receiver.get('alias')!=tag:
             raise RuntimeError('receiver ownership admission failed')
         self.receiver_index = receiver['index']
+        self.receiver_owner = (*self.namespace_identity(1), self.receiver_index, tag)
 
     def assert_owned_sender(self):
-        if not getattr(self,'sender_owner',None) or len(self.namespace_fds)<2:
-            raise RuntimeError('sender ownership unavailable')
-        ns = os.fstat(self.namespace_fds[0])
-        sender = next((row for row in self.network(0)['interfaces'] if row['name']=='fc0'),{})
-        actual = (ns.st_dev,ns.st_ino,sender.get('index'),sender.get('alias'))
-        if sender.get('kind')!='veth' or actual!=self.sender_owner:
-            raise RuntimeError('sender ownership drift')
+        self.assert_owned_link(0, 'fc0', getattr(self, 'sender_owner', None))
+
+    def assert_owned_receiver(self):
+        self.assert_owned_link(1, 'fc1', getattr(self, 'receiver_owner', None))
+
+    def assert_owned_link(self, index, name, expected):
+        if not expected or len(self.namespace_fds)<2 or any(holder.poll() is not None for holder in self.holders):
+            raise RuntimeError(f'{name} ownership unavailable')
+        device, inode = self.namespace_identity(index)
+        link = next((row for row in self.network(index)['interfaces'] if row['name']==name),{})
+        actual = (device,inode,link.get('index'),link.get('alias'))
+        if link.get('kind')!='veth' or actual!=expected:
+            raise RuntimeError(f'{name} ownership drift')
 
     ingress = None
     topology_dirty = False
@@ -137,6 +147,26 @@ class ServiceLab(Lab):
             args += ['reorder', f"{profile['reorder_pct']}%"]
         self.command(1, args)
         self.validate()
+        if policy['scheduler'] == 'htb':
+            import adaptive_tc
+            from runtime_safety import Safety
+            allocation = adaptive_tc.read(self, capacity, policy)
+            expected = {name: (capacity*row['min_pct']//100, capacity*row['max_pct']//100)
+                        for name, row in policy['classes'].items()}
+            if allocation != expected:
+                raise RuntimeError('initial HTB allocation differs from policy')
+            self.htb_safety = Safety(self, self.htb_layout(), capacity, allocation)
+
+    def htb_layout(self, queues=None):
+        from runtime_safety import layout
+        if queues is None:
+            queues = json.loads(self.tc('-j','qdisc','show','dev','fc0'))
+        filters = json.loads(self.tc('-j','filter','show','dev','fc0','parent','1:'))
+        return layout(queues, filters)
+
+    def assert_htb_layout(self, expected, queues=None):
+        if self.htb_layout(queues) != expected:
+            raise RuntimeError('HTB qdisc or filter ownership drift')
 
     def counters(self):
         stats = {}

@@ -18,6 +18,7 @@ from daemon import Service
 from multipath import add_owned_endpoint, remove_owned_endpoint, set_endpoint_backup
 from network_helper import Actuator, Rejected
 from operations import Operations
+from runtime_safety import Safety as Actuation, layout
 from intents import Registry
 from platform_policy import EMPTY, PolicyStore, merged, validate
 from safety_model import explore
@@ -58,6 +59,8 @@ class Kernel:
         self.actual[cls] = int(args[10][:-4]),int(args[12][:-4])
         assert sum(rate for rate,_ in self.actual.values()) <= 100
         self.mutations.append(cls)
+        if self.writes==2 and self.fault=='lost_ack':
+            raise TimeoutError('injected lost acknowledgement after mutation')
 
 
 class Endpoints:
@@ -121,7 +124,7 @@ class Safety(unittest.TestCase):
             initial = dict(BASE)
             size = rng.randint(1,24)
             desired = dict(initial,critical=(25+size,100),background=(25-size,100))
-            fault = rng.choice(('none','unowned','first','second','verify','rollback','foreign','invalid'))
+            fault = rng.choice(('none','unowned','first','second','verify','rollback','foreign','invalid','lost_ack'))
             kernel = Kernel(initial,fault)
             if fault=='invalid':
                 desired['background'] = (26,100)
@@ -133,7 +136,7 @@ class Safety(unittest.TestCase):
                 else:
                     with self.assertRaises((ValueError,RuntimeError)) as error:
                         adaptive_tc.change(kernel,100,POLICY,initial,desired)
-                    self.assertEqual(getattr(error.exception,'compensated',False),fault in ('first','second','verify'))
+                    self.assertEqual(getattr(error.exception,'compensated',False),fault in ('first','second','verify','lost_ack'))
                     if fault=='foreign':
                         self.assertEqual(kernel.actual,dict(desired,interactive=(24,100)))
                         self.assertEqual(kernel.writes,2)
@@ -143,6 +146,66 @@ class Safety(unittest.TestCase):
                         self.assertEqual(kernel.actual,initial)
                     if fault in ('unowned','invalid'):
                         self.assertEqual(kernel.writes,0)
+
+    def test_generation_cas_and_journal_faults(self):
+        for boundary in ('none', 'PROPOSED', 'VERIFIED', 'post_rename'):
+            kernel = Kernel(BASE, 'none')
+            kernel.sender_owner = (1, 2, 3, 'lab-test')
+            scope = kernel.htb_safety = Actuation(kernel, (), 100, BASE)
+            scope.path = ROOT/'build'/'simulated-journal.json'
+            saved = []
+            def persist(_path, row):
+                if row['phase']==boundary:
+                    raise OSError('injected journal write failure')
+                saved.append(copy.deepcopy(row))
+                if boundary=='post_rename' and row['phase']=='VERIFIED':
+                    raise durable_state.DurabilityUncertain('injected directory sync failure')
+            with (patch.object(adaptive_tc,'read',side_effect=kernel.read),
+                  patch('runtime_safety.atomic_json',side_effect=persist)):
+                with self.assertRaisesRegex(RuntimeError, 'stale HTB'):
+                    adaptive_tc.change(kernel,100,POLICY,BASE,TARGET,generation=4)
+                self.assertEqual(kernel.writes,0)
+                if boundary=='none':
+                    scope.begin(100,BASE,0)
+                    with self.assertRaisesRegex(RuntimeError, 'busy'):
+                        adaptive_tc.change(kernel,100,POLICY,BASE,TARGET,generation=0)
+                    scope.fail('test released proposal','NO_MUTATION')
+                    result = adaptive_tc.change(kernel,100,POLICY,BASE,TARGET,generation=0)
+                    self.assertEqual(result['generation'],2)
+                    self.assertEqual(saved[-1]['kernel_verified_generation'],2)
+                else:
+                    with self.assertRaises((OSError,adaptive_tc.TransactionFailure)):
+                        adaptive_tc.change(kernel,100,POLICY,BASE,TARGET,generation=0)
+                    self.assertEqual(scope.verified,0)
+                    self.assertEqual(kernel.actual,BASE)
+                    self.assertEqual(scope.recovery,
+                                     'NO_MUTATION' if boundary=='PROPOSED' else 'VERIFIED_COMPENSATION')
+                    self.assertEqual(kernel.writes,0 if boundary=='PROPOSED' else 4)
+
+    def test_ambiguous_kernel_state_quarantines_generation(self):
+        kernel = Kernel(BASE, 'foreign')
+        kernel.sender_owner = (1, 2, 3, 'lab-test')
+        scope = kernel.htb_safety = Actuation(kernel, (), 100, BASE)
+        with patch.object(adaptive_tc,'read',side_effect=kernel.read):
+            with self.assertRaises(adaptive_tc.TransactionFailure):
+                adaptive_tc.change(kernel,100,POLICY,BASE,TARGET,generation=0)
+            with self.assertRaisesRegex(RuntimeError, 'quarantined'):
+                adaptive_tc.change(kernel,100,POLICY,BASE,TARGET,generation=0)
+        self.assertIsNone(scope.verified)
+        self.assertEqual(scope.stable,0)
+        self.assertEqual(kernel.writes,2)
+
+    def test_layout_ignores_counters_and_preserves_filter_keys(self):
+        queues=[dict(kind='htb',handle='1:',root=True,options={'default':'0x12'}),
+                dict(kind='fq_codel',handle='0:',parent='1:10')]
+        rules=[dict(kind='flower',protocol='ip',pref=32,options=dict(
+            handle=1,classid='1:10',keys=dict(ip_proto='tcp',dst_port=9000)))]
+        initial=layout(queues,rules)
+        queues[1]['packets']=1
+        self.assertEqual(layout(queues,rules),initial)
+        changed=copy.deepcopy(rules)
+        changed[0]['options']['keys']['dst_port']=9001
+        self.assertNotEqual(layout(queues,changed),initial)
 
     def test_adversarial_activation_and_policy_payload(self):
         service = Service(load(ROOT/'config/service.json'))

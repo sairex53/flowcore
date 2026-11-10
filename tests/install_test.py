@@ -34,6 +34,8 @@ def main():
                    ('PER_MESSAGE_INTENTS.md', 'UDP_INTENT_SDK.md', 'MESSAGE_SCHEDULING_RESULTS.md'))
         assert all((docs/name).is_file() for name in
                    ('DYNAMIC_NETWORK_ENGINE.md', 'PATH_ADAPTATION.md', 'PATH_ADAPTATION_RESULTS.md'))
+        assert all((docs/name).is_file() for name in
+                   ('RUNTIME_SAFETY.md', 'RECOVERY_ENGINE.md', 'FAULT_INJECTION_RESULTS.md'))
         assert (prefix/'bin/flowcore-udp-intent-demo').is_file()
         manifest = [stage/line.lstrip('/') for line in (build/'install_manifest.txt').read_text().splitlines()]
         assert all(path.is_relative_to(stage) and path.exists() for path in manifest)

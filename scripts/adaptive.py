@@ -72,6 +72,7 @@ class Controller:
         self.strategy = 'slo'
         self.base = self.current = None
         self.allocation_confirmed = False
+        self.kernel_generation = None
         self.pending = None
         self.revision = 0
         self.last_tick = 0
@@ -120,6 +121,21 @@ class Controller:
     def capacity(self):
         return self.service.profile['bandwidth_kbit']
 
+    def static_fallback(self, baseline):
+        if baseline is None:
+            return None
+        allocation = dict(baseline)
+        for row in self.registry.rows.values():
+            intent = row['intent']
+            name = intent['priority']
+            rate, ceil = allocation[name]
+            if intent['max_kbit']:
+                ceil = min(ceil, intent['max_kbit'])
+            if not intent['min_kbit'] <= rate <= ceil:
+                return None
+            allocation[name] = rate, ceil
+        return allocation
+
     def start(self, mode, strategy):
         if mode not in ('active','shadow','observe'):
             raise ValueError('unknown controller mode')
@@ -143,10 +159,21 @@ class Controller:
         self.stop('mode change')
         self.service.lab.assert_owned_sender()
         capacity = self.capacity()
-        installed = adaptive_tc.read(self.service.lab, capacity, self.policy())
+        scope = getattr(self.service.lab, 'htb_safety', None)
+        if scope and scope.verified is None:
+            raise RuntimeError('quarantined HTB hierarchy requires lab recreation')
+        try:
+            installed = adaptive_tc.read(self.service.lab, capacity, self.policy())
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+            if scope:
+                scope.fail(error, 'UNVERIFIED')
+            raise
+        if scope and (installed != scope.allocation or capacity != scope.capacity):
+            scope.fail('activation readback differs from last verified generation', 'UNVERIFIED')
+            raise RuntimeError('HTB activation found unexpected allocation drift')
         configured = {name: (capacity*cls['min_pct']//100, capacity*cls['max_pct']//100)
                       for name, cls in self.policy()['classes'].items()}
-        allowed = (configured,model['fallback']) if strategy == 'optimizer' else (configured,)
+        allowed = (configured, model['fallback'] if strategy == 'optimizer' else self.static_fallback(configured))
         if installed not in allowed:
             raise ValueError('installed HTB allocation differs from authorized baseline')
         self.base = configured
@@ -156,6 +183,7 @@ class Controller:
         self.predictor = Predictor()
         self.state.move('OBSERVING','explicit activation')
         self.current = dict(installed)
+        self.kernel_generation = scope.verified if scope else None
         self.allocation_confirmed = True
         self.mode, self.strategy = mode, strategy
         self.revision = self.registry.revision
@@ -170,13 +198,15 @@ class Controller:
         self.timing = {}
 
     def write(self, target):
-        if self.mode!='active' or self.service.lab is None:
+        lab = self.service.lab
+        if self.mode!='active' or lab is None:
             raise PermissionError('controller write requires active lab authority')
         try:
             floor_pct = max([self.cfg['background_floor_pct'], *(
                 row['intent']['background_min_pct'] for row in self.registry.rows.values())])
-            timing = adaptive_tc.change(self.service.lab, self.capacity(), self.policy(), self.current, target,
-                                        background_floor=self.capacity()*floor_pct//100)
+            timing = adaptive_tc.change(lab, self.capacity(), self.policy(), self.current, target,
+                                        background_floor=self.capacity()*floor_pct//100,
+                                        generation=self.kernel_generation)
         except (OSError,RuntimeError,ValueError,subprocess.SubprocessError) as error:
             self.allocation_confirmed = False
             self.mode = 'off'
@@ -188,6 +218,7 @@ class Controller:
                         compensated=getattr(error,'compensated',False))
             raise
         self.allocation_confirmed = True
+        self.kernel_generation = timing.get('generation')
         changed = self.current != target
         self.current = dict(target)
         if changed and (incident := getattr(self.service, 'incident', None)):
@@ -195,6 +226,8 @@ class Controller:
             incident.recorder.record('controller', timing['verified_ns'], result='kernel_verified',
                                      generation=incident.policy_generation, changed=True)
         self.service.poll_metrics()
+        if self.service.lab is not lab or self.mode != 'active':
+            raise RuntimeError('actuator scope disappeared after kernel verification')
         return dict(timing, refresh_ns=time.monotonic_ns()-timing['verified_ns'])
 
     def stop(self, reason):
@@ -202,8 +235,10 @@ class Controller:
         try:
             if self.mode == 'active' and self.service.lab:
                 fallback = (policy_optimizer.contracts(self,time.monotonic())['fallback']
-                            if self.strategy == 'optimizer' else self.base)
-                if fallback is not None and self.current != fallback:
+                            if self.strategy == 'optimizer' else self.static_fallback(self.base))
+                if fallback is None:
+                    raise RuntimeError('no feasible authorized controller fallback')
+                if self.current != fallback:
                     self.write(fallback)
                     self.record(result='restored_baseline', reason=reason, allocation=fallback)
         finally:
@@ -219,6 +254,7 @@ class Controller:
         was_running = self.mode != 'off'
         self.mode = 'off'
         self.current = self.base = self.pending = None
+        self.kernel_generation = None
         self.allocation_confirmed = False
         self.state.move('DISABLED','lab detached')
         self.service.observer.probe_start_ns = None
@@ -319,7 +355,9 @@ class Controller:
         if bounds != current:
             return dict(detail, action='enforce_class_ceiling')
         if current['background'][0] < bg_floor:
-            return dict(detail, proposed=self.base, action='restore_background_floor')
+            return dict(detail, proposed=self.static_fallback(self.base), action='restore_background_floor')
+        if self.service.observer.truncated:
+            return dict(detail, action='hold', reason='transport observation truncated')
         if self.strategy in ('queue-aware','slo-aware','hybrid','predictive'):
             observations, scores, owners = {}, {}, {}
             maxima = {cls:min(ceil,self.base[cls][0]+capacity*cfg['maximum_boost_pct']//100)
@@ -452,7 +490,7 @@ class Controller:
         now = time.monotonic()
         seconds = self.cfg['window_seconds']
         if self.registry.revision != self.revision:
-            fallback = self.base
+            fallback = self.static_fallback(self.base)
             if self.strategy == 'optimizer':
                 fallback = policy_optimizer.contracts(self,now)['fallback']
             if self.mode == 'active' and fallback is not None and self.current != fallback:
@@ -469,7 +507,7 @@ class Controller:
             return
         self.last_tick = now
         observer = self.service.observer
-        if (not observer.sampled_ns or observer.errors or
+        if (not observer.sampled_ns or observer.errors or self.service.error or
                 (time.monotonic_ns()-observer.sampled_ns)/1e9 > max(seconds, 2*self.service.config['telemetry_seconds'])):
             self.stop('telemetry unavailable')
             self.error = 'telemetry unavailable'
@@ -479,10 +517,22 @@ class Controller:
         expected['1:1'] = (self.capacity()*125, self.capacity()*125)
         actual = {row['handle']: (row.get('rate'), row.get('ceil'))
                   for row in self.service.telemetry.get('class', []) if row.get('class') == 'htb'}
+        lab = self.service.lab
+        scope = getattr(lab, 'htb_safety', None)
         if actual != expected:
-            raise RuntimeError('telemetry readback shows HTB capacity or allocation drift')
+            error = 'telemetry readback shows HTB capacity or allocation drift'
+            if scope:
+                scope.fail(error, 'UNVERIFIED')
+            raise RuntimeError(error)
         if not self.allocation_confirmed:
-            self.service.lab.assert_owned_sender()
+            try:
+                lab.assert_owned_sender()
+                if adaptive_tc.read(lab, self.capacity(), self.policy()) != self.current:
+                    raise RuntimeError('allocation readback drift after topology or telemetry change')
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+                if scope:
+                    scope.fail(error, 'UNVERIFIED')
+                raise
             self.allocation_confirmed = True
         began = time.monotonic_ns()
         window = observer.window(began, seconds, complete=True)
@@ -504,6 +554,7 @@ class Controller:
             self.pending = None
             observer.probe_start_ns = None
             self.mode = 'off'
+            self.allocation_confirmed = False
             self.error = 'optimizer rejected infeasible active contracts'
             return
         bg = plan['background_throughput_kbit']
@@ -530,7 +581,7 @@ class Controller:
             bg = bg_rate/125 if bg_rate is not None else None
             demanded = post_bg.get('backlogged_samples', 0) > 0
             enough = measured['samples'] >= max(LATENCY_MIN_SAMPLES, self.cfg['minimum_samples'])
-            comparable = (enough and not measured['probe_overlap']
+            comparable = (enough and not observer.truncated and not measured['probe_overlap']
                           and .8*before['reports'] <= measured['reports'] <= 1.2*before['reports'])
             degraded = (measured['reports'] >= self.cfg['minimum_samples'] and
                         ((measured['error_ratio'] or 0) > (before['error_ratio'] or 0)
@@ -636,6 +687,9 @@ class Controller:
                     for name,row in policy['classes'].items()}
         if self.strategy == 'optimizer':
             expected = policy_optimizer.contracts(self,time.monotonic())['fallback']
+        else:
+            expected = self.static_fallback(expected)
+        self.service.lab.assert_owned_sender()
         if expected is None or adaptive_tc.read(self.service.lab,capacity,policy) != expected:
             raise RuntimeError('kernel allocation differs from authorized baseline')
 

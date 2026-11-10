@@ -234,7 +234,8 @@ SocketPolicy::SocketPolicy(int fd, std::uint64_t cookie, Policy policy) noexcept
 SocketPolicy::SocketPolicy(SocketPolicy&& other) noexcept
     : fd_(other.fd_), owner_(other.owner_), cookie_(other.cookie_), policy_(std::move(other.policy_)),
       expires_(other.expires_), original_(other.original_), applied_(other.applied_),
-      active_(std::exchange(other.active_, false)) {}
+      active_(std::exchange(other.active_, false)), tainted_(other.tainted_),
+      removal_error_(other.removal_error_) {}
 
 std::expected<SocketPolicy, Error> SocketPolicy::attach(int fd, const Policy& policy) {
     if (!valid(policy)) return std::unexpected(std::make_error_code(std::errc::invalid_argument));
@@ -262,7 +263,12 @@ std::expected<SocketPolicy, Error> SocketPolicy::attach(int fd, const Policy& po
     if (!failure && desired.priority) failure = change(socket_fd, SOL_SOCKET, SO_PRIORITY,
                                                        static_cast<int>(*desired.priority), values.priority);
     if (failure) {
-        if (managed.remove()) return std::unexpected(std::make_error_code(stale));
+        // Keep using the pin acquired before mutation, even if the
+        // application's numeric descriptor was closed or replaced.
+        const auto rollback = managed.restore(socket_fd);
+        managed.active_ = false;
+        release(managed.cookie_);
+        if (rollback) return std::unexpected(std::make_error_code(stale));
         return std::unexpected(failure);
     }
     return managed;
@@ -271,7 +277,10 @@ std::expected<SocketPolicy, Error> SocketPolicy::attach(int fd, const Policy& po
 SocketPolicy::~SocketPolicy() { remove(); }
 
 std::uint64_t SocketPolicy::attest(const Service& service) const {
-    if (!active_ || getpid() != owner_ || Clock::now() >= expires_) throw std::system_error(std::make_error_code(stale));
+    if (getpid() != owner_) throw std::system_error(std::make_error_code(stale));
+    const std::lock_guard lock(mutex_);
+    if (!active_ || tainted_ || Clock::now() >= expires_)
+        throw std::system_error(std::make_error_code(stale));
     auto pinned = pin(fd_, cookie_);
     if (!pinned) throw std::system_error(pinned.error());
     auto reported = service.associate_socket(pinned->get());
@@ -280,16 +289,24 @@ std::uint64_t SocketPolicy::attest(const Service& service) const {
 }
 
 std::expected<Snapshot, Error> SocketPolicy::snapshot() const {
-    if (!active_ || getpid() != owner_) return std::unexpected(std::make_error_code(stale));
+    if (getpid() != owner_) return std::unexpected(std::make_error_code(stale));
+    const std::lock_guard lock(mutex_);
+    if (!active_ || tainted_) return std::unexpected(std::make_error_code(stale));
     auto pinned = pin(fd_, cookie_);
     if (!pinned) return std::unexpected(pinned.error());
     return read(pinned->get());
 }
 
 Error SocketPolicy::tick(Clock::time_point now) noexcept {
-    if (!active_ || getpid() != owner_) return std::make_error_code(stale);
-    if (now < expires_) return {};
-    if (auto failure = remove()) return failure;
+    if (getpid() != owner_) return std::make_error_code(stale);
+    const std::lock_guard lock(mutex_);
+    return tick_locked(now);
+}
+
+Error SocketPolicy::tick_locked(Clock::time_point now) noexcept {
+    if (!active_) return std::make_error_code(stale);
+    if (now < expires_) return tainted_ ? std::make_error_code(stale) : Error{};
+    if (auto failure = remove_locked()) return failure;
     return std::make_error_code(std::errc::timed_out);
 }
 
@@ -297,7 +314,9 @@ Error SocketPolicy::set_rate(Rate rate) noexcept { return set_rate(rate, nullptr
 
 Error SocketPolicy::set_rate(Rate rate, RateTiming* timing) noexcept {
     if (timing) *timing = {};
-    if (auto failure = tick()) return failure;
+    if (getpid() != owner_) return std::make_error_code(stale);
+    const std::lock_guard lock(mutex_);
+    if (auto failure = tick_locked(Clock::now())) return failure;
     if (!within(policy_, rate)) return std::make_error_code(std::errc::invalid_argument);
     const auto began = timing ? Clock::now() : Clock::time_point{};
     auto pinned = pin(fd_, cookie_);
@@ -305,29 +324,38 @@ Error SocketPolicy::set_rate(Rate rate, RateTiming* timing) noexcept {
     if (!pinned) return pinned.error();
     const auto before = applied_.rate;
     if (auto failure = change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, rate, applied_.rate, timing, true)) {
-        if (before != applied_.rate && change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, before, applied_.rate))
+        if (before != applied_.rate && change(pinned->get(), SOL_SOCKET, SO_MAX_PACING_RATE, before, applied_.rate)) {
+            tainted_ = true;
             return std::make_error_code(stale);
+        }
         return failure;
     }
     return {};
 }
 
 Error SocketPolicy::remove() noexcept {
-    if (!active_ || getpid() != owner_) return {};
+    if (getpid() != owner_) return {};
+    const std::lock_guard lock(mutex_);
+    return remove_locked();
+}
+
+Error SocketPolicy::restore(int fd) noexcept {
+    const auto priority = change(fd, SOL_SOCKET, SO_PRIORITY, original_.priority, applied_.priority);
+    const auto lowat = change(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, original_.lowat, applied_.lowat);
+    const auto rate = change(fd, SOL_SOCKET, SO_MAX_PACING_RATE, original_.rate, applied_.rate);
+    return rate ? rate : lowat ? lowat : priority;
+}
+
+Error SocketPolicy::remove_locked() noexcept {
+    if (!active_) return removal_error_;
     active_ = false;
-    const auto result = [&]() -> Error {
-        if (applied_.rate == original_.rate && applied_.lowat == original_.lowat
-            && applied_.priority == original_.priority) return {};
+    if (applied_.rate != original_.rate || applied_.lowat != original_.lowat
+            || applied_.priority != original_.priority) {
         auto pinned = pin(fd_, cookie_);
-        if (!pinned) return pinned.error();
-        const int fd = pinned->get();
-        const auto priority = change(fd, SOL_SOCKET, SO_PRIORITY, original_.priority, applied_.priority);
-        const auto lowat = change(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, original_.lowat, applied_.lowat);
-        const auto rate = change(fd, SOL_SOCKET, SO_MAX_PACING_RATE, original_.rate, applied_.rate);
-        return rate ? rate : lowat ? lowat : priority;
-    }();
+        removal_error_ = pinned ? restore(pinned->get()) : pinned.error();
+    }
     release(cookie_);
-    return result;
+    return removal_error_;
 }
 
 } // namespace flowcore::v2::pacing

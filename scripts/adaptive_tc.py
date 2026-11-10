@@ -13,6 +13,8 @@ class TransactionFailure(RuntimeError):
 
 def read(lab, capacity, policy):
     roots = json.loads(lab.tc('-j', 'qdisc', 'show', 'dev', 'fc0'))
+    if scope := getattr(lab, "htb_safety", None):
+        lab.assert_htb_layout(scope.layout, roots)
     root = next((q for q in roots if q.get('root')), {})
     if root.get('kind') != 'htb' or root.get('handle') != '1:':
         raise RuntimeError('owned HTB root missing')
@@ -48,7 +50,7 @@ def diff(before, after):
             for cls in ordered if before[cls] != after[cls]]
 
 
-def change(lab, capacity, policy, expected, desired, *, background_floor=1):
+def change(lab, capacity, policy, expected, desired, *, background_floor=1, generation=None):
     validate(capacity,expected)
     validate(capacity,desired)
     for name,(rate,ceil) in desired.items():
@@ -57,20 +59,32 @@ def change(lab, capacity, policy, expected, desired, *, background_floor=1):
         if rate < floor or ceil > capacity*cls['max_pct']//100:
             raise ValueError('HTB target exceeds authorized class bounds')
     changes = diff(expected,desired)
+    scope = getattr(lab, 'htb_safety', None)
+    if scope:
+        scope.begin(capacity, expected, generation)
     start = time.monotonic_ns()
-    lab.assert_owned_sender()
-    if read(lab, capacity, policy) != expected:
-        raise RuntimeError('class allocation drift, refusing to overwrite')
+    try:
+        lab.assert_owned_sender()
+        if read(lab, capacity, policy) != expected:
+            raise RuntimeError('class allocation drift, refusing to overwrite')
+    except Exception as error:
+        if scope:
+            scope.fail(error, 'UNVERIFIED')
+        raise
     pre_read_ns = time.monotonic_ns()-start
     current = dict(expected)
+    attempted = None
 
     def write(name, value):
+        nonlocal attempted
         lab.assert_owned_sender()
         rate, ceil = value
+        attempted = name, value
         lab.tc('class', 'change', 'dev', 'fc0', 'parent', '1:1', 'classid', f'1:{CLASSES[name]}',
                'htb', 'rate', f'{rate}kbit', 'ceil', f'{ceil}kbit',
                'prio', policy['classes'][name]['priority'], 'quantum', '1514')
         current[name] = value
+        attempted = None
 
     def apply(target):
         for item in diff(current,target):
@@ -84,20 +98,35 @@ def change(lab, capacity, policy, expected, desired, *, background_floor=1):
         if read(lab, capacity, policy) != desired:
             raise RuntimeError('HTB readback differs from desired allocation')
         verified_ns = time.monotonic_ns()
+        if scope:
+            scope.commit(capacity, desired)
         return dict(pre_read_ns=pre_read_ns, apply_ns=verify_start-apply_start,
                     verify_ns=verified_ns-verify_start, verified_ns=verified_ns,
-                    transaction='VERIFIED', diff=changes)
+                    generation=scope.verified if scope else None, transaction='VERIFIED', diff=changes)
     except Exception as failure:
         try:
             lab.assert_owned_sender()
             observed = read(lab, capacity, policy)
-            if observed != current:
+            # Timeout/IPC loss can hide an accepted last mutation. Only the
+            # exact acknowledged prefix or that prefix plus the last request
+            # can be compensated. Anything else is foreign or ambiguous.
+            after_attempt = dict(current)
+            if attempted:
+                name, value = attempted
+                after_attempt[name] = value
+            if observed != current and observed != after_attempt:
                 raise RuntimeError('unknown external state, refusing overwrite')
+            current = observed
             apply(expected)
             lab.assert_owned_sender()
             if read(lab, capacity, policy) != expected:
                 raise RuntimeError('rollback readback mismatch')
         except Exception as rollback:
-            raise TransactionFailure(f'HTB transaction failed: {failure}; rollback failed: {rollback}',
-                                     compensated=False) from failure
+            error = TransactionFailure(f'HTB transaction failed: {failure}; rollback failed: {rollback}',
+                                       compensated=False)
+            if scope:
+                scope.fail(error, 'UNVERIFIED')
+            raise error from failure
+        if scope:
+            scope.fail(failure, 'VERIFIED_COMPENSATION')
         raise TransactionFailure(f'HTB transaction failed and rolled back: {failure}', compensated=True) from failure

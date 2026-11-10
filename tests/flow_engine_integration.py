@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from benchmark import owned_directory
@@ -142,6 +143,35 @@ def main():
         moving.wait(timeout=5)
         assert moving.returncode==0
         assert engine.stats.get('output_lost',0)==0
+        # Lose the response after receiving an actual verified map update.
+        # The runtime must discard this engine, even if the write succeeded.
+        wait_policy = engine.wait
+        def lose_ack(predicate, timeout=3):
+            wait_policy(predicate,timeout)
+            raise TimeoutError('injected response loss after map verification')
+        map_ids = set()
+        for descriptor in Path(f'/proc/{engine.proc.pid}/fdinfo').iterdir():
+            for line in descriptor.read_text().splitlines():
+                if line.startswith('map_id:'):
+                    map_ids.add(int(line.split(':',1)[1]))
+        assert len(map_ids)>=3
+        owner = engine.proc
+        with patch.object(engine,'wait',side_effect=lose_ack):
+            try:
+                engine.set_policy(engine.generation+1,RULES)
+            except RuntimeError as error:
+                assert 'acknowledgement lost' in str(error),error
+            else:
+                raise AssertionError('lost acknowledgement left engine writable')
+        assert not engine.ready and owner.poll() is not None and engine.generation is None
+        deadline = time.monotonic()+4
+        while map_ids & {row['id'] for row in json.loads(subprocess.check_output(
+                ['bpftool','-j','map','show'],timeout=4))}:
+            assert time.monotonic()<deadline,'flow engine map IDs leaked after detach'
+            time.sleep(.05)
+        print(json.dumps(dict(released_map_ids=len(map_ids), owner_exited=True)),flush=True)
+        assert lab.start_flow_engine(),lab.flow_engine.reason
+        engine=lab.flow_engine
         # Process loss, forced close and reload detach link-FD ownership.
         engine.proc.kill();engine.proc.wait(timeout=3);engine.drain()
         assert not engine.ready

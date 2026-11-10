@@ -87,6 +87,7 @@ def check():
     shifted = request('hybrid_apply', **opts)
     actual = rates()
     assert shifted['revision'] == auth['revision']+1 and shifted['boosted']
+    assert shifted['allocation_verified'] and shifted['kernel_generation'] == auth['kernel_generation']+1
     assert actual['1:10'] == [4200, 12000] and actual['1:20'] == [3000, 12000], actual
     assert actual == dict(baseline, **{'1:10': [4200, 12000], '1:20': [3000, 12000]})
     rejected('hybrid_apply', 'stale Hybrid V3 class transaction', **opts)
@@ -96,6 +97,7 @@ def check():
     rebased = request('research_sample')['hybrid']
     actual = rates()
     assert not rebased['boosted'] and rebased['revision'] == shifted['revision']+2
+    assert rebased['allocation_verified'] and rebased['kernel_generation'] == shifted['kernel_generation']+2
     assert actual['1:10'] == actual['1:20'] == [2100, 7000], actual
     request('lab_down')
     assert host_identity() == host, 'host network changed'
