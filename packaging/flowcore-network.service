@@ -6,6 +6,7 @@ PartOf=flowcore-network.socket
 
 [Service]
 Type=exec
+WorkingDirectory=/
 ExecStart=/usr/bin/python3 -E -s -B /usr/share/flowcore/scripts/network_helper.py
 OpenFile=/proc/1/ns/net:host-netns:read-only
 DynamicUser=yes
@@ -19,6 +20,8 @@ ProtectControlGroups=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
+ProtectProc=invisible
+ProcSubset=pid
 PrivateTmp=yes
 PrivateDevices=yes
 RestrictNamespaces=yes

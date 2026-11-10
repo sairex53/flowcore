@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 Name:           flowcore
 Version:        0.2.0
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Linux adaptive networking laboratory and read-only interface monitor
 License:        Apache-2.0
 Source0:        %{name}-%{version}.tar.gz
@@ -46,8 +46,9 @@ DESTDIR=%{buildroot} cmake --install build
 %files
 %license LICENSE
 %doc README.md ARCHITECTURE.md
-%config(noreplace) %{_sysconfdir}/flowcore/service.json
-%config(noreplace) %{_sysconfdir}/flowcore/helper.json
+%dir %attr(0755,root,root) %{_sysconfdir}/flowcore
+%config(noreplace) %attr(0644,root,root) %{_sysconfdir}/flowcore/service.json
+%config(noreplace) %attr(0644,root,root) %{_sysconfdir}/flowcore/helper.json
 %{_bindir}/flowcore
 %{_bindir}/flowcored
 %{_bindir}/flowcore-sdk-request
@@ -64,6 +65,7 @@ DESTDIR=%{buildroot} cmake --install build
 %{_prefix}/lib/systemd/system/flowcore-dashboard.service
 %{_prefix}/lib/systemd/system/flowcore-network.service
 %{_prefix}/lib/systemd/system/flowcore-network.socket
+%{_prefix}/lib/systemd/system/flowcore-sdk.socket
 %{_prefix}/lib/sysusers.d/flowcore-operator.conf
 %{_prefix}/lib/sysusers.d/flowcore-dashboard.conf
 %{_bindir}/libflowcore_intelligence.so
@@ -80,7 +82,7 @@ DESTDIR=%{buildroot} cmake --install build
 
 %preun
 if [ "$1" -eq 0 ]; then
-    /usr/bin/systemctl stop flowcore-dashboard.service flowcored.service flowcore-monitor.service flowcore-network.socket flowcore-network.service >/dev/null 2>&1 || :
+    /usr/bin/systemctl stop flowcore-dashboard.service flowcored.service flowcore-monitor.service flowcore-sdk.socket flowcore-network.socket flowcore-network.service >/dev/null 2>&1 || :
 fi
 
 %postun

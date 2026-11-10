@@ -65,14 +65,20 @@ int main(int argc, char** argv) {
         std::cout << "FLOWCORE " << FLOWCORE_VERSION << '\n';
         return 0;
     }
+    std::error_code executable_error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", executable_error);
+    const bool source_build = !executable_error && executable.parent_path() == FLOWCORE_SOURCE_BINARY_DIR;
     if (argc < 2 || (std::string(argv[1]) != "--link" && std::string(argv[1]) != "--config")) {
         char python[] = "/usr/bin/python3";
         char no_bytecode[] = "-B";
         std::error_code error;
-        auto executable = std::filesystem::read_symlink("/proc/self/exe",error);
-        auto installed = executable.parent_path()/FLOWCORE_INSTALLED_CLI_REL;
-        std::string script = !error && std::filesystem::is_regular_file(installed,error)
-            ? installed.string() : FLOWCORE_CLI_PATH;
+        const auto installed = executable.parent_path()/FLOWCORE_INSTALLED_CLI_REL;
+        const bool installed_cli = !executable_error && std::filesystem::is_regular_file(installed, error);
+        if (!installed_cli && !source_build) {
+            std::cerr << "flowcore: installed management CLI unavailable\n";
+            return 3;
+        }
+        std::string script = installed_cli ? installed.string() : FLOWCORE_CLI_PATH;
         char ignore_environment[] = "-E";
         char no_user_site[] = "-s";
         std::vector<char*> command{python, ignore_environment, no_user_site, no_bytecode, script.data()};
@@ -96,6 +102,7 @@ int main(int argc, char** argv) {
         }
         if (argc != 5 || std::string(argv[1]) != "--config" || std::string(argv[3]) != "--lab-netns")
             throw std::runtime_error("usage: flowcore --config FILE --lab-netns PATH | --link INTERFACE");
+        if (!source_build) throw std::runtime_error("installed actuation requires the isolated network helper");
         require_lab_namespace(argv[4]);
         config = flowcore::read_config(argv[2]);
         flowcore::Policy policy(config);

@@ -21,7 +21,8 @@ target_link_libraries(policy_test PRIVATE flowcore_policy)
 add_test(NAME policy COMMAND policy_test)
 
 target_compile_definitions(flowcore PRIVATE FLOWCORE_CLI_PATH="${CMAKE_CURRENT_SOURCE_DIR}/scripts/cli.py"
-    FLOWCORE_INSTALLED_CLI_REL="${FLOWCORE_DATA_FROM_BIN}/scripts/cli.py" FLOWCORE_VERSION="${PROJECT_VERSION}")
+    FLOWCORE_INSTALLED_CLI_REL="${FLOWCORE_DATA_FROM_BIN}/scripts/cli.py" FLOWCORE_SOURCE_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+    FLOWCORE_VERSION="${PROJECT_VERSION}")
 configure_file(scripts/flowcored.in flowcored @ONLY)
 file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/flowcored"
      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
@@ -34,7 +35,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/installed-layout" "${CMAKE_CURRENT_BI
               "${CMAKE_CURRENT_BINARY_DIR}/bpf-enabled" DESTINATION "${FLOWCORE_DATA}")
 install(FILES config/service.json config/helper.json DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}/flowcore")
 install(FILES packaging/flowcored.service packaging/flowcore-network.service
-              packaging/flowcore-network.socket DESTINATION lib/systemd/system)
+              packaging/flowcore-network.socket packaging/flowcore-sdk.socket DESTINATION lib/systemd/system)
 install(FILES packaging/flowcore-operator.conf DESTINATION lib/sysusers.d)
 
 add_test(NAME service_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/service_unit.py")
@@ -270,6 +271,7 @@ install(FILES LICENSE LICENSE.GPL-2.0 DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES BOTTLENECK_ENGINE.md DIRECTIONAL_QOS.md BOTTLENECK_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES ADAPTIVE_ACTION_ENGINE.md DECISION_TRACE.md ACTION_VALIDATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES INSTALLED_RUNTIME.md SELINUX_VALIDATION.md PRIVILEGED_HELPER_SECURITY.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES OVERLOAD_ENGINE.md REQUEST_FAILURE_DIAGNOSTICS.md OVERLOAD_REMEDIATION_RESULTS.md
         DESTINATION "${FLOWCORE_DATA}/docs")
 

@@ -13,7 +13,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from paths import BINDIR, RESULTS, ROOT, TC
+from paths import BINDIR, INSTALLED, RESULTS, ROOT, TC
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', FLOWCORE_TC=str(TC))
 if (ROOT/'tools/root/usr/lib64/tc').is_dir():
     ENV['TC_LIB_DIR'] = str(ROOT/'tools/root/usr/lib64/tc')
@@ -28,6 +28,8 @@ def run(argv):
 
 
 def owned_directory(path):
+    if INSTALLED and os.geteuid() == 0:
+        raise PermissionError('installed privileged experiments must use the isolated network helper')
     path.mkdir()
     os.chown(path, UID, GID)
 
@@ -100,6 +102,8 @@ class Lab:
         return [sys.executable, '-I', '-B', ROOT/'scripts/namespace_holder.py', str(os.getpid())]
 
     def start_holders(self, count):
+        if INSTALLED:
+            raise PermissionError('installed privileged experiments must use the isolated network helper')
         host = os.stat('/proc/self/ns/net')
         identities = {(host.st_dev, host.st_ino)}
         for _ in range(count):

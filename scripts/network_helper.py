@@ -7,6 +7,7 @@ import secrets
 import signal
 import socket
 import stat
+from paths import INSTALLED
 import struct
 import sys
 import time
@@ -184,8 +185,9 @@ def activation():
     names = os.environ.pop('LISTEN_FDNAMES', '').split(':')
     count = os.environ.pop('LISTEN_FDS', '')
     pid = os.environ.pop('LISTEN_PID', '')
-    if (pid != str(os.getpid()) or count != str(len(names)) or len(set(names)) != len(names)
-            or set(names) not in ({'control', 'host-netns'}, {'control', 'host-netns', 'test-config'})):
+    standard = {'control', 'host-netns'}
+    valid = set(names) == standard or not INSTALLED and set(names) == standard | {'test-config'}
+    if (pid != str(os.getpid()) or count != str(len(names)) or len(set(names)) != len(names) or not valid):
         raise ValueError('expected named activation descriptors')
     fds = dict(zip(names, range(3, 3 + len(names))))
     for fd in fds.values():
@@ -197,7 +199,7 @@ def verify_privileges():
     with open('/proc/self/status') as stream:
         fields = dict(line.rstrip().split(':', 1) for line in stream if ':' in line)
     if (os.geteuid() == 0 or int(fields['NoNewPrivs']) != 1 or any(
-            int(fields[key], 16) != CAP_NET_ADMIN for key in ('CapEff', 'CapPrm', 'CapBnd'))):
+            int(fields[key], 16) != CAP_NET_ADMIN for key in ('CapEff', 'CapPrm', 'CapBnd', 'CapInh', 'CapAmb'))):
         raise ValueError('helper requires non-root UID, NoNewPrivileges and only CAP_NET_ADMIN')
 
 

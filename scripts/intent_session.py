@@ -12,11 +12,15 @@ MAX_CLIENTS=16
 
 
 class Sessions:
-    def __init__(self,service,path):
+    def __init__(self,service,path, *, listener=None, allowed=None):
         self.service=service
         self.path=path
         self.clients={}
         self.serial=0
+        self.allowed = allowed if allowed is not None else lambda uid: uid in (0, os.geteuid())
+        if listener is not None:
+            self.server, self.inode = listener, None
+            return
         self.server=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET|socket.SOCK_NONBLOCK)
         try:
             try:
@@ -42,6 +46,8 @@ class Sessions:
         for client in list(self.clients):
             self.drop(client)
         self.server.close()
+        if self.inode is None:
+            return
         try:
             current=self.path.lstat()
             if stat.S_ISSOCK(current.st_mode) and current.st_ino==self.inode:
@@ -62,7 +68,7 @@ class Sessions:
                 client,_=self.server.accept()
                 client.setblocking(False)
                 peer=struct.unpack('3i',client.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
-                if len(self.clients)>=MAX_CLIENTS or peer[1] not in (0,os.geteuid()):
+                if len(self.clients)>=MAX_CLIENTS or not self.allowed(peer[1]):
                     client.close()
                 else:
                     try:

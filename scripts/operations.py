@@ -53,7 +53,7 @@ class Operations:
 
     def reload(self,dry_run=False):
         try:
-            cfg=load(self.config_path)
+            cfg=load(self.config_path, system_config=self.service.control_only)
             changed=sorted(key for key in cfg if cfg[key]!=self.service.config[key])
             incompatible=set(changed)-RELOADABLE
             if incompatible:

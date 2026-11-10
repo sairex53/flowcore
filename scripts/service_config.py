@@ -35,14 +35,19 @@ def unique(pairs):
     return obj
 
 
-def load(path):
+def load(path, *, system_config=False):
     from durable_state import read_json
     from paths import ROOT, INSTALLED
     selected=Path(path)
     # Executing a source checkout already trusts its owner. Keep this exception
     # local to source configuration; installed configuration/state stay strict.
     owners=(ROOT.stat().st_uid,) if not INSTALLED and selected.resolve().is_relative_to(ROOT) else ()
-    cfg = read_json(selected,65536,trusted_owners=owners)
+    if system_config or INSTALLED and selected.is_relative_to('/etc/flowcore'):
+        from installed_runtime import root_file
+        cfg = json.loads(root_file(selected, 65536), object_pairs_hook=unique,
+                         parse_constant=lambda value: (_ for _ in ()).throw(ValueError('non-finite configuration number')))
+    else:
+        cfg = read_json(selected,65536,trusted_owners=owners)
     from observability_config import DEFAULT, validate
     from adaptive import DEFAULT as ADAPTIVE_DEFAULT
     if isinstance(cfg, dict):
@@ -53,7 +58,15 @@ def load(path):
     api = cfg.pop('intent_api', {'priorities':['standard']}) if isinstance(cfg,dict) else {}
     if isinstance(api, dict):
         api.setdefault('udp_message_policies', {})
-    keys(api, ('priorities', 'udp_message_policies'))
+        api.setdefault('applications', {})
+    keys(api, ('priorities', 'udp_message_policies', 'applications'))
+    apps = api['applications']
+    if not isinstance(apps, dict) or len(apps) > 16:
+        raise ValueError('installed SDK ACL requires up to 16 service-to-UID entries')
+    for service, uid in apps.items():
+        if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', service):
+            raise ValueError('invalid installed SDK service name')
+        number(uid, 1, 2**31-1, True)
     if (not isinstance(api['priorities'],list) or not api['priorities']
             or any(item not in ('critical','interactive','standard') for item in api['priorities'])):
         raise ValueError('invalid intent API priority permissions')

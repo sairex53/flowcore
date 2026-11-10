@@ -68,7 +68,7 @@ def main():
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as notifications, (work/'daemon.log').open('w') as log:
             notifications.bind(str(notify))
             notifications.settimeout(8)
-            proc = subprocess.Popen([daemon,'--monitor-only'],env=env,stdout=log,stderr=log)
+            proc = subprocess.Popen([daemon, '--monitor-only', '--config', prefix/'share/flowcore/config/service.json'],env=env,stdout=log,stderr=log)
             try:
                 assert notifications.recv(256)==b'READY=1'
                 assert (private_state/'state/state.lock').is_file()

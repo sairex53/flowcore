@@ -42,6 +42,9 @@ def process_start(pid):
 
 @contextlib.contextmanager
 def exclusive():
+    from paths import INSTALLED
+    if INSTALLED:
+        raise PermissionError('installed privileged experiments must use the isolated network helper')
     if os.geteuid() != 0:
         raise ValueError('research networking requires sudo')
     RESULTS.mkdir(exist_ok=True)

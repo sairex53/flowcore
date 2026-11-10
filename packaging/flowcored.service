@@ -1,14 +1,16 @@
 [Unit]
-Description=FLOWCORE read-only network inventory and health
-After=network.target
+Description=FLOWCORE unprivileged application intent control
+Requires=flowcore-sdk.socket
+After=network.target flowcore-sdk.socket
+PartOf=flowcore-sdk.socket
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
 Type=notify
-ExecStartPre=/usr/bin/flowcored --check-config --config /etc/flowcore/service.json
+ExecStartPre=/usr/bin/flowcored --control-only --check-config --config /etc/flowcore/service.json
 ExecReload=/usr/bin/kill -HUP $MAINPID
-ExecStart=/usr/bin/flowcored --monitor-only --config /etc/flowcore/service.json
+ExecStart=/usr/bin/flowcored --control-only --config /etc/flowcore/service.json
 DynamicUser=yes
 RuntimeDirectory=flowcore
 RuntimeDirectoryMode=0700

@@ -18,6 +18,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from benchmark import ROOT
+from paths import INSTALLED
 from network_state import attrs, messages, snapshot, subscribe
 from observability import Observer
 from ipc_security import authorize, decode, notify, private_directory, private_lock
@@ -60,6 +61,7 @@ class Service:
         self.container_attachment = None
         self.container_attachments = {}
         self.monitor_only = False
+        self.control_only = False
         from workloads import Workloads
         self.workloads = Workloads()
         self.platform_policies = PolicyStore()
@@ -199,7 +201,7 @@ class Service:
                     reload_errors=self.operations.reload_errors if self.operations else 0,
                     previous_unclean=self.operations.previous_unclean if self.operations else False,
                     host_mutations_enabled=False,
-                    monitor_only=self.monitor_only, inventory_error=self.inventory.error, uptime_seconds=round(time.monotonic()-self.started, 2),
+                    monitor_only=self.monitor_only, control_only=self.control_only, inventory_error=self.inventory.error, uptime_seconds=round(time.monotonic()-self.started, 2),
                     lab_up=self.lab is not None, policy=self.active, profile=self.profile,
                     controlled_interfaces=[self.config['interface']] if self.lab else [],
                     capabilities=self.capabilities, error=self.error)
@@ -210,7 +212,12 @@ class Service:
         op = request.get('op')
         if not isinstance(op,str):
             raise ValueError('expected operation name')
-        authorize(op,self.monitor_only,os.geteuid() if uid is None else uid,os.geteuid())
+        uid = os.geteuid() if uid is None else uid
+        if self.control_only and op == 'intent_v2':
+            if uid not in self.config['intent_api']['applications'].values():
+                raise PermissionError('SDK peer UID is not authorized')
+        else:
+            authorize(op, self.monitor_only or self.control_only, uid, os.geteuid())
         if op == 'hybrid_apply':
             return self.hybrid_authority.command(request, pid)
         if self.research_mode == 'hybrid-v3' and self.lab and op in ('lab_up', 'lab_configure', 'policy_apply',
@@ -644,11 +651,13 @@ def handle(server, service, monitoring_uid=None):
 
 def main():
     parser = argparse.ArgumentParser(prog='flowcored', description=__doc__)
-    parser.add_argument('--config', type=Path, default=ROOT / 'config/service.json')
-    parser.add_argument('--research', action='store_true', help='enable owned lab fault controls')
+    parser.add_argument('--config', type=Path, default=Path('/etc/flowcore/service.json') if INSTALLED else ROOT / 'config/service.json')
     parser.add_argument('--monitor-socket', help='optional abstract Unix socket name for read-only dashboard projections')
     parser.add_argument('--monitor-user', help='sole local UID or account allowed to use --monitor-socket')
-    parser.add_argument('--monitor-only',action='store_true',help='disable all mutations')
+    role = parser.add_mutually_exclusive_group()
+    role.add_argument('--monitor-only',action='store_true',help='disable all mutations')
+    role.add_argument('--control-only',action='store_true',help='accept only operator-authorized SDK telemetry')
+    role.add_argument('--research',action='store_true',help='enable owned lab fault controls')
     parser.add_argument('--check-config',action='store_true',help='validate configuration without opening sockets')
     parser.add_argument('--version',action='version',version=VERSION)
     args = parser.parse_args()
@@ -663,15 +672,18 @@ def main():
                 raise ValueError('unknown monitoring account') from error
             if not 1 <= monitoring_uid <= 2**31-1:
                 raise ValueError('monitoring UID must be nonroot')
-        config=load(args.config)
+        config=load(args.config, system_config=args.control_only)
         if args.check_config:
             print(json.dumps(dict(valid=True,host_mutations_enabled=False)))
             return 0
+        if INSTALLED and (os.geteuid() == 0 or args.research or not (args.monitor_only or args.control_only)):
+            raise PermissionError('installed daemon requires an unprivileged monitor or control role')
+        if args.control_only and os.geteuid() == 0:
+            raise PermissionError('SDK control role must run unprivileged')
         service = Service(config)
-        if args.monitor_only and args.research:
-            raise ValueError('research and monitor-only modes are exclusive')
         service.research = args.research
         service.monitor_only = args.monitor_only
+        service.control_only = args.control_only
         os.umask(0o077)
         private_directory(RUNTIME)
         if STATE != RUNTIME:
@@ -697,8 +709,14 @@ def main():
                 if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=os.geteuid():
                     raise PermissionError('refusing non-owned socket path')
                 SOCKET.unlink()
+            listener = allowed = None
+            if service.control_only:
+                from installed_runtime import activated_intent_socket
+                listener = activated_intent_socket()
+                allowed = lambda uid: uid in service.config['intent_api']['applications'].values()
             with (socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server, subscribe() as host,
-                  Sessions(service,RUNTIME/'intent.sock') as sessions, monitor_listener(args.monitor_socket) as monitor):
+                  Sessions(service, RUNTIME/'intent.sock', listener=listener, allowed=allowed) as sessions,
+                  monitor_listener(args.monitor_socket) as monitor):
                 server.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
                 server.bind(str(SOCKET))
                 socket_inode=SOCKET.lstat().st_ino

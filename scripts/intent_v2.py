@@ -55,7 +55,9 @@ class IntentAPI:
                 alive=identity(lease['pid'])[0]==lease['process_start']
             except OSError:
                 alive=False
-            if now>=lease['expires_ns'] or not alive or lease['name'] not in self.service.controller.registry.rows:
+            authorized = (not getattr(self.service, 'control_only', False)
+                          or self.service.config['intent_api']['applications'].get(lease['name']) == lease['uid'])
+            if now>=lease['expires_ns'] or not alive or not authorized or lease['name'] not in self.service.controller.registry.rows:
                 self.release(token,'expired_or_revoked')
         for lease in self.leases.values():
             for request,entry in list(lease['requests'].items()):
@@ -93,8 +95,12 @@ class IntentAPI:
         self.expire()
         number(request.get('version'),2,2,True)
         try:
-            shared_clock=os.path.samestat(os.stat(f'/proc/{pid}/ns/time'),os.stat('/proc/self/ns/time'))
-        except OSError:
+            if getattr(self.service, 'control_only', False):
+                from installed_runtime import monotonic_offset
+                shared_clock = monotonic_offset(pid) == monotonic_offset('self')
+            else:
+                shared_clock=os.path.samestat(os.stat(f'/proc/{pid}/ns/time'),os.stat('/proc/self/ns/time'))
+        except (OSError, ValueError):
             shared_clock=False
         if not shared_clock:
             raise PermissionError('shared monotonic time namespace could not be verified')
@@ -107,6 +113,10 @@ class IntentAPI:
                 raise ValueError('v2 instance quota exhausted')
             value=request['intent']
             intent=self.service.controller.registry.validate(value)
+            control_only = getattr(self.service, 'control_only', False)
+            if control_only and (self.service.config['intent_api']['applications'].get(intent['name']) != uid
+                                 or intent['priority'] != 'standard' or intent['min_kbit'] or intent['max_kbit']):
+                raise PermissionError('installed SDK service or intent is not authorized')
             if intent['name'] in self.revoked:
                 raise PermissionError('service revoked until operator restart')
             allowed=self.service.config.get('intent_api',{}).get('priorities',['standard'])
@@ -117,7 +127,7 @@ class IntentAPI:
             start,cgroup=identity(pid)
             udp_policy=self.service.config.get('intent_api',{}).get('udp_message_policies',{}).get(intent['name'])
             udp_grant=None
-            if udp_policy is not None:
+            if udp_policy is not None and not control_only:
                 if intent['priority'] != udp_policy['priority']:
                     raise PermissionError('UDP message service priority does not match operator policy')
                 if uid not in udp_policy['uids'] or not cgroup_matches(cgroup,udp_policy['cgroup_prefix']):

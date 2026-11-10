@@ -1,0 +1,17 @@
+[Unit]
+Description=FLOWCORE authorized application intent endpoint
+
+[Socket]
+ListenSequentialPacket=/run/flowcore-sdk/intent.sock
+Service=flowcored.service
+FileDescriptorName=intent
+PassCredentials=yes
+SocketUser=root
+SocketGroup=flowcore-app
+SocketMode=0660
+DirectoryMode=0755
+Backlog=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
