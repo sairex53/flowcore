@@ -408,6 +408,9 @@ class Service:
             registry.remove(request.get('name'), uid, request.get('instance_token'))
             controller.safe_tick()
             return {'removed': True}
+        if op == 'controller_trace':
+            keys(request, ('op',))
+            return controller.trace()
         if op == 'controller_status':
             return controller.status()
         if op in ('controller_start', 'controller_shadow'):

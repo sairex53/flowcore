@@ -108,7 +108,9 @@ def plan(controller, window, current, objective, algorithm='adaptive', now=None,
     detail = dict(previous=current, proposed=None, action='hold', feasible=not conflicts, pressure=pressure,
                   background_floor_kbit=model['floors']['background'],
                   background_throughput_kbit=bg/125 if bg is not None else None, objectives={}, attribution={},
-                  optimizer=diagnostics)
+                  queue_signal_present=root.get('utilization') is not None
+                  and window['backlog'].get('p95_bytes') is not None,
+                  slo_gate=True, optimizer=diagnostics)
     if conflicts:
         return detail
     owners = {}
@@ -118,9 +120,10 @@ def plan(controller, window, current, objective, algorithm='adaptive', now=None,
         cls = intent['priority']
         targets[cls] += intent['desired_kbit']
         measured = detail['objectives'][name] = objective(window,name,intent,cfg['minimum_samples'])
-        observation = estimate(window,name,intent,measured,current[cls][0],cfg['minimum_samples'])
+        observation = estimate(window,name,intent,measured,current[cls][0],controller.probe_minimum())
         detail['attribution'][name] = observation
-        if not allow_adaptive or bg is None or not pressure or not observation['eligible']:
+        if (not allow_adaptive or bg is None or not pressure or not observation['eligible']
+                or not measured['outside_deadband']):
             continue
         latency_risk = min(4,max(0,measured['p99_us']/measured['target_p99_us']-1))
         miss_risk = measured['deadline_miss']/max(1,measured['reports'])

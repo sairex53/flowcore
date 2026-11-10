@@ -164,13 +164,13 @@ class Unit(unittest.TestCase):
         engine.mode = 'active'
         engine.state.move('OBSERVING','test activation')
         with (patch.object(engine,'tick',side_effect=RuntimeError('injected evaluation failure')),
-              patch.object(engine,'write') as write):
+              patch.object(engine,'write',return_value=dict(transaction='VERIFIED')) as write):
             engine.safe_tick()
         write.assert_called_once_with(dict(engine.base, critical=(3000,7000)))
         self.assertEqual(engine.mode,'off')
         self.assertEqual(engine.state.name,'SAFE_FALLBACK')
 
-    def test_probe_cutoff_is_kernel_commit_and_deadline_is_independent(self):
+    def test_probe_cutoff_is_full_evaluation_window_and_deadline_is_independent(self):
         observer = Observer(copy.deepcopy(DEFAULT))
         service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
                        config={'telemetry_seconds':1,
@@ -203,13 +203,13 @@ class Unit(unittest.TestCase):
                 observer.sampled_ns = time.monotonic_ns()
                 engine.tick()
         self.assertIsNotNone(engine.pending)
-        self.assertEqual(observer.probe_start_ns, verified)
+        self.assertEqual(observer.probe_start_ns, engine.pending['start_ns'])
         self.assertGreater(engine.pending['start_ns'], verified)
         now = engine.pending['start_ns']+10_000_000
         with patch.object(observer,'clock',return_value=now):
             observer.ingest(dict(op='request_sample',service='demo',outcome='ok',duration_us=20000),0)
         app = observer.window(now,2)['application']['demo']['application']
-        self.assertEqual(app['probe_overlap'],0)
+        self.assertEqual(app['probe_overlap'],1)
 
     def test_completed_windows_exclude_partial_and_track_probe_overlap(self):
         now = 10_100_000_000

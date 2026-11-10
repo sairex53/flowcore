@@ -90,8 +90,11 @@ def load(path):
                             cooldown_seconds=(1, 300), background_floor_pct=(20, 100),
                             step_pct=(1, 10), maximum_boost_pct=(1, 30),
                             maximum_actions=(1, 32), recovery_windows=(2, 10),
-                            maximum_reversals=(2, 8)).items():
+                            maximum_reversals=(2, 8), minimum_probe_successes=(100, 100000),
+                            max_background_loss_pct=(1, 100), max_class_fairness_loss_pct=(1, 100)).items():
         number(settings[key], *bounds, integer=True)
+    if settings['evaluation_seconds'] is not None:
+        number(settings['evaluation_seconds'], 1, max(cfg['observability']['windows']), integer=True)
     number(cfg['version'], 1, 1, integer=True)
     if cfg['interface'] != 'fc0':
         raise ValueError('only the owned lab interface fc0 is supported')

@@ -86,7 +86,7 @@ def main():
             sub.add_argument('--deadline-ms', type=float)
     groups = dict(policy=('list', 'apply', 'inspect', 'evaluate', 'optimize', 'explain', 'history'), daemon=('status',),
                   intent=('register', 'list', 'inspect', 'remove', 'revoke'),
-                  controller=('start', 'stop', 'status', 'shadow', 'observe', 'fallback'),
+                  controller=('start', 'stop', 'status', 'shadow', 'observe', 'fallback', 'trace'),
                   lab=('up', 'down', 'status', 'configure', 'inspect'))
     groups.update(bottleneck=('inspect', 'watch'), capacity=('estimate',),
                   qos=('direction',), path=('diagnostics',))

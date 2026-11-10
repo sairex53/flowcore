@@ -6,6 +6,7 @@ import uuid
 from collections import deque
 
 import adaptive_tc
+import adaptive_validation as validation
 from intents import Registry
 from predictive import Predictor, HORIZON
 from intelligence import Allocator, State, estimate, score
@@ -30,7 +31,9 @@ def slo_aware(slo, pressure, _intent):
 STRATEGIES = {'static': static, 'threshold': threshold, 'slo': slo_aware,
               'queue-aware': threshold, 'slo-aware': slo_aware, 'hybrid': slo_aware, 'predictive': slo_aware, 'optimizer': slo_aware}
 DEFAULT = dict(window_seconds=4, minimum_samples=20, enter_windows=2, cooldown_seconds=4,
-               background_floor_pct=20, step_pct=5, maximum_boost_pct=15, maximum_actions=8, recovery_windows=3, maximum_reversals=2)
+               background_floor_pct=20, step_pct=5, maximum_boost_pct=15, maximum_actions=8, recovery_windows=3, maximum_reversals=2,
+               evaluation_seconds=None, minimum_probe_successes=100,
+               max_background_loss_pct=15, max_class_fairness_loss_pct=5)
 
 
 def objective(window, name, intent, minimum):
@@ -66,6 +69,8 @@ class Controller:
         self.predictor = Predictor()
         self.cfg = service.config.get('adaptive', DEFAULT)
         self.history = deque(maxlen=128)
+        self.event_sequence = 0
+        self.action_counts = dict(applied=0, reverted=0, useful=0, harmful=0, inconclusive=0)
         self.freeze_until = 0
         self.path = None
         self.mode = 'off'
@@ -100,7 +105,13 @@ class Controller:
                 # files after a power loss must not prevent safe read-only startup.
                 self.service.log('error',detail='adaptive journal invalid; history unavailable; controller remains disabled')
 
-    def record(self, **fields):
+    def record(self, *, reason_code=None, detail_code=None, **fields):
+        self.event_sequence += 1
+        if reason_code is not None:
+            fields['trace'] = dict(schema=1, sequence=self.event_sequence, reason_code=reason_code,
+                                   detail_code=detail_code, strategy=self.strategy, mode=self.mode,
+                                   capacity_kbit=self.capacity(), policy_generation=self.kernel_generation,
+                                   intent_revision=self.registry.revision)
         if incident := getattr(self.service, 'incident', None):
             incident.decision(fields)
         self.history.append(dict(controller_session=self.session,time_unix=time.time(), time_ns=time.monotonic_ns(), generation=self.service.observer.generation, **fields))
@@ -186,6 +197,7 @@ class Controller:
         self.kernel_generation = scope.verified if scope else None
         self.allocation_confirmed = True
         self.mode, self.strategy = mode, strategy
+        self.action_counts = dict.fromkeys(self.action_counts, 0)
         self.revision = self.registry.revision
         self.last_tick = time.monotonic()
         self.next_action = 0
@@ -201,6 +213,8 @@ class Controller:
         lab = self.service.lab
         if self.mode!='active' or lab is None:
             raise PermissionError('controller write requires active lab authority')
+        previous = self.current
+        attempted_generation = self.kernel_generation
         try:
             floor_pct = max([self.cfg['background_floor_pct'], *(
                 row['intent']['background_min_pct'] for row in self.registry.rows.values())])
@@ -214,13 +228,15 @@ class Controller:
             self.service.observer.probe_start_ns = None
             self.error = str(error)
             self.state.move('SAFE_FALLBACK',self.error)
-            self.record(result='transaction_rejected', reason=self.error,
-                        compensated=getattr(error,'compensated',False))
+            self.record(result='transaction_rejected', reason=self.error, reason_code='ACTION_BLOCKED',
+                        detail_code='htb_transaction_rejected', previous=previous, proposed=target,
+                        expected_generation=attempted_generation, compensated=getattr(error,'compensated',False))
             raise
         self.allocation_confirmed = True
         self.kernel_generation = timing.get('generation')
         changed = self.current != target
         self.current = dict(target)
+        self.action_counts['applied'] += int(changed)
         if changed and (incident := getattr(self.service, 'incident', None)):
             incident.policy(self.service.active,self.capacity(),self.current,timing['verified_ns'])
             incident.recorder.record('controller', timing['verified_ns'], result='kernel_verified',
@@ -239,8 +255,11 @@ class Controller:
                 if fallback is None:
                     raise RuntimeError('no feasible authorized controller fallback')
                 if self.current != fallback:
-                    self.write(fallback)
-                    self.record(result='restored_baseline', reason=reason, allocation=fallback)
+                    before = self.current
+                    timing = self.write(fallback)
+                    self.action_counts['reverted'] += 1
+                    self.record(result='restored_baseline', reason=reason, allocation=fallback, previous=before,
+                                timing=timing, reason_code='ACTION_REVERTED', detail_code='static_fallback')
         finally:
             self.mode = 'off'
             self.pending = None
@@ -259,7 +278,7 @@ class Controller:
         self.state.move('DISABLED','lab detached')
         self.service.observer.probe_start_ns = None
         if was_running:
-            self.record(result='lab_closed', reason='topology removed')
+            self.record(result='lab_closed', reason='topology removed', reason_code='ACTION_BLOCKED', detail_code='actuator_unavailable')
 
     def register(self, value, uid, pid):
         intent = self.registry.validate(value)
@@ -344,12 +363,14 @@ class Controller:
                                      eligible=queue.get('backlogged_samples', 0) >= 2
                                      and (measured['throughput_kbit'] or 0) >= .9*rate
                                      and not measured['failures']
-                                     and measured['samples'] >= max(LATENCY_MIN_SAMPLES, cfg['minimum_samples']))
+                                     and measured['samples'] >= self.probe_minimum())
         predictive = (dict(experimental=True,error=self.predictor.error,timing=self.prediction_timing(),
             forecasts={cls:{k:v for k,v in methods.get('hybrid',{}).items() if k!='input'}
                        for cls,methods in self.predictor.latest.items()})
                       if self.strategy == 'predictive' else None)
         detail = dict(previous=current, proposed=bounds, objectives=outcomes, attribution=attribution, pressure=pressure,
+                      queue_signal_present=root.get('utilization') is not None and backlog is not None,
+                      slo_gate=self.strategy in ('slo', 'slo-aware', 'hybrid'),
                       background_floor_kbit=bg_floor, predictive=predictive, background_throughput_kbit=(
                           bg['bytes_per_second']/125 if bg.get('bytes_per_second') is not None else None))
         if bounds != current:
@@ -366,7 +387,7 @@ class Controller:
                 intent = row['intent']
                 cls = intent['priority']
                 measured = outcomes[name]
-                observation = estimate(window,name,intent,measured,current[cls][0],cfg['minimum_samples'])
+                observation = estimate(window,name,intent,measured,current[cls][0],self.probe_minimum())
                 observations[name] = observation
                 weight = 4 if cls == 'critical' else 2 if cls == 'interactive' else 1
                 utility = score('hybrid' if self.strategy == 'predictive' else self.strategy,observation,measured,weight,
@@ -439,6 +460,14 @@ class Controller:
                         bottleneck_gate='fresh controllable egress pressure required')
         return plan
 
+    def probe_minimum(self):
+        return max(self.cfg['minimum_samples'], self.cfg.get('minimum_probe_successes', LATENCY_MIN_SAMPLES))
+
+    def trace(self):
+        return dict(schema=1, session=self.session, strategy=self.strategy, mode=self.mode,
+                    counts=dict(self.action_counts),
+                    events=[row for row in self.history if 'trace' in row])
+
     def evaluate(self):
         if not self.service.lab or self.policy()['scheduler'] != 'htb':
             raise ValueError('evaluation requires an owned HTB lab')
@@ -494,8 +523,12 @@ class Controller:
             if self.strategy == 'optimizer':
                 fallback = policy_optimizer.contracts(self,now)['fallback']
             if self.mode == 'active' and fallback is not None and self.current != fallback:
-                self.write(fallback)
-                self.record(result='restored_baseline', reason='intent set changed', allocation=fallback)
+                previous = self.current
+                timing = self.write(fallback)
+                self.action_counts['reverted'] += 1
+                self.record(result='restored_baseline', reason='intent set changed', allocation=fallback,
+                            previous=previous, timing=timing, reason_code='ACTION_REVERTED',
+                            detail_code='intent_revision_changed')
             self.revision = self.registry.revision
             self.pending = None
             self.service.observer.probe_start_ns = None
@@ -509,6 +542,8 @@ class Controller:
         observer = self.service.observer
         if (not observer.sampled_ns or observer.errors or self.service.error or
                 (time.monotonic_ns()-observer.sampled_ns)/1e9 > max(seconds, 2*self.service.config['telemetry_seconds'])):
+            self.record(result='blocked', reason_code='LOW_CONFIDENCE', detail_code='stale_or_failed_telemetry',
+                        sample_ns=observer.sampled_ns, collector_errors=dict(observer.errors))
             self.stop('telemetry unavailable')
             self.error = 'telemetry unavailable'
             return
@@ -519,10 +554,20 @@ class Controller:
                   for row in self.service.telemetry.get('class', []) if row.get('class') == 'htb'}
         lab = self.service.lab
         scope = getattr(lab, 'htb_safety', None)
+        scope_generation = getattr(scope, 'verified', None)
+        if type(scope_generation) is int and scope_generation != self.kernel_generation:
+            self.record(result='blocked', reason_code='POLICY_CONFLICT', detail_code='stale_kernel_generation',
+                        actual_generation=scope_generation)
+            # A stale writer must not try to restore over a newer verified policy.
+            self.detach()
+            self.error = 'controller kernel generation is stale'
+            return
         if actual != expected:
             error = 'telemetry readback shows HTB capacity or allocation drift'
             if scope:
                 scope.fail(error, 'UNVERIFIED')
+            self.record(result='blocked', reason_code='POLICY_CONFLICT', detail_code='kernel_allocation_drift',
+                        expected=expected, actual=actual)
             raise RuntimeError(error)
         if not self.allocation_confirmed:
             try:
@@ -537,11 +582,13 @@ class Controller:
         began = time.monotonic_ns()
         window = observer.window(began, seconds, complete=True)
         window_end = time.monotonic_ns()
-        plan = self.qualify(self.plan(window, self.current))
+        plan = self.last_plan if self.pending and self.last_plan is not None else self.qualify(self.plan(window, self.current))
         planned = time.monotonic_ns()
         self.last_plan = plan
-        if self.strategy in ('queue-aware','slo-aware','hybrid','predictive','optimizer') and plan['action'] == 'hold':
-            self.record(result='hold', **plan)
+        if plan['action'] == 'hold' and (not self.pending or plan.get('feasible') is False):
+            code, detail = validation.hold_reason(plan, self.probe_minimum())
+            self.record(result='hold', reason_code=code, detail_code=detail,
+                        observation_end_ns=(began//NANO)*NANO, observation_seconds=seconds, **plan)
         journaled = time.monotonic_ns()
         self.timing = dict(time_ns=began, aggregation_ns=window_end-began,
                            policy_ns=journaled-window_end, planner_ns=planned-window_end,
@@ -571,7 +618,8 @@ class Controller:
             if began < old['end_ns'] + NANO//4:
                 return
             evaluation_start = time.monotonic_ns()
-            post = observer.window(old['end_ns'], seconds, complete=True)
+            evaluation_seconds = self.cfg.get('evaluation_seconds') or seconds
+            post = observer.window(old['end_ns'], evaluation_seconds, complete=True)
             aggregated = time.monotonic_ns()
             intent = self.registry.rows[old['service']]['intent']
             measured = objective(post, old['service'], intent, self.cfg['minimum_samples'])
@@ -580,9 +628,16 @@ class Controller:
             bg_rate = post_bg.get('bytes_per_second')
             bg = bg_rate/125 if bg_rate is not None else None
             demanded = post_bg.get('backlogged_samples', 0) > 0
-            enough = measured['samples'] >= max(LATENCY_MIN_SAMPLES, self.cfg['minimum_samples'])
+            enough = measured['samples'] >= self.probe_minimum()
+            offered_ratio = before['reports']*evaluation_seconds/seconds
             comparable = (enough and not observer.truncated and not measured['probe_overlap']
-                          and .8*before['reports'] <= measured['reports'] <= 1.2*before['reports'])
+                          and .8*offered_ratio <= measured['reports'] <= 1.2*offered_ratio)
+            traffic = validation.frame(post, intent['priority'])
+            evidence = validation.assess(old['traffic_before'], traffic,
+                background_loss=self.cfg.get('max_background_loss_pct', 15)/100,
+                fairness_loss=self.cfg.get('max_class_fairness_loss_pct', 5)/100
+            ) if 'traffic_before' in old else dict(traffic_effect_observed=False,
+                         background_throughput_regressed=False, fairness_regressed=False)
             degraded = (measured['reports'] >= self.cfg['minimum_samples'] and
                         ((measured['error_ratio'] or 0) > (before['error_ratio'] or 0)
                          or measured['deadline_miss']/measured['reports'] >
@@ -600,19 +655,27 @@ class Controller:
                     continue
                 after = objective(post,peer,row['intent'],self.cfg['minimum_samples'])
                 prior = old.get('peer_before',{}).get(peer,{})
-                if after['failures'] or (after['samples'] >= LATENCY_MIN_SAMPLES
-                        and prior.get('samples',0) >= LATENCY_MIN_SAMPLES
+                if after['failures'] or (after['samples'] >= self.probe_minimum()
+                        and prior.get('samples',0) >= self.probe_minimum()
                         and after['p99_us'] > prior['p99_us']*1.1):
                     other_harm = True
-            keep = (comparable and not degraded and not other_harm and (latency_improved or throughput_improved)
-                    and (not demanded or (bg is not None and bg >= plan['background_floor_kbit']*.8)))
+            background_harm = demanded and bg is not None and bg < plan['background_floor_kbit']*.8
+            harm = degraded or other_harm or background_harm or evidence['background_throughput_regressed'] or evidence['fairness_regressed']
+            keep = (comparable and not harm and evidence['traffic_effect_observed']
+                    and (latency_improved or throughput_improved) and (not demanded or bg is not None))
+            outcome = 'useful' if keep else 'harmful' if comparable and harm else 'inconclusive'
+            self.action_counts[outcome] += 1
             verdict = 'kept' if keep else 'rolled_back' if comparable else 'inconclusive'
             assessed = time.monotonic_ns()
             rollback = None
             if not keep:
                 rollback = self.write(old['allocation'])
+                self.action_counts['reverted'] += 1
                 self.next_action = time.monotonic() + max((3+self.reversals)*seconds, self.cfg['cooldown_seconds'])
             self.record(result=verdict, service=old['service'], comparable=comparable, degraded=degraded,
+                        reason_code='ACTION_APPLIED' if keep else 'ACTION_REVERTED',
+                        detail_code='post_action_verdict', outcome=outcome, proposal_id=old.get('proposal_id'),
+                        traffic_before=old.get('traffic_before'), traffic_after=traffic, effect_evidence=evidence,
                         before=before, measured=measured, background_kbit=bg, allocation=self.current,
                         post_start_ns=old['start_ns'], post_end_ns=old['end_ns'],
                         time_to_evaluate_ns=began-old['verified_ns'],
@@ -639,8 +702,10 @@ class Controller:
             if self.recovery >= self.cfg['recovery_windows'] and now >= self.next_action:
                 target = {name: (self.base[name][0], ceil) for name, (_, ceil) in self.current.items()}
                 previous = self.current
-                self.write(target)
-                self.record(result='released', reason='sustained recovery or idle service',
+                timing = self.write(target)
+                self.action_counts['reverted'] += 1
+                self.record(result='released', reason='sustained recovery or idle service', timing=timing,
+                            reason_code='ACTION_REVERTED', detail_code='recovery_hysteresis_satisfied',
                             previous=previous, allocation=self.current, objectives=plan['objectives'])
                 self.next_action = now + self.cfg['cooldown_seconds']
                 self.recovery = 0
@@ -649,16 +714,23 @@ class Controller:
         else:
             self.recovery = 0
         if self.mode == 'observe':
-            self.record(result='observed', **plan)
+            if plan['action'] != 'hold':
+                self.record(result='observed', reason_code='ACTION_BLOCKED', detail_code='observe_only', **plan)
             return
         if plan['action'] == 'hold' or now < self.next_action:
+            if plan['action'] != 'hold':
+                self.record(result='blocked', reason_code='COOLDOWN_ACTIVE', detail_code='action_cooldown',
+                            remaining_seconds=self.next_action-now, **plan)
             self.streak.clear()
             return
         name = plan.get('service', plan['action'])
         self.streak = {name: self.streak.get(name, 0) + 1}
         if plan['action'] == 'transfer_reservation' and self.streak[name] < self.cfg['enter_windows']:
+            self.record(result='blocked', reason_code='LOW_CONFIDENCE', detail_code='hysteresis_pending',
+                        observed_windows=self.streak[name], required_windows=self.cfg['enter_windows'], **plan)
             return
         if self.actions >= self.cfg['maximum_actions']:
+            self.record(result='blocked', reason_code='ACTION_BLOCKED', detail_code='action_budget_exhausted', **plan)
             self.stop('adjustment budget exhausted')
             self.error = 'adjustment budget exhausted, possible oscillation'
             return
@@ -666,17 +738,27 @@ class Controller:
         self.next_action = now + self.cfg['cooldown_seconds']
         self.streak.clear()
         if self.mode == 'shadow':
-            self.record(result='hypothetical', **plan)
+            self.record(result='hypothetical', reason_code='ACTION_BLOCKED', detail_code='shadow_only', **plan)
             return
         previous = self.current
+        traffic_class = self.registry.rows[name]['intent']['priority'] if 'service' in plan else None
+        effect = validation.effect(plan, traffic_class)
+        proposal_id = self.event_sequence + 1
+        self.record(result='proposed', reason_code='ACTION_BLOCKED', detail_code='awaiting_kernel_verification',
+                    proposal_id=proposal_id, effect=effect, action=plan['action'],
+                    previous=previous, proposed=plan['proposed'], kernel_diff=adaptive_tc.diff(previous, plan['proposed']))
         timing = self.write(plan['proposed'])
-        self.record(result='pending' if 'service' in plan else 'verified', timing=timing, **plan)
+        self.record(result='pending' if 'service' in plan else 'verified', reason_code='ACTION_APPLIED',
+                    detail_code='kernel_readback_verified', proposal_id=proposal_id, timing=timing,
+                    effect=effect, **plan)
         if 'service' in plan:
             verified = timing['verified_ns']
             start = ((verified + NANO - 1)//NANO + 1)*NANO
-            observer.probe_start_ns = verified
+            observer.probe_start_ns = start
+            evaluation_seconds = self.cfg.get('evaluation_seconds') or seconds
             self.pending = dict(service=name, allocation=previous, before=plan['objectives'][name],
-                                start_ns=start, end_ns=start+seconds*NANO, verified_ns=verified,
+                                start_ns=start, end_ns=start+evaluation_seconds*NANO, verified_ns=verified,
+                                proposal_id=proposal_id, traffic_before=validation.frame(window, traffic_class),
                                 peer_before=plan['objectives'], prediction=plan.get('predictive'))
 
     def verify_lab_baseline(self):
@@ -737,18 +819,18 @@ class Controller:
             if self.state.name == 'DISABLED':
                 self.state.move('OBSERVING','fault assessment')
             self.state.move('SAFE_FALLBACK',self.error)
-            self.record(result='controller_fault', reason=self.error)
+            self.record(result='controller_fault', reason=self.error, reason_code='ACTION_BLOCKED', detail_code='controller_fault')
             try:
                 self.stop('controller fault')
             except Exception as rollback:
                 self.error += f'; rollback refused or failed: {rollback}'
                 self.mode = 'off'
-                self.record(result='rollback_failed', reason=self.error)
+                self.record(result='rollback_failed', reason=self.error, reason_code='ACTION_BLOCKED', detail_code='rollback_failed')
 
     def status(self):
         window = self.service.observer.window(time.monotonic_ns(), self.cfg['window_seconds'])
         return dict(controller_session=self.session,mode=self.mode, strategy=self.strategy, allocation=self.current,
-                    actions=self.actions, pending=self.pending, error=self.error,
+                    actions=self.actions, action_validation=dict(self.action_counts), pending=self.pending, error=self.error,
                     allocation_verified=self.allocation_confirmed and self.error is None and self.mode != 'off',
                     prediction=self.predictor.status() if self.strategy == 'predictive' else None,
                     predictive_timing=self.prediction_timing() if self.strategy == 'predictive' else None,
