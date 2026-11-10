@@ -76,6 +76,11 @@ class Unit(unittest.TestCase):
         self.assertTrue(any(addr['address'] == '127.0.0.1' for addr in loopback['addresses']))
         self.assertTrue(result['routes'])
 
+    def test_daemon_interfaces_operation(self):
+        service = Service(load(ROOT/'config/service.json'))
+        service.monitor_only = True
+        self.assertTrue(any(row['name']=='lo' for row in service.command({'op':'interfaces'})['host']['interfaces']))
+
     def test_cli(self):
         binary = BINARY
         for words in ([], ['status'], ['interfaces'], ['metrics'], ['daemon', 'status'],

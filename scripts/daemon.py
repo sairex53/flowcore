@@ -424,8 +424,8 @@ class Service:
             controller.stop('operator stop')
             return controller.status()
         if op == 'slo_shadow':
-            from slo_shadow import snapshot
-            return snapshot(self, request)
+            from slo_shadow import snapshot as slo_snapshot
+            return slo_snapshot(self, request)
         if op == 'policy_optimize':
             keys(request, ('op','algorithm'))
             return controller.optimization_preview(request['algorithm'])
