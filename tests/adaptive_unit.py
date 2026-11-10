@@ -94,7 +94,7 @@ class Unit(unittest.TestCase):
         service.error = None
         engine.write = lambda target: setattr(engine, 'current', target)
         window = {'queue':{'root':{'utilization':.9}},'backlog':{'p95_bytes':10000},
-                  'application':{'demo':{'application':{'samples':150,'p99_us':100000}}}}
+                  'application':{'demo':{'application':{'samples':150,'p99_us':100000,'deadline_reported':150}}}}
         rows = [{'class':'htb','handle':f'1:{minor}','rate':boosted[name][0]*125,
                  'ceil':boosted[name][1]*125} for name,minor in CLASSES.items()]
         rows.append({'class':'htb','handle':'1:1','rate':1250000,'ceil':1250000})
@@ -242,6 +242,45 @@ class Unit(unittest.TestCase):
         idle = dict(pressure=False, queue_signal_present=True, objectives={'demo':dict(samples=0)})
         self.assertEqual(hold_reason(idle, 100)[0], 'NO_CONGESTION')
         self.assertEqual(hold_reason(dict(idle, pressure=True), 100)[0], 'INSUFFICIENT_SAMPLES')
+
+    def test_useful_probe_requires_both_class_and_application_evidence(self):
+        from adaptive_validation import frame
+        observer = Observer(copy.deepcopy(DEFAULT))
+        service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
+                       error=None, config={'telemetry_seconds':1})
+        engine = Controller(service)
+        engine.registry.register({'name':'demo'}, 0)
+        engine.revision = engine.registry.revision
+        engine.mode, engine.allocation_confirmed = 'active', True
+        engine.base = dict(critical=(3000,10000), interactive=(2000,10000),
+                           standard=(2000,10000), background=(3000,10000))
+        engine.current = dict(engine.base, critical=(3500,10000), background=(2500,10000))
+        before = dict(queue=dict(root=dict(utilization=.98),
+            critical=dict(bytes_per_second=375000, backlogged_samples=3, backlog=dict(p95_bytes=22000)),
+            background=dict(bytes_per_second=375000, backlogged_samples=3)),
+            backlog=dict(p95_bytes=24000),
+            application=dict(demo=dict(application=dict(samples=150, ok=150, p99_us=90000))))
+        intent = engine.registry.rows['demo']['intent']
+        engine.pending = dict(service='demo', before=objective(before, 'demo', intent, 20),
+            allocation=engine.base, traffic_before=frame(before,'critical'), proposal_id=17,
+            start_ns=0, end_ns=0, verified_ns=0)
+        engine.last_plan = dict(action='transfer_reservation', feasible=True, attribution={},
+                                background_throughput_kbit=3000, background_floor_kbit=2000)
+        service.telemetry = dict(qdisc=[], **{'class':[
+            dict(handle=f'1:{minor}', rate=engine.current[name][0]*125,
+                 ceil=1250000, **{'class':'htb'}) for name,minor in CLASSES.items()]})
+        service.telemetry['class'].append(dict(handle='1:1',rate=1250000,ceil=1250000,**{'class':'htb'}))
+        after = copy.deepcopy(before)
+        after['application']['demo']['application']['p99_us'] = 60000
+        after['queue']['critical']['bytes_per_second'] = 435000
+        observer.sampled_ns = time.monotonic_ns()
+        with patch.object(observer,'window',return_value=after), patch.object(engine,'write') as write:
+            engine.tick()
+        write.assert_not_called()
+        self.assertIsNone(engine.pending)
+        self.assertEqual(engine.history[-1]['outcome'], 'useful')
+        self.assertEqual(engine.history[-1]['proposal_id'], 17)
+        self.assertEqual(engine.action_counts['useful'], 1)
 
     def test_stale_generation_blocks_before_planning_or_restoring(self):
         observer = Observer(copy.deepcopy(DEFAULT))

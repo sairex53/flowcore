@@ -164,6 +164,16 @@ class Optimizer(unittest.TestCase):
         from adaptive_validation import hold_reason
         self.assertEqual(hold_reason(decision, 100),
                          ('CHANGE_NOT_WORTH_COST', 'service_objectives_within_deadband'))
+        control.strategy = 'optimizer'
+        control.cfg = dict(control.cfg, require_full_transport=False)
+        control.service.observer.truncated = True
+        window['application']['demo']['application']['p99_us'] = 80000
+        control.egress_gate = lambda: False
+        self.assertEqual(control.plan(window,current)['action'], 'hold')
+        control.egress_gate = lambda: True
+        candidate = control.plan(window,current)
+        self.assertFalse(candidate['transport_complete'])
+        self.assertEqual(candidate['action'], 'transfer_reservation')
 
     def test_convergence_requires_two_healthy_unchanged_windows(self):
         plan = {'controller':dict(window_seconds=2,minimum_samples=100,target_p99_ms=25)}

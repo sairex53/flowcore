@@ -52,7 +52,9 @@ def frame(window, traffic_class):
     background = queue.get('background', {})
     rates = {name: queue.get(name, {}).get('bytes_per_second')
              for name in ('critical', 'interactive', 'standard', 'background')}
-    active = {name: rate for name, rate in rates.items() if rate is not None and rate > 0}
+    observed = {name: rate for name, rate in rates.items() if rate is not None and rate > 0}
+    material = sum(observed.values()) * .01
+    active = {name: rate for name, rate in observed.items() if rate >= material}
     fairness = sum(active.values())**2/(len(active)*sum(x*x for x in active.values())) if active else None
     return dict(target_kbit=target['bytes_per_second']/125 if target.get('bytes_per_second') is not None else None,
                 target_backlog_bytes=(target.get('backlog') or {}).get('p95_bytes'),

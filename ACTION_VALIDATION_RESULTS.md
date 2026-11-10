@@ -43,3 +43,61 @@ owned HTB action. The matrices are exploratory and below the
 prespecified ten-pair release gate.
 
 [Engine](ADAPTIVE_ACTION_ENGINE.md) · [Trace schema](DECISION_TRACE.md)
+
+## Five strategies and held-out workload
+
+The paired evidence at results/research-1794307045998214853 contains
+two independent seed blocks and ten infrastructure-valid trials.
+All arms completed all 4,400 offered requests per arm. None issued
+an adaptive action.
+
+| Mode | Conditional P99 (ms) | Deadline attainment | TCP background (Mbit/s) | Daemon and child CPU (s) | Adaptive kernel updates |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Static HTB | 48.81 | 99.02% | 5.60 | 2.253 | 0 |
+| Threshold | 43.55 | 99.57% | 5.67 | 2.361 | 0 |
+| Queue-aware | 45.81 | 99.32% | 5.65 | 2.287 | 0 |
+| SLO-aware | 46.22 | 99.36% | 5.63 | 2.234 | 0 |
+| Optimizer | 46.43 | 99.32% | 5.68 | 2.296 | 0 |
+
+Values are run medians. TCP background Jain indices were 0.9999
+or higher. Median per-window planning time was 0.23 to 0.30 ms
+for the non-optimizer controllers and 1.37 ms for the optimizer,
+including the native solver bridge. Trace records show eight
+truncated-transport holds out of ten windows for each of the three
+non-optimizer strategies, with the remaining two lacking an
+eligible target-class bottleneck. The optimizer had seven holds
+with incomplete inputs, two without class pressure at the
+reservation and one without root pressure.
+
+The holdout at results/research-1794307283477695110 had five
+infrastructure-valid trials. All arms completed all 2,020 offered
+requests per arm, with zero adaptive actions. P99 was 48.77 ms
+static, 44.35 threshold, 49.56 queue-aware, 61.19 SLO-aware and
+73.22 optimizer. Background goodput ranged from 4.51 to
+4.56 Mbit/s. These results retain an unfavorable optimizer outcome.
+With identical kernel allocations, the observed P99 differences
+cannot establish an adaptation effect. Neither series established
+convergence at the configured 18 ms objective.
+
+## Scoped live actuator verification
+
+The Fedora 45 ARM64 fixture used a dedicated 20 Mbit/s veth
+bottleneck. One authorized ceiling change reduced the observed
+critical wire rate from 19.13 to 8.88 Mbit/s with readback of the
+9 Mbit/s ceiling. This tested enforcement of a declared limit.
+
+Four simultaneously backlogged TCP classes then exercised a
+separate reservation transfer. The application objective input was
+a fixed synthetic 80 ms trace. The traffic counters and writes
+were real. HTB changed critical from 6 to 7 Mbit/s and background
+from 6 to 5 Mbit/s. Critical wire rate increased from 5.97 to
+6.97 Mbit/s, while background fell from 5.97 to 4.98 Mbit/s,
+crossing the 15% budget. The recorded class Jain index fell
+from 0.9622 to 0.9436. The application fixture had unchanged
+histogram P99 and the verdict was harmful. Verified compensation
+restored the earlier rates and preserved the authorized ceiling.
+The reservation transaction took 33.52 ms across preflight, write
+and verification, and the verdict was evaluated 4.17 s after
+kernel confirmation. The fixture also verified external capacity
+drift refusal and namespace cleanup. Raw evidence is in
+results/action-validation/actuator.log.

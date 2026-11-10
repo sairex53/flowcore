@@ -34,7 +34,10 @@ return to the previous verified allocation through the existing
 transaction. Regression checks cover application errors and deadline
 misses, conditional P99, background class throughput under comparable
 demand, the protected background floor and Jain fairness among the same
-set of active classes. Class throughput is a kernel byte-counter rate.
+set of materially active classes, each carrying at least 1% of the
+observed class byte rate. Incidental control traffic does not
+change that cohort. Deadline regression uses attempts with a
+reported deadline. Class throughput is a kernel byte-counter rate.
 The lab separately measures payload goodput and per-flow fairness.
 
 ## Configuration and actuator scope

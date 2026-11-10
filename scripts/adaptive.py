@@ -52,6 +52,7 @@ def objective(window, name, intent, minimum):
     return dict(state='violated' if bad else 'met' if valid else 'insufficient_data',
                 outside_deadband=outside_deadband, samples=samples, p99_us=p99, p50_us=app.get('p50_us'), p95_us=app.get('p95_us'),
                 error_ratio=app.get('error_ratio'), deadline_miss=app.get('deadline_miss') or 0,
+                deadline_reported=app.get('deadline_reported') or 0,
                 failures=failures, reports=app.get('ok', samples)+failures,
                 probe_overlap=app.get('probe_overlap', 0),
                 target_p99_us=target, throughput_kbit=kbit, desired_kbit=desired)
@@ -195,6 +196,7 @@ class Controller:
         self.predictor = Predictor()
         self.state.move('OBSERVING','explicit activation')
         self.current = dict(installed)
+        self.last_plan = None
         self.kernel_generation = scope.verified if scope else None
         self.allocation_confirmed = True
         self.mode, self.strategy = mode, strategy
@@ -275,6 +277,7 @@ class Controller:
         was_running = self.mode != 'off'
         self.mode = 'off'
         self.current = self.base = self.pending = None
+        self.last_plan = None
         self.kernel_generation = None
         self.allocation_confirmed = False
         self.state.move('DISABLED','lab detached')
@@ -650,10 +653,13 @@ class Controller:
                 fairness_loss=self.cfg.get('max_class_fairness_loss_pct', 5)/100
             ) if 'traffic_before' in old else dict(traffic_effect_observed=False,
                          background_throughput_regressed=False, fairness_regressed=False)
+            deadline_regressed = (measured['deadline_reported'] >= self.cfg['minimum_samples']
+                and before.get('deadline_reported', 0) >= self.cfg['minimum_samples']
+                and measured['deadline_miss']/measured['deadline_reported'] >
+                    before['deadline_miss']/before['deadline_reported'] + .02)
             degraded = (measured['reports'] >= self.cfg['minimum_samples'] and
                         ((measured['error_ratio'] or 0) > (before['error_ratio'] or 0)
-                         or measured['deadline_miss']/measured['reports'] >
-                            before['deadline_miss']/before['reports'] + .02))
+                         or deadline_regressed))
             latency_improved = (measured.get('p99_us') is not None and before['p99_us'] is not None
                                 and measured['p99_us'] < before['p99_us'] * .9)
             throughput_improved = (before['desired_kbit'] > 0 and measured.get('throughput_kbit') is not None
@@ -678,6 +684,7 @@ class Controller:
             harm = (degraded or p99_harm or other_harm or background_harm
                     or evidence['background_throughput_regressed'] or evidence['fairness_regressed'])
             keep = (comparable and not harm and evidence['traffic_effect_observed']
+                    and evidence.get('active_classes_comparable', False)
                     and (latency_improved or throughput_improved) and (not demanded or bg is not None))
             outcome = 'useful' if keep else 'harmful' if comparable and harm else 'inconclusive'
             self.action_counts[outcome] += 1
