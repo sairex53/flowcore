@@ -56,7 +56,7 @@ class Deployment(unittest.TestCase):
             directory=Path(temp);config=directory/'service.json'
             original=json.loads((ROOT/'config/service.json').read_text())
             config.write_text(json.dumps(original))
-            service=SimpleNamespace(config=load(config))
+            service=SimpleNamespace(config=load(config),control_only=False)
             ops=Operations(service,directory/'recovery.json',config);ops.start()
             candidate=copy.deepcopy(original);candidate['telemetry_seconds']=3
             config.write_text(json.dumps(candidate))
