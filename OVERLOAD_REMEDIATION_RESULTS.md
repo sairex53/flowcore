@@ -75,8 +75,8 @@ The separate confirmation at results/research-1794301242685434911
 contains ten fresh paired seeds, 20 infrastructure-valid trials and
 no altered thresholds. Git recorded 7cef71b with working-tree edits
 to diagnostics and reporting. The live classification and workload
-paths matched the preregistered implementation. The seal includes
-the source fingerprint and per-run raw hashes. The matrix outcome is
+paths matched the preregistered implementation. The campaign metadata
+records the source fingerprints. Per-run manifests seal raw hashes. The matrix outcome is
 FAILED_WORKLOAD because the original optimizer exceeded the failure
 limit. The failure effect uses the complete offered denominator.
 
@@ -135,12 +135,14 @@ configuration remains an explicit research arm.
   capacity changes. The repeated trials predate this snapshot
   generation field and retain the separate capacity and action logs.
 - The native build and CTest passed on Fedora ARM64 with 54 passes
-  and one privileged UDP fixture skipped in CTest. The runtime
+  and one privileged UDP fixture skipped in CTest. That fixture
+passed separately in a disposable network namespace. The runtime
   safety fixture passed, including stale proposals, wrong filters,
   partial writes, lost acknowledgement, verified compensation and
   daemon crashes. Staged installation and the installed SDK consumer
   passed. The advisory tests exercise stale observations, duplicate
-  sampling and lost IPC. Application-concurrency benefits and
+  sampling and lost IPC. A live daemon query confirmed the idle
+  owned-egress response and preserved the caller's concurrency. Application-concurrency benefits and
   automatic overload rollback remain unmeasured in this work.
 
 The primary, confirmation and gradual evidence digests verified.

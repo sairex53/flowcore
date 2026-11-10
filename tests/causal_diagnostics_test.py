@@ -111,7 +111,9 @@ class Engine(unittest.TestCase):
                 self.assertEqual(row['association'],'fd_and_sample')
                 self.assertEqual(row['processing'],50)
                 self.assertEqual(row['outcome'],'timeout')
-                self.assertNotIn(str(event['cookie']),json.dumps(row))
+                self.assertNotIn('cookie', row)
+                self.assertRegex(row['socket_ref'], r'^[0-9a-f]{16}$')
+                self.assertNotEqual(row['socket_ref'], f"{event['cookie']:016x}")
         with self.assertRaises(PermissionError):
             service.command(dict(op='incident_list'),uid=os.getuid()+1)
         with self.assertRaises(PermissionError):

@@ -153,6 +153,13 @@ def main():
             assert get('platform_policies')['revision']==2
 
             get('lab_up')
+            from overload import Pressure, cooperative_poll
+            wait(lambda: 'directions' in get('capacity_estimate'))
+            capacity = get('capacity_estimate')
+            assert capacity['scope'] == 'owned_lab_sender'
+            assert len(capacity['namespace_identity']) == 2 and capacity['sample_monotonic_ns'] > 0
+            advice = cooperative_poll(get, Pressure(), 8)
+            assert advice == dict(state='NORMAL', action='NO_INTERVENTION', recommended_concurrency=8), advice
             sender, receiver = get('inspect')['namespaces']
             inodes = get('research_snapshot')['namespaces']
             get('controller_start',strategy='optimizer')

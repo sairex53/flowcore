@@ -69,6 +69,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Network allocation | [Policy optimizer](POLICY_OPTIMIZER.md), [allocation results](OPTIMIZATION_RESULTS.md), [autotuning](AUTOTUNING.md), [experiment method](OPTIMIZATION_EXPERIMENTS.md), [autotuning results](AUTOTUNING_RESULTS.md) |
 | Current architecture | [NATIVE_CORE.md](NATIVE_CORE.md), [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Fresh performance evidence | [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) |
+| Overload and request failures | [Engine](OVERLOAD_ENGINE.md), [diagnostics](REQUEST_FAILURE_DIAGNOSTICS.md), [paired results](OVERLOAD_REMEDIATION_RESULTS.md) |
 | ECN and congestion feedback | [Engine](ECN_ENGINE.md), [feedback](CONGESTION_FEEDBACK.md), [measurements](ECN_BENCHMARKS.md) |
 | Deadline-aware networking | [Engine](DEADLINE_ENGINE.md), [admission](ADMISSION_CONTROL.md), [experiments](DEADLINE_EXPERIMENTS.md) |
 | Cooperative SLO | [Distributed engine](DISTRIBUTED_SLO.md), [request coordination](REQUEST_COORDINATION.md), [experiments](COOPERATIVE_RESULTS.md) |
