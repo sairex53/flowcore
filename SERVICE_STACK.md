@@ -58,8 +58,11 @@ startup and drain, and process RSS is a snapshot.
 Use the recorded Fedora RPM versions in
 [config/real-app-v2-fedora45.txt](config/real-app-v2-fedora45.txt) or a
 compatible environment. The test VM used Fedora 45 ARM64, Python 3.15
-and Linux 7.2.11-300.fc45.aarch64. Use the pinned gRPC dependencies in examples/real_apps/requirements.txt and the compatible distro build of
-psycopg on this VM. The QUIC worker uses a separate venv with
+and Linux 7.2.11-300.fc45.aarch64. Use the pinned gRPC dependencies
+in [requirements.txt](examples/real_apps/requirements.txt) and a
+compatible psycopg build. PostgreSQL fixtures use a bounded 128 MiB
+tmpfs for per-trial database state. This setup does not measure
+production database disk I/O. The QUIC worker uses a separate venv with
 [config/quic-requirements.txt](config/quic-requirements.txt).
 
 ```sh

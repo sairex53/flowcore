@@ -126,6 +126,7 @@ def launch_postgres(receiver, name, image, directory, log_stream, *, statement_s
             f'ns:{receiver}',
             '-e', 'POSTGRES_DB=postgres', '-e', 'POSTGRES_USER=postgres',
             '-e', 'POSTGRES_HOST_AUTH_METHOD=trust',
+            '--tmpfs', '/var/lib/postgresql/data:rw,size=128m,mode=0700',
             '-v', f'{schema}:/docker-entrypoint-initdb.d/10-flowcore.sql:ro,Z',
             image, *(['postgres','-c','shared_preload_libraries=pg_stat_statements'] if statement_stats else [])]
     process = subprocess.Popen(argv, stdout=log_stream, stderr=log_stream,
@@ -507,7 +508,7 @@ def run_trial(mode, rep, seed, args, output):
             if process:
                 stop(process)
         if db_name:
-            subprocess.run(['podman', 'rm', '--force', db_name],
+            subprocess.run(['podman', 'rm', '--force', '--volumes', db_name],
                            capture_output=True, timeout=15)
         if db is not None:
             stop(db)

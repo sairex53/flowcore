@@ -272,6 +272,7 @@ def test_postgres_schema_mount_uses_absolute_source():
         argv=start.call_args.args[0]
         source=argv[argv.index('-v')+1].split(':',1)[0]
         assert Path(source).is_absolute() and Path(source).is_file()
+        assert argv[argv.index('--tmpfs')+1] == '/var/lib/postgresql/data:rw,size=128m,mode=0700'
 
 
 def test_receiver_token_fd():
