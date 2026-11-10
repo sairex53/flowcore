@@ -664,11 +664,10 @@ def main():
             parser.error('install config/quic-requirements.txt in the HTTP/3 environment')
         quic_version = probe.stdout.strip()
     if args.grpc:
-        try:
-            import grpc  # noqa: F401
-            import grpc_tools  # noqa: F401
-        except ImportError:
-            parser.error('install examples/real_apps/requirements.txt for the gRPC lab')
+        probe = subprocess.run([sys.executable, '-B', APPS/'grpc_dependencies.py'],
+                               capture_output=True, text=True, timeout=5)
+        if probe.returncode:
+            parser.error(probe.stderr.strip()[:300])
     if args.postgres:
         try:
             import psycopg  # noqa: F401

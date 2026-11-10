@@ -9,7 +9,9 @@ Install optional dependencies:
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python3 -m pip install -r examples/real_apps/requirements.txt
+python3 -m venv build/grpc-venv
+. build/grpc-venv/bin/activate
+python -m pip install -r examples/real_apps/requirements.txt
 ```
 
 Generate protobuf stubs outside the source tree and start the server:

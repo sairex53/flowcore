@@ -200,11 +200,11 @@ def test_http_service():
 
 
 def test_grpc_example():
+    from grpc_dependencies import require_grpc
     try:
-        import grpc  # noqa: F401
-        import grpc_tools  # noqa: F401
-    except ImportError:
-        print('gRPC example test skipped: optional dependencies unavailable')
+        require_grpc(build_tools=True)
+    except RuntimeError as error:
+        print(f'gRPC example test skipped: {error}')
         return
     with tempfile.TemporaryDirectory(prefix='flowcore-grpc-test-') as directory:
         generated = Path(directory) / 'generated'

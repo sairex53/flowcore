@@ -4,6 +4,10 @@
 
 The build version is retained for existing API/package compatibility. No stable public-release claim is made.
 
+- The fresh candidate review restores daemon interface inventory and fixes measurement integrity for version 3 and in-flight rejections.
+- Release archives use committed sources only. Publication gates now cover reliability and API stability explicitly.
+- The trusted x86 validation builds digest-pinned tc and runs the owned namespace service and recovery checks.
+- The optional gRPC example pins a patched dependency set and rejects outdated runtimes.
 - Added owner-scoped workload discovery, concurrent owned-lab cgroup classification and explicit lifecycle limitations.
 - Extended isolated MPTCP experiments with endpoint backup policies and fallback confirmation.
 - Added opt-in native histogram summaries, versioned ABI, differential/concurrency/sanitizer tests and documented CPU/RSS/IPC tradeoffs.

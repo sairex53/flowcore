@@ -6,6 +6,10 @@ Use FLOWCORE to run isolated QoS experiments, observe Linux network state withou
 
 The repository uses Apache-2.0. The two eBPF sources also offer GPLv2 for kernel loading. Build version 0.2.0 is an experimental snapshot subject to the release gates. [License](LICENSE) · [Release readiness](RELEASE_READINESS.md)
 
+The current [release candidate review](FLOWCORE_1_0_READINESS.md) scopes
+the supported experiments, [fresh validation](INDEPENDENT_VALIDATION.md)
+and [held-out performance evidence](PERFORMANCE_EVIDENCE.md).
+
 ## Start with read-only monitoring
 
 Linux, GCC >=13, CMake, Ninja and Python >=3.12:

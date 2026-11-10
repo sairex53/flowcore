@@ -58,7 +58,7 @@ startup and drain, and process RSS is a snapshot.
 Use the recorded Fedora RPM versions in
 [config/real-app-v2-fedora45.txt](config/real-app-v2-fedora45.txt) or a
 compatible environment. The test VM used Fedora 45 ARM64, Python 3.15
-and Linux 7.2.11-300.fc45.aarch64. Use the distro builds of grpcio and
+and Linux 7.2.11-300.fc45.aarch64. Use the pinned gRPC dependencies in examples/real_apps/requirements.txt and the compatible distro build of
 psycopg on this VM. The QUIC worker uses a separate venv with
 [config/quic-requirements.txt](config/quic-requirements.txt).
 

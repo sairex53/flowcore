@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from grpc_dependencies import require_grpc
+
+require_grpc()
 if os.environ.get('FLOWCORE_GRPC_PROTO_DIR'):
     sys.path.insert(0, os.environ['FLOWCORE_GRPC_PROTO_DIR'])
 import grpc

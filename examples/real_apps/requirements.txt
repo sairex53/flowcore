@@ -1,4 +1,5 @@
 # Optional integrations; core HTTP examples use only Python's standard library.
-grpcio>=1.60
-grpcio-tools>=1.60
+grpcio==1.85.1
+grpcio-tools==1.85.1
+protobuf==7.36.2
 psycopg[binary]>=3.1
