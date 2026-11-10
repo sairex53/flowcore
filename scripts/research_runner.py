@@ -855,6 +855,9 @@ def trial(directory, m, rep, mode, seed=None):
                     result['measurement'] = measurement.classify(directory, result, m,
                         dict(start=host_before, end=host_after), runner_usage)
                     result['valid'] = result['measurement']['state'] != 'INVALID_INFRASTRUCTURE'
+                    if result['valid']:
+                        from overload import accounting
+                        result['request_accounting'] = accounting(directory, result, workload['payload_bytes'])
             save(directory/'result.json',result)
             return result
         finally:

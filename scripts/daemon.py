@@ -364,6 +364,8 @@ class Service:
                 end = time.monotonic_ns()
                 result = dict(begin_ns=begin, end_ns=end, tc=counters, links=links,
                               namespaces=[os.fstat(fd).st_ino for fd in lab.namespace_fds])
+                if lab.htb_safety:
+                    result['kernel_policy_generation'] = lab.htb_safety.view()['kernel_verified_generation']
                 if request.get('setup') is True:
                     result['setup'] = {name: (lab.output/name).read_text() for name in
                                        ('offloads-fc0.txt', 'offloads-fc1.txt', 'tcp.txt')}
