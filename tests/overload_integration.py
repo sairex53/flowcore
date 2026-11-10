@@ -47,7 +47,7 @@ def main():
             lab.start()
             lab.install_policy(policy, profile)
             legacy = probe(lab)
-            state = SimpleNamespace(research_mode=None, profile=profile, controller=None, research_link_up=True)
+            state = SimpleNamespace(lab=lab, research_mode=None, profile=profile, controller=None, research_link_up=True)
             update_conditions(state, lab, profile, 'optimizer-overload', 7, True)
             corrected = probe(lab)
             if not (legacy['standard'] >= 16 and legacy['background'] == 0

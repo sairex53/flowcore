@@ -9,8 +9,9 @@ default and host networking are unaffected.
 
 The candidate's TCP rules, HTB rates, ceilings, class priorities and
 fq_codel leaves are unchanged relative to the optimizer arm. The
-30% configured background reservation is shared by background TCP
-and UDP in the candidate. The remaining classes retain their existing
+30% baseline background reservation is shared by background TCP
+and UDP in the candidate. The pre-existing controller's 20%
+authorized adaptive floor remains in effect. The remaining classes retain their existing
 minimums. This protects a class allocation in the managed qdisc.
 Application throughput and per-flow fairness require separate checks.
 The two UDP rules are installed before workload release, after
@@ -72,7 +73,8 @@ The adapter queries capacity_estimate on the existing authenticated
 local socket. It accepts owned egress evidence in the same monotonic
 clock domain and tracks the namespace identity. The recommendation
 is 75% of the caller's current concurrency, rounded down with a floor
-of one. Apply it once per transition if appropriate for the workload.
+of one. The adapter emits it once per pressure episode and rearms after
+observed recovery or a change of owned namespace.
 On unavailable IPC, stale telemetry or unmanaged capacity it returns
 the original limit. The application remains responsible for queueing,
 admission, deadlines and shutdown. Polling is synchronous on the

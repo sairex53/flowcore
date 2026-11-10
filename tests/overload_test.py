@@ -43,6 +43,7 @@ class OverloadTest(unittest.TestCase):
         self.assertEqual(cooperative_poll(query, pressure, 12, now_ns=ns)['action'], 'NO_INTERVENTION')
         ns = 2*NANO
         self.assertEqual(cooperative_poll(query, pressure, 12, now_ns=ns)['recommended_concurrency'], 9)
+        self.assertEqual(cooperative_poll(query, pressure, 9, now_ns=ns)['recommended_concurrency'], 9)
 
         def lost_reply(_):
             raise EOFError('fixture')
@@ -52,6 +53,21 @@ class OverloadTest(unittest.TestCase):
         self.assertEqual(cooperative_poll(query, pressure, 12, now_ns=ns)['action'], 'NO_INTERVENTION')
         with self.assertRaises(ValueError):
             cooperative_poll(lost_reply, pressure, 0)
+
+    def test_cooperative_capacity_drop_during_counter_rebaseline(self):
+        pressure = Pressure()
+        pressure.scope = (1, 2)
+        pressure.observe(12000, .4, 0, NANO, now_ns=NANO)
+
+        def query(_):
+            return dict(scope='owned_lab_sender', namespace_identity=[1, 2], sample_age_seconds=0,
+                        sample_monotonic_ns=2*NANO,
+                        capacity_reductions=dict(egress=dict(before=12000, after=7000)))
+
+        answer = cooperative_poll(query, pressure, 12, now_ns=2*NANO)
+        self.assertEqual(answer['state'], 'CAPACITY_COLLAPSE')
+        self.assertEqual(answer['recommended_concurrency'], 9)
+        self.assertEqual(cooperative_poll(query, Pressure(), 12, now_ns=2*NANO)['action'], 'NO_INTERVENTION')
 
     def test_accounting_keeps_offer_and_failure_stage(self):
         with tempfile.TemporaryDirectory() as tmp:

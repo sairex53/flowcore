@@ -79,7 +79,11 @@ def accounting(directory, result, payload):
         if (not admitted and submitted) or (reason is None and not row['received_ns']):
             raise ValueError('outcome contradicts submission evidence')
         deadline = request.get('deadline_ms') or result.get('deadline_ms')
-        attained = None if deadline is None else reason is None and (completed_ns-reference)/1e6 <= float(deadline)
+        if deadline is not None:
+            deadline = float(deadline)
+            if not 0 < deadline <= 600000:
+                raise ValueError('invalid request deadline')
+        attained = None if deadline is None else reason is None and (completed_ns-reference)/1e6 <= deadline
         facts = dict(offered=1, scheduled=bool(row['scheduled_ns']), released=1,
                      admitted=admitted, rejected=not admitted, submission_attempted=submitted,
                      write_drained=bool(row['drained_ns']), completed=reason is None,
@@ -114,15 +118,30 @@ class Pressure:
         self.state = 'INSUFFICIENT_DATA'
         self.previous_capacity = None
         self.scope = None
+        self.advice_latched = False
         self.last_ns = None
         self.streak = 0
 
     def invalidate(self):
         self.state, self.streak, self.previous_capacity = 'INSUFFICIENT_DATA', 0, None
 
+    def fresh(self, sampled_ns, now_ns):
+        return (type(sampled_ns) is int and 0 <= now_ns-sampled_ns <= 3*NANO
+                and (self.last_ns is None or sampled_ns >= self.last_ns))
+
+    def reduction(self, before, after, sampled_ns, *, now_ns):
+        if (self.fresh(sampled_ns, now_ns) and sampled_ns != self.last_ns
+                and type(before) in (int, float) and type(after) in (int, float)
+                and self.previous_capacity == before and 0 < after <= .85*before):
+            self.state, self.streak = 'CAPACITY_COLLAPSE', 0
+            self.previous_capacity, self.last_ns = after, sampled_ns
+            return self.state
+        if self.fresh(sampled_ns, now_ns) and sampled_ns == self.last_ns:
+            return self.state
+        raise ValueError('capacity transition lacks a matching fresh baseline')
+
     def observe(self, capacity_kbit, utilization, backlog, sampled_ns, *, now_ns):
-        if (type(sampled_ns) is not int or not 0 <= now_ns-sampled_ns <= 3*NANO
-                or self.last_ns is not None and sampled_ns < self.last_ns
+        if (not self.fresh(sampled_ns, now_ns)
                 or type(backlog) is not int or backlog < 0
                 or type(capacity_kbit) not in (int, float) or not 0 < capacity_kbit <= 1_000_000_000
                 or type(utilization) not in (int, float) or not 0 <= utilization <= 2):
@@ -259,22 +278,30 @@ def cooperative_poll(query, pressure, concurrency, *, now_ns=None):
         if (evidence.get('scope') != 'owned_lab_sender' or not isinstance(age, (float, int))
                 or not 0 <= age <= 3):
             raise ValueError('missing fresh owned egress evidence')
-        egress = evidence['directions']['egress']
-        if egress['capacity_source'] != 'qdisc_readback' or not egress['controllable']:
-            raise ValueError('capacity is outside the controlled scope')
         scope = tuple(evidence['namespace_identity'])
         if len(scope) != 2:
             raise ValueError('missing namespace identity')
         if scope != pressure.scope:
             pressure.invalidate()
-            pressure.last_ns, pressure.scope = None, scope
+            pressure.last_ns, pressure.scope, pressure.advice_latched = None, scope, False
         sampled = evidence['sample_monotonic_ns']
-        state = pressure.observe(egress['capacity_kbit'], egress['utilization'], egress['backlog_bytes'],
-                                 sampled, now_ns=now_ns)
+        reduction = evidence.get('capacity_reductions', {}).get('egress')
+        if reduction:
+            state = pressure.reduction(reduction['before'], reduction['after'], sampled, now_ns=now_ns)
+        else:
+            egress = evidence['directions']['egress']
+            if egress['capacity_source'] != 'qdisc_readback' or not egress['controllable']:
+                raise ValueError('capacity is outside the controlled scope')
+            state = pressure.observe(egress['capacity_kbit'], egress['utilization'], egress['backlog_bytes'],
+                                     sampled, now_ns=now_ns)
     except (OSError, EOFError, KeyError, RuntimeError, ValueError, TypeError):
         pressure.invalidate()
         return dict(state='INSUFFICIENT_DATA', **advise('INSUFFICIENT_DATA', None, concurrency))
-    return dict(state=state, **advise(state, sampled, concurrency, now_ns=now_ns))
+    if state == 'NORMAL':
+        pressure.advice_latched = False
+    action = advise(state if not pressure.advice_latched else 'HOLD', sampled, concurrency, now_ns=now_ns)
+    pressure.advice_latched |= action['action'] == 'RECOMMEND_BACKPRESSURE'
+    return dict(state=state, **action)
 
 
 def guard(summary, baseline, candidate):

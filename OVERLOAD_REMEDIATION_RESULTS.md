@@ -31,6 +31,7 @@ workload blocks.
 
 ~~~sh
 sudo build/flowcore bench run scenarios/overload-collapse-paired.json
+sudo build/flowcore bench run scenarios/overload-confirmation-paired.json
 sudo build/flowcore bench run scenarios/overload-gradual-smoke.json
 sudo python3 -B tests/overload_integration.py
 build/flowcore bench verify results/EXPERIMENT/summary.json
@@ -40,3 +41,30 @@ build/flowcore bench overload-guard results/EXPERIMENT/summary.json \
 
 [Engine and safety boundary](OVERLOAD_ENGINE.md) ·
 [Request accounting](REQUEST_FAILURE_DIAGNOSTICS.md)
+
+## Five-arm Fedora ARM64 matrix
+
+The Fedora 45 ARM64 VM ran kernel 7.2.11-300.fc45.aarch64. The 50
+trials are retained at results/research-1794300550608516030. Forty-nine
+had valid infrastructure. Trial r4-optimizer crossed the prespecified
+release P99 limit at 98.65 ms versus 25 ms and the loop dispatch limit
+at 143.05 ms versus 110 ms. That record includes its 61 observed
+failures. It invalidates the prespecified primary comparison.
+The table is descriptive for the infrastructure-valid records.
+
+| Arm | Runs | Failed / offered | Conditional P99 (ms) | Deadline attainment | TCP / UDP background (Mbit/s) | Total (Mbit/s) | Jain index | CPU (s) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Shaped fq_codel | 10 | 0 / 6670 | 977.86 | 51.50% | 4.81 / 0.54 | 9.18 | 0.9977 | 1.087 |
+| CAKE best effort | 10 | 0 / 6670 | 665.51 | 49.48% | 4.71 / 0.48 | 9.01 | 0.9989 | 1.068 |
+| Tuned static HTB | 10 | 591 / 6670 | 4196.80 | 47.30% | 4.90 / 0.68 | 9.05 | 0.9976 | 1.108 |
+| Optimizer | 9 | 528 / 6003 | 4259.59 | 46.93% | 4.86 / 0.67 | 9.01 | 0.9964 | 1.157 |
+| Corrected optimizer | 10 | 0 / 6670 | 2648.14 | 54.42% | 4.72 / 0.64 | 9.18 | 0.9964 | 1.185 |
+
+Rates and percentiles are medians of per-run metrics. Jain is the
+background TCP stream index. CPU covers daemon and child processes.
+The optimizer arms issued zero adaptive actions. Planned capacity
+updates are separate from adaptive updates. The lower success-only
+P99 of CAKE and shaped fq_codel coexisted with lower deadline
+attainment than the corrected optimizer in this matrix. That is a
+distribution tradeoff. Background TCP and UDP goodput both remain
+visible because the correction makes them share a class.
