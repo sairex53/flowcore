@@ -1,5 +1,6 @@
 """Argparse integration for the FLOWCORE Research Lab."""
 import json
+import os
 from pathlib import Path
 
 from benchmark import ROOT
@@ -80,7 +81,11 @@ def add_commands(commands):
 
 
 def dispatch(args):
+    from paths import INSTALLED
     action = args.action
+    writes_output = (args.command, action) in {('bench', 'report'), ('bench', 'tune-static'), ('optimize', 'plan')}
+    if INSTALLED and os.geteuid() == 0 and writes_output:
+        raise PermissionError('installed report and plan publishing requires an unprivileged account')
     if args.command == 'optimize':
         from autotune import make_plan, load_plan, load_job, results as optimize_results, run_plan, status as optimize_status
         from paths import RESULTS

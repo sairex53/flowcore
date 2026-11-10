@@ -612,6 +612,9 @@ def paired_report(rows):
 
 
 def main():
+    from paths import INSTALLED
+    if INSTALLED and os.geteuid() == 0:
+        raise SystemExit('installed privileged experiments must use the isolated network helper')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--modes', default=','.join(MODES))
     parser.add_argument('--stack', action='store_true', help='gateway/backend/PostgreSQL stack')

@@ -81,8 +81,9 @@ def proc(unit, expected_capability):
 
 
 def network_state():
-    return [json.loads(run('/usr/bin/ip', '-j', 'link', 'show')),
-            json.loads(run('/usr/bin/tc', '-j', 'qdisc', 'show'))]
+    return [json.loads(run('/usr/bin/ip', *arguments)) for arguments in
+            (('-j','link','show'), ('-j','address','show'), ('-j','route','show','table','all'),
+             ('-6','-j','route','show','table','all'))] + [json.loads(run('/usr/bin/tc','-j','qdisc','show'))]
 
 
 def network(name, *args, ok=True):
