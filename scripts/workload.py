@@ -504,7 +504,7 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 rows.append(row + ((admission.budget_ms(index), '') if admission else ()))
                 if timing:
                     timing.writerow((index, 'inflight_limit', scheduled_ns, released, None, None, None,
-                                     None, None, None, None, completed_ns))
+                                     None, None, None, completed_ns))
                 window.append((5000, 'inflight_limit'))
                 if pacing and traffic_class == 'critical':
                     pacing_window.append((5000, 'inflight_limit'))

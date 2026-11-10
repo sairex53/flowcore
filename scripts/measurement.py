@@ -87,6 +87,8 @@ def partial_timing_ledger(directory):
     count = 0
     for row in reader:
         count += 1
+        if None in row or any(value is None for value in row.values()):
+            return dict(available=True, valid=False, rows=count, error='INVALID_TIMING_ROW_WIDTH')
         idx = int(row['id'])
         if count > MAX_REQUESTS or not 0 <= idx < MAX_REQUESTS or idx in ids:
             return dict(available=True, valid=False, rows=count, error='DUPLICATE_OR_OUT_OF_RANGE_TIMING_ID')
@@ -113,6 +115,8 @@ def timing_audit(directory, result, manifest):
         if tuple(reader.fieldnames or ()) != TIMING_FIELDS:
             raise ValueError('INVALID_TIMING_SCHEMA')
         for row in reader:
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError('INVALID_TIMING_ROW_WIDTH')
             idx = int(row['id'])
             if not 0 <= idx < result['offered'] or idx in trace or len(trace)>=MAX_REQUESTS:
                 raise ValueError('DUPLICATE_OR_OUT_OF_RANGE_TIMING_ID')

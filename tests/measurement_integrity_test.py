@@ -87,6 +87,50 @@ class MeasurementIntegrity(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'TIMESTAMP_CONVERSION'):
                 measurement.timing_audit(directory,result,manifest)
 
+    def test_open_loop_admission_failure_has_terminal_timestamp(self):
+        import asyncio
+        import io
+        import time
+        from workload import client
+
+        async def exercise(directory):
+            async def slow_echo(reader, writer):
+                try:
+                    await reader.readexactly(8)
+                    await asyncio.sleep(.15)
+                    writer.write(b'R'*64)
+                    await writer.drain()
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+
+            async with await asyncio.start_server(slow_echo,'127.0.0.1',0) as server:
+                port=server.sockets[0].getsockname()[1]
+                trace=io.StringIO()
+                profile=dict(integrity={'load':'open','self_test':'none','concurrency':0},
+                             server_address='127.0.0.1', ports={'critical':port},
+                             priority_weights={'critical':100}, seed=3,
+                             phases=[dict(seconds=1,requests_per_second=70,background_streams=0)],
+                             start_monotonic=time.monotonic()+.05,max_inflight=1)
+                with self.assertRaises(SystemExit) as rejected:
+                    await client(directory,1,70,8,port,port+1,0,research=profile,timing_stream=trace)
+                self.assertEqual(rejected.exception.code,2)
+                rows=list(csv.DictReader(io.StringIO(trace.getvalue())))
+                limited=[row for row in rows if row['outcome']=='inflight_limit']
+                self.assertTrue(limited)
+                self.assertTrue(all(row['completed_ns'] and None not in row for row in limited))
+                (directory/'request-timing.csv').write_text(trace.getvalue())
+                summary=json.loads((directory/'client.json').read_text())
+                manifest=dict(integrity=profile['integrity'],workload={'phases':profile['phases']})
+                self.assertEqual(measurement.timing_audit(directory,summary,manifest)['records'],70)
+                with (directory/'request-timing.csv').open('a') as stream:
+                    stream.write(trace.getvalue().splitlines()[1]+',extra\n')
+                with self.assertRaisesRegex(ValueError,'INVALID_TIMING_ROW_WIDTH'):
+                    measurement.timing_audit(directory,summary,manifest)
+
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as raw:
+            asyncio.run(exercise(Path(raw)))
+
     def test_classifier_flags_inconsistent_wire_throughput(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build') as raw:
             directory=Path(raw)
