@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "raw_artifacts": "results (retain invalid and failed trials)",
+  "primary": {
+    "min_pairs": 10,
+    "confidence": 0.95,
+    "p99_relative_regression": 0.1,
+    "attainment_absolute_regression": 0.05,
+    "failure_absolute_regression": 0.01,
+    "background_relative_regression": 0.1
+  },
+  "groups": [
+    {
+      "id": "mixed",
+      "argv": [
+        "build/flowcore",
+        "bench",
+        "run",
+        "scenarios/release-rc-mixed.json"
+      ]
+    },
+    {
+      "id": "hybrid",
+      "argv": [
+        "build/flowcore",
+        "bench",
+        "run",
+        "scenarios/release-rc-hybrid.json"
+      ]
+    },
+    {
+      "id": "udp",
+      "argv": [
+        "python3",
+        "-B",
+        "scripts/udp_intent_lab.py",
+        "--families",
+        "4",
+        "--repetitions",
+        "10",
+        "--duration",
+        "2",
+        "--seed",
+        "196751903"
+      ]
+    },
+    {
+      "id": "mptcp",
+      "argv": [
+        "build/flowcore",
+        "platform",
+        "path-lab",
+        "--modes",
+        "static-qos",
+        "linux-default",
+        "path-aware",
+        "--repetitions",
+        "10",
+        "--duration",
+        "9",
+        "--seed",
+        "2004826428",
+        "--preference",
+        "reliability",
+        "--deadline-ms",
+        "85"
+      ]
+    },
+    {
+      "id": "application",
+      "argv": [
+        "python3",
+        "-B",
+        "scripts/real_app_lab.py",
+        "--stack",
+        "--profile",
+        "dynamic",
+        "--modes",
+        "static,hybrid",
+        "--repetitions",
+        "10",
+        "--duration",
+        "8",
+        "--seed",
+        "725003425",
+        "--capacity-kbit",
+        "2400",
+        "--pool-size",
+        "6",
+        "--concurrency",
+        "6",
+        "--rate",
+        "42",
+        "--db-rate",
+        "14",
+        "--deadline-ms",
+        "60",
+        "--background-bytes",
+        "3145728",
+        "--output",
+        "results/rc-application-725003425"
+      ]
+    },
+    {
+      "id": "linux-default",
+      "argv": [
+        "build/flowcore",
+        "bench",
+        "run",
+        "scenarios/release-rc-linux.json"
+      ]
+    }
+  ]
+}

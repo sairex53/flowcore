@@ -1,0 +1,158 @@
+{
+  "version": 3,
+  "topology": "veth-pair",
+  "network": {
+    "bandwidth_kbit": 10400,
+    "base_rtt_ms": 9,
+    "jitter_ms": 0.3,
+    "loss_pct": 0,
+    "reorder_pct": 0,
+    "reverse_bandwidth_kbit": 7800,
+    "loss_correlation_pct": 0,
+    "duplicate_pct": 0
+  },
+  "workload": {
+    "phases": [
+      {
+        "seconds": 2,
+        "requests_per_second": 34,
+        "background_streams": 1,
+        "udp_streams": 1
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 91,
+        "background_streams": 4,
+        "udp_streams": 3
+      },
+      {
+        "seconds": 3,
+        "requests_per_second": 76,
+        "background_streams": 6,
+        "udp_streams": 2
+      },
+      {
+        "seconds": 2,
+        "requests_per_second": 49,
+        "background_streams": 2,
+        "udp_streams": 1
+      }
+    ],
+    "payload_bytes": 7168,
+    "max_inflight": 144,
+    "priority_weights": {
+      "critical": 80,
+      "interactive": 15,
+      "standard": 5
+    },
+    "bulk_bytes_per_stream": 0,
+    "warmup_seconds": 1,
+    "deadline_ms": 100,
+    "critical_services": 2,
+    "connection_reuse": "none",
+    "address_family": "ipv4",
+    "background_kbit_per_stream": 0,
+    "udp_kbit_per_stream": 384
+  },
+  "duration_seconds": 10,
+  "repetitions": 10,
+  "seed": 1095321007,
+  "modes": [
+    "static",
+    "fq_codel",
+    "cake",
+    "optimizer"
+  ],
+  "static_critical_pct": 30,
+  "controller": {
+    "target_p99_ms": 65,
+    "window_seconds": 2,
+    "minimum_samples": 20,
+    "bpf": "off"
+  },
+  "faults": [],
+  "regression": {
+    "p99_ms": 0.1,
+    "total_mbps": 0.1,
+    "jain_index": 0.02,
+    "cpu_seconds": 0.15,
+    "adjustments_per_minute": 2,
+    "event_loss": 5
+  },
+  "gates": {
+    "baseline": "static",
+    "min_pairs": 10,
+    "margins": {
+      "p99_ms": 0.1,
+      "total_mbps": 0.1,
+      "failure_ratio": 0.01,
+      "deadline_attainment": 0.05
+    }
+  },
+  "stages": [
+    {
+      "name": "warmup",
+      "seconds": 1
+    },
+    {
+      "name": "baseline",
+      "seconds": 1
+    },
+    {
+      "name": "congestion",
+      "seconds": 2
+    },
+    {
+      "name": "fault_injection",
+      "seconds": 2
+    },
+    {
+      "name": "recovery",
+      "seconds": 2
+    },
+    {
+      "name": "post_recovery_validation",
+      "seconds": 2
+    }
+  ],
+  "events": [
+    {
+      "id": "capacity-collapse",
+      "at_seconds": 4,
+      "duration_seconds": 2.8,
+      "effects": {
+        "bandwidth_kbit": 4650
+      }
+    },
+    {
+      "id": "reverse-pressure",
+      "at_seconds": 5,
+      "duration_seconds": 2.5,
+      "effects": {
+        "reverse_bandwidth_kbit": 4200
+      }
+    }
+  ],
+  "integrity": {
+    "version": 3,
+    "load": "open",
+    "concurrency": 0,
+    "ordering": "counterbalanced",
+    "cooldown_seconds": 1,
+    "self_test": "none",
+    "max_release_p99_ms": 25,
+    "max_loop_lag_ms": 110,
+    "max_cpu_psi_ratio": 0.15,
+    "max_steal_ratio": 0.04,
+    "max_counter_gap_ratio": 0.2,
+    "max_failure_ratio": 0.05,
+    "min_successful_requests": 100,
+    "bootstrap_resamples": 1200,
+    "power_direction_probability": 0.8,
+    "extra_gates": {
+      "background_mbps": 0.1,
+      "jain_index": 0.03,
+      "cpu_seconds": 0.2
+    }
+  }
+}
