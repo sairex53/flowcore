@@ -135,6 +135,12 @@ def verify(snapshot, mode, expected_capacity, configured_ports):
     filters = {(row['protocol'], opt.get('classid'), opt['keys'].get('dst_port'))
                for row in tc['filter'] if (opt := row.get('options', {})).get('keys')
                and opt['keys'].get('ip_proto') == 'tcp'}
+    udp_filters = {(row['protocol'], opt.get('classid'), opt['keys'].get('dst_port'))
+                   for row in tc['filter'] if (opt := row.get('options', {})).get('keys')
+                   and opt['keys'].get('ip_proto') == 'udp'}
+    expected_udp = {(family, '1:20', 9002) for family in ('ip', 'ipv6')} if mode == 'optimizer-overload' else set()
+    if udp_filters != expected_udp:
+        raise RuntimeError('UDP flower readback disagrees with experimental configuration')
     leaf = {row['parent']: row['kind'] for row in tc['qdisc'] if 'parent' in row}
     rates = {row['handle']: (row['rate'], row['ceil']) for row in tc['class'] if row.get('class') == 'htb'}
     readback = None

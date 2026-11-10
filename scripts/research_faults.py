@@ -157,6 +157,22 @@ def update_conditions(service, lab, profile, mode, seed, link_up, settings=None,
                     lab.tc('qdisc','add','dev','fc0','parent','1:20',
                            'fq' if mode in FQ_MODES else 'pfifo' if mode=='fifo' else 'fq_codel',
                            'limit','1000')
+        if mode == 'optimizer-overload':
+            scope = lab.htb_safety
+            if scope is None:
+                raise RuntimeError('overload classifier requires owned HTB')
+            lab.assert_htb_layout(scope.layout)
+            before = scope.layout
+            for preference, family in enumerate(('ip', 'ipv6'), 50):
+                lab.assert_owned_sender()
+                lab.tc('filter', 'add', 'dev', 'fc0', 'parent', '1:', 'protocol', family,
+                       'pref', preference, 'flower', 'ip_proto', 'udp', 'dst_port', 9002,
+                       'classid', '1:20')
+            after = lab.htb_layout()
+            if (after[:2] != before[:2] or any(rule not in after[2] for rule in before[2])
+                    or len(after[2]) != len(before[2]) + 4):
+                raise RuntimeError('overload classifier changed unexpected HTB objects')
+            scope.layout = after
         if mode == 'pacing-htb-fq':
             scope = lab.htb_safety
             if scope:

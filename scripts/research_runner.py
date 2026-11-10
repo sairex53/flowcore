@@ -433,6 +433,8 @@ def trial(directory, m, rep, mode, seed=None):
                 request('controller_shadow',strategy='predictive')
             elif mode == 'slo-shadow':
                 request('controller_shadow',strategy='slo')
+            elif mode == 'optimizer-overload':
+                request('controller_start', strategy='optimizer')
             elif mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') or mode.startswith('slo'):
                 request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') else 'slo')
             control_dir = (Path(resources.enter_context(tempfile.TemporaryDirectory(
