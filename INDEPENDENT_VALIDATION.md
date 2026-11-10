@@ -63,3 +63,69 @@ x86_64 VM and a bounded connection-scale test. [Stock-tool run](https://github.c
 
 No independently available physical Linux host or hardware timestamp
 setup was identified. The ARM64 and x86_64 results are VM evidence.
+
+## Fedora ARM64 execution
+
+Fedora 45 ran in a QEMU ARM64 VM with kernel 7.2.11-300.fc45.aarch64.
+Clean C++23 builds exercised BPF enabled with the optional TLS/FlowID
+targets and BPF disabled in the RPM build. Each CTest run recorded
+53 passes and one privilege-dependent skip. The skipped UDP fixture
+subsequently passed in a private network namespace, including marked
+IPv4 and IPv6 sends and eight software TX timestamps per family.
+Staged installation, read-only startup, SDK consumer builds and removal
+passed. The pinned gRPC loopback passed. The OSV query returned zero
+matches for the checked replacement pins and their two resolved
+transitive packages at audit time.
+
+All seven scoped privileged scripts passed. They covered the helper,
+daemon, recovery and fault injection, both flow-engine integrations,
+held-connection scale, and the hybrid lab. The scale fixture held
+100, 1,000 and 10,000 TCP connections. At 10,000 it recorded zero
+failed requests, 8.18 ms successful P99, 131,100 KiB peak process RSS
+and seven descriptors before and after. That run lasted 1.41 seconds,
+capped in-flight requests at 128 and limited INET_DIAG output to 128
+entries. It provides scale evidence for held sockets and bounded
+snapshots.
+
+Two further application lab fixes were necessary. A relative PostgreSQL
+schema bind was interpreted as a named volume and invalidated all
+twenty starts. An absolute bind with a regression fixture repaired
+startup. The next attempt accumulated anonymous data volumes.
+A 128 MiB tmpfs and explicit volume cleanup contained the allocation.
+The subsequent twenty-trial comparison completed with the Podman
+volume inventory unchanged at 144. Both earlier attempts remain
+in the local evidence.
+
+## Package verification
+
+The unsigned RPM and SRPM were built from c7dba30. The standard host
+build reported a missing OpenSSL development package. The successful
+build used staged headers from the Fedora-signed OpenSSL development
+RPM with matching host libraries and an explicit rpmbuild dependency
+check override. RPM digests, package metadata and the extracted
+read-only runtime passed verification. Extracted-runtime checks
+covered reload, SIGKILL recovery, a corrupt checkpoint, concurrent
+clients, rapid restarts and socket cleanup.
+
+A network-disabled Fedora ARM64 OCI container completed the file
+transaction test from 0.2.0-1.fc45 to 0.2.0-2.fc45 and erase.
+The modified configuration survived upgrade, RPM retained it as
+.rpmsave after erase, the program file was removed, and the operator
+state marker survived. The fixture used unsigned local packages and
+disabled dependency resolution and package scripts. The host-side
+private RPM database fixture could not acquire its initialization lock
+under the current policy. Dependency-resolved lifecycle, scriptlets,
+systemd startup and installed active SELinux policy remain separate
+gates.
+
+| c7dba30 artifact | SHA-256 |
+| --- | --- |
+| Source tarball | abfb18166157e169dd12969b27b667f71095af243ed8999f2ded0939db41e702 |
+| Fedora ARM64 binary RPM | 1073c716dd068f1cfd56801f32f6a0f676b47b52b889805d2fff7cc19cc40281 |
+| Source RPM | edb64256983a0b47c0b03849fec569faf9bb02d2d7067a7f64c0c7510fe2da49 |
+
+Execution logs, advisory and secret-scan scope, artifact digests and
+the pinned OCI manifest are retained under results/rc-audit-811e70e.
+The OCI image digest is
+sha256:8dc967a06fc261fd485e44b13fbbad1fea6fcc158a7ae3dcdf7a7b615a4ce4d8.
+[Passing source CI](https://github.com/sairex53/flowcore/actions/runs/42732864869)

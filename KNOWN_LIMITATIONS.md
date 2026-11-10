@@ -45,3 +45,29 @@ inconclusive findings within their original experimental scopes.
 
 [Runtime safety](RUNTIME_SAFETY.md) · [Threat model](SECURITY.md)
 · [1.0 readiness](FLOWCORE_1_0_READINESS.md)
+
+## Latest held-out comparisons
+
+- The optimizer had 550 failed attempts out of 6,670 under mixed
+  TCP/UDP capacity collapse, versus zero with shaped fq_codel.
+  Conditional P99 was 4,637 ms and 2,137 ms respectively.
+- Hybrid V3 exceeded the preregistered failure threshold in every
+  trial. Neither arm executed an adaptive change. The HTTP/PostgreSQL
+  hybrid comparison also executed zero changes, with inconclusive
+  HTTP P99 and high HTTP failure counts in both arms.
+- The per-message UDP SDK's lower conditional P99 than CAKE DiffServ
+  came with higher worker CPU in one IPv4 workload shape. The
+  incremental P99 effect relative to the direct prototype was
+  inconclusive. The MPTCP preference improved P99 against fixed
+  preference in the routed impairment profile. Its result against
+  default Linux MPTCP remained inconclusive.
+- Capacity readback in the mixed and hybrid experiments times the
+  scheduled fault update. Controller update cost requires an actual
+  actuation. The path preference experiment separately observed a
+  median 20.37 ms verified update.
+- Physical Linux hosts, installed active SELinux and systemd
+  lifecycle, dependency-resolved package upgrades, complete package
+  signing, a cross-version API matrix and a public reviewed raw
+  bundle remain outside the validated scope.
+
+[Trial counts, uncertainty and artifact index](PERFORMANCE_EVIDENCE.md)

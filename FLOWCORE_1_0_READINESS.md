@@ -27,3 +27,22 @@ not substitute for signed distribution.
 Read the [feature matrix](FEATURE_MATRIX.md), [execution and audit
 evidence](INDEPENDENT_VALIDATION.md), [performance evidence](PERFORMANCE_EVIDENCE.md),
 [known limitations](KNOWN_LIMITATIONS.md) and [research roadmap](NEXT_RESEARCH_ROADMAP.md).
+
+## Candidate disposition
+
+The final campaigns retain 173 measured trials. Several exceeded
+prespecified failure thresholds, and earlier invalid or interrupted
+campaigns remain in the evidence ledger. Shaped fq_codel led the
+optimizer on conditional P99 and failures in the mixed collapse
+profile. The held-out Hybrid V3 and application comparisons observed
+zero policy actions. The scoped UDP latency result carried a CPU
+cost, and the MPTCP comparison against Linux defaults remained
+inconclusive. These outcomes support experimental evaluation.
+
+The publication check returns eight blocking gates. Source builds,
+namespace tests and the staged monitor have execution evidence on
+VMs. The unsigned RPM passed extracted-runtime tests and isolated
+file transactions. The remaining release work includes dependency-
+resolved signed distribution, installed active security testing,
+restart and soak coverage, an API compatibility contract, portable
+hardware evidence and publication of a privacy-reviewed raw bundle.
