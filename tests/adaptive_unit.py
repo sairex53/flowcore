@@ -170,7 +170,7 @@ class Unit(unittest.TestCase):
         self.assertEqual(engine.mode,'off')
         self.assertEqual(engine.state.name,'SAFE_FALLBACK')
 
-    def test_probe_cutoff_is_full_evaluation_window_and_deadline_is_independent(self):
+    def test_probe_cutoff_is_kernel_commit_and_deadline_is_independent(self):
         observer = Observer(copy.deepcopy(DEFAULT))
         service = Mock(observer=observer, profile={'bandwidth_kbit':10000}, active='default',
                        config={'telemetry_seconds':1,
@@ -203,13 +203,13 @@ class Unit(unittest.TestCase):
                 observer.sampled_ns = time.monotonic_ns()
                 engine.tick()
         self.assertIsNotNone(engine.pending)
-        self.assertEqual(observer.probe_start_ns, engine.pending['start_ns'])
+        self.assertEqual(observer.probe_start_ns, verified)
         self.assertGreater(engine.pending['start_ns'], verified)
         now = engine.pending['start_ns']+10_000_000
         with patch.object(observer,'clock',return_value=now):
             observer.ingest(dict(op='request_sample',service='demo',outcome='ok',duration_us=20000),0)
         app = observer.window(now,2)['application']['demo']['application']
-        self.assertEqual(app['probe_overlap'],1)
+        self.assertEqual(app['probe_overlap'],0)
 
     def test_completed_windows_exclude_partial_and_track_probe_overlap(self):
         now = 10_100_000_000
@@ -227,6 +227,37 @@ class Unit(unittest.TestCase):
         with self.assertRaises(ValueError):
             observer.ingest(dict(op='request_sample', service='demo', outcome='ok',
                                  duration_us=10, completed_ns=now+1), 0)
+
+    def test_class_traffic_effect_and_regression_budget(self):
+        from adaptive_validation import assess, hold_reason
+        base = dict(target_kbit=6000, target_backlog_bytes=15000, background_kbit=6000,
+                    background_demanded=True, active_classes=['critical','background'],
+                    jain_active_classes=.98)
+        self.assertFalse(assess(base, base, background_loss=.15, fairness_loss=.05)['traffic_effect_observed'])
+        moved = assess(base, dict(base, target_kbit=7000, background_kbit=4900,
+                                  jain_active_classes=.9), background_loss=.15, fairness_loss=.05)
+        self.assertTrue(moved['target_served_increased'])
+        self.assertTrue(moved['background_throughput_regressed'])
+        self.assertTrue(moved['fairness_regressed'])
+        idle = dict(pressure=False, queue_signal_present=True, objectives={'demo':dict(samples=0)})
+        self.assertEqual(hold_reason(idle, 100)[0], 'NO_CONGESTION')
+        self.assertEqual(hold_reason(dict(idle, pressure=True), 100)[0], 'INSUFFICIENT_SAMPLES')
+
+    def test_stale_generation_blocks_before_planning_or_restoring(self):
+        observer = Observer(copy.deepcopy(DEFAULT))
+        observer.sampled_ns = time.monotonic_ns()
+        service = Mock(observer=observer, error=None, profile={'bandwidth_kbit':10000},
+                       config={'telemetry_seconds':1}, telemetry={'class':[]})
+        service.lab.htb_safety.verified = 9
+        engine = Controller(service)
+        engine.mode = 'active'
+        engine.kernel_generation = 8
+        engine.current = {name:(1000,10000) for name in CLASSES}
+        with patch.object(engine, 'write') as write:
+            engine.tick()
+        write.assert_not_called()
+        self.assertEqual(engine.mode, 'off')
+        self.assertEqual(engine.history[0]['trace']['detail_code'], 'stale_kernel_generation')
 
     def test_transaction_rolls_back_partial_write_and_refuses_drift(self):
         before = {'critical':(3000,10000),'interactive':(2000,10000),

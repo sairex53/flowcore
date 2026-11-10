@@ -61,7 +61,7 @@ def estimate(window, name, intent, measured, rate, minimum):
     demand = measured['throughput_kbit']
     network = ((root.get('utilization') or 0) >= .75 and backlog >= 2
                and demand is not None and demand >= .9*rate)
-    quality = (measured['samples'] >= max(100,minimum) and not measured['failures'])
+    quality = (measured['samples'] >= max(100,minimum) and not measured['failures'] and measured['p99_us'] is not None)
     return dict(network_congestion=network, eligible=network and quality,
                 success_samples=measured['samples'], minimum_successes=max(100,minimum),
                 backlogged_samples=backlog, demand_kbit=demand,

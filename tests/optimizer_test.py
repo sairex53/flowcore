@@ -145,6 +145,26 @@ class Optimizer(unittest.TestCase):
         result = control.optimization_preview('adaptive')
         self.assertEqual(result['optimizer']['conflicts'],[dict(code='UNSUPPORTED_SCHEDULER',scheduler='cake')])
 
+    def test_optimizer_holds_when_congested_service_meets_objective(self):
+        service = Service(load(ROOT/'config/service.json'))
+        control = service.controller
+        control.optimizer = self.solver
+        control.registry.register(dict(name='demo'), os.getuid(), os.getpid())
+        current = dict(critical=(6000,20000), interactive=(4000,20000),
+                       standard=(4000,20000), background=(6000,20000))
+        window = dict(queue=dict(root=dict(utilization=.99),
+            critical=dict(backlogged_samples=5, bytes_per_second=750000),
+            background=dict(backlogged_samples=5, bytes_per_second=750000)),
+            backlog=dict(p95_bytes=16000),
+            application=dict(demo=dict(application=dict(samples=150, ok=150, p99_us=15000))))
+        decision = plan(control, window, current, objective)
+        self.assertTrue(decision['pressure'])
+        self.assertTrue(decision['attribution']['demo']['eligible'])
+        self.assertEqual(decision['action'], 'hold')
+        from adaptive_validation import hold_reason
+        self.assertEqual(hold_reason(decision, 100),
+                         ('CHANGE_NOT_WORTH_COST', 'service_objectives_within_deadband'))
+
     def test_convergence_requires_two_healthy_unchanged_windows(self):
         plan = {'controller':dict(window_seconds=2,minimum_samples=100,target_p99_ms=25)}
         healthy = dict(application=dict(samples=120,p99_us=15000))

@@ -166,7 +166,7 @@ def counter_deltas(samples, field):
 
 def convergence(samples, history, transitions, m, start, mode):
     """Two nonoverlapping healthy critical windows at the same allocation after recovery."""
-    if mode not in ('threshold','slo','queue-aware','optimizer'):
+    if mode not in ('threshold','slo','queue-aware','slo-aware','optimizer','optimizer-local'):
         return None
     confirmed = (item.get('kernel_confirmed_ns',item.get('applied_ns')) for item in transitions
                  if not item.get('initial') and item.get('status') not in ('failed','invalid'))
@@ -331,6 +331,8 @@ def trial(directory, m, rep, mode, seed=None):
     cfg['observability']['bpf'] = m['controller']['bpf']
     cfg['adaptive'].update(window_seconds=m['controller']['window_seconds'],
                            minimum_samples=m['controller']['minimum_samples'])
+    if mode == 'optimizer-local':
+        cfg['adaptive']['require_full_transport'] = False
     if mode == 'slo-single':
         cfg['adaptive']['maximum_actions'] = 1
     if mode == 'slo-long':
@@ -433,7 +435,7 @@ def trial(directory, m, rep, mode, seed=None):
                 request('controller_shadow',strategy='predictive')
             elif mode == 'slo-shadow':
                 request('controller_shadow',strategy='slo')
-            elif mode == 'optimizer-overload':
+            elif mode in ('optimizer-overload', 'optimizer-local'):
                 request('controller_start', strategy='optimizer')
             elif mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') or mode.startswith('slo'):
                 request('controller_start',strategy=mode if mode in ('threshold','queue-aware','slo-aware','hybrid','predictive','optimizer') else 'slo')

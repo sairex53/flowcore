@@ -218,6 +218,8 @@ class Service:
                 'platform_workload_attach', 'controller_shadow', 'controller_observe', 'controller_fallback', 'controller_stop'):
             raise ValueError('Hybrid V3 lab owns policy until teardown')
         if self.research_mode in ('integrated', 'pacing-guarded', 'hybrid-v3') and op in ('controller_start', 'strategy_activate'):
+            self.controller.record(result='blocked', reason_code='POLICY_CONFLICT',
+                                   detail_code='socket_actuator_owns_resource')
             raise ValueError('integrated research reserves adaptive authority for owned sockets')
         if op.startswith('strategy_'):
             return self.strategy_engine.command(request)

@@ -15,9 +15,9 @@ FQ_MODES = ('tcp-fq', 'pacing-static', 'pacing-queue', 'pacing-slo', 'pacing-low
             'tcp-cubic', 'tcp-reno', 'tcp-bbr')
 PACING_HTB_MODES = ('pacing-htb-fq', 'pacing-htb-static', 'pacing-htb-queue', 'pacing-htb-slo', 'pacing-guarded', 'hybrid-v3')
 PACING_MODES = (*FQ_MODES, 'pacing-hybrid', *PACING_HTB_MODES)
-MODES = (*LEGACY_MODES, 'linux-default', 'cake-diffserv', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'optimizer-overload', 'online-select', *PACING_MODES, *ecn_policy.MODES, *deadline_runtime.MODES)
+MODES = (*LEGACY_MODES, 'linux-default', 'cake-diffserv', 'htb-fq_codel', *STATIC_MODES, 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'optimizer-overload', 'optimizer-local', 'online-select', *PACING_MODES, *ecn_policy.MODES, *deadline_runtime.MODES)
 V2_MODES = tuple(mode for mode in MODES if mode != 'linux')
-CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'optimizer-overload', 'online-select', 'pacing-hybrid', *PACING_HTB_MODES, *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
+CLASSIFIED = frozenset((*STATIC_MODES, 'static', 'threshold', 'slo', 'htb-fq_codel', 'slo-shadow', 'slo-single', 'slo-long', 'static-step', 'queue-aware', 'slo-aware', 'hybrid', 'predictive', 'predictive-shadow', 'optimizer', 'optimizer-overload', 'optimizer-local', 'online-select', 'pacing-hybrid', *PACING_HTB_MODES, *ecn_policy.CLASSIFIED, *deadline_runtime.MODES[1:]))
 GATE_METRICS = ('p99_ms', 'total_mbps', 'failure_ratio', 'deadline_attainment')
 DEFAULT_LIMITS = dict(p99_ms=.10, total_mbps=.10, jain_index=.02,
                       cpu_seconds=.15, adjustments_per_minute=2, event_loss=5)

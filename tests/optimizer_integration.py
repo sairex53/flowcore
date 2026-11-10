@@ -45,49 +45,92 @@ def wait(check, timeout=12):
     raise AssertionError('expected optimizer state did not converge')
 
 
-def live_transfer(env, namespaces, expected_inodes):
+@contextmanager
+def loaded(namespaces, expected_inodes, ports):
     stop = Event()
-    with ExitStack() as stack, ThreadPoolExecutor(max_workers=4) as pool:
+    with ExitStack() as stack, ThreadPoolExecutor(max_workers=2*len(ports)) as pool:
         fds = [stack.enter_context(open(f'/proc/{pid}/ns/net','rb')).fileno() for pid in namespaces]
         assert [os.fstat(fd).st_ino for fd in fds] == expected_inodes
         assert os.stat('/proc/self/ns/net').st_ino not in expected_inodes
         lab = HeldNamespaces(fds)
         futures = []
-        for port in (9000,9001):
+        for port in ports:
             client,peer = tcp_pair(lab,stack,'10.203.0.2',port,False)
             futures.extend((pool.submit(send,stop,client),pool.submit(receive,stop,peer)))
         try:
-            def probe():
-                # Fixed SLO trace to exercise the actuator deterministically.
-                # The congestion, class counters and applied rates are real.
-                for _ in range(22):
-                    request(env,op='request_sample',service='demo',outcome='ok',duration_us=80000,deadline_ms=25)
-                control = request(env,op='controller_status')
-                if control['error']:
-                    raise RuntimeError(control['error'])
-                return control if control['pending'] else None
-            # Spread fixed observations across complete independent windows.
-            end = time.monotonic()+20
-            while time.monotonic() < end:
-                if control := probe():
-                    rows = request(env,op='research_snapshot')['tc']['traffic_classes']
-                    assert control['allocation']['critical'][0] == rows['critical']['rate']//125 > 6000
-                    assert control['allocation']['background'][0] == rows['background']['rate']//125 >= 4000
-                    assert all(rows[name]['stats']['bytes'] > 0 for name in ('critical','background'))
-                    record = next(row for row in reversed(request(env,op='policy_history')) if row['result']=='pending')
-                    assert record['timing']['transaction']=='VERIFIED'
-                    assert len(record['optimizer']['diff'])==2
-                    assert record['optimizer']['alternatives']['adaptive']['disposition']=='selected'
-                    print(json.dumps(dict(allocation=control['allocation'],timing=record['timing'],
-                                          solve_ns=record['optimizer']['solver_and_bridge_ns'])),flush=True)
-                    return
-                time.sleep(.12)
-            last = request(env,op='controller_status')
-            raise AssertionError('no verified reservation transfer: '+json.dumps(last['last_decision']))
+            yield
         finally:
             stop.set()
             for task in futures:
                 task.result(timeout=2)
+
+
+def measured_rate(env, traffic_class):
+    def sample():
+        value = request(env, op='research_snapshot')
+        return value['end_ns'], value['tc']['traffic_classes'][traffic_class]['stats']['bytes']
+    start, before = sample()
+    time.sleep(1.2)
+    end, after = sample()
+    return (after-before)*8e6/(end-start)
+
+
+def live_ceiling(env, namespaces, inodes):
+    with loaded(namespaces, inodes, (9000,)):
+        time.sleep(.7)
+        before = measured_rate(env, 'critical')
+        call(env, 'controller', 'start', '--strategy', 'optimizer')
+        wait(lambda: allocation(env)['critical']==(6000,9000))
+        time.sleep(.6)
+        after = measured_rate(env, 'critical')
+        events = request(env, op='controller_trace')['events']
+        applied = next(row for row in reversed(events) if row['result']=='verified')
+        proposed = next(row for row in reversed(events) if row['result']=='proposed'
+                        and row['proposal_id']==applied['proposal_id'])
+        assert applied['trace']['reason_code']=='ACTION_APPLIED' and proposed['kernel_diff']
+        assert before > 12000 and 7800 <= after <= 10300, (before, after)
+        print(json.dumps(dict(fixture='authorized_ceiling', before_wire_kbit=before,
+                              after_wire_kbit=after, proposal=proposed, applied=applied['timing'])), flush=True)
+
+
+def live_transfer(env, namespaces, expected_inodes):
+    with loaded(namespaces, expected_inodes, (9000,9001,9002,9003)):
+        def probe():
+            # Fixed SLO samples make policy eligibility deterministic. Real TCP
+            # traffic and HTB counters determine whether the actuator has an effect.
+            for _ in range(22):
+                request(env, op='request_sample', service='demo', outcome='ok', duration_us=80000, deadline_ms=25)
+            state = request(env, op='controller_status')
+            if state['error']:
+                raise RuntimeError(state['error'])
+            return state
+
+        pending = verdict = None
+        end = time.monotonic()+24
+        while time.monotonic() < end:
+            state = probe()
+            if pending is None and state['pending']:
+                rows = request(env, op='research_snapshot')['tc']['traffic_classes']
+                assert state['allocation']['critical'][0] == rows['critical']['rate']//125 > 6000
+                assert state['allocation']['background'][0] == rows['background']['rate']//125 >= 4000
+                assert all(rows[name]['stats']['bytes'] > 0 for name in rows)
+                pending = next(row for row in reversed(request(env, op='policy_history')) if row['result']=='pending')
+                assert pending['timing']['transaction']=='VERIFIED'
+                assert len(pending['optimizer']['diff'])==2
+                assert pending['optimizer']['alternatives']['adaptive']['disposition']=='selected'
+            if pending and not state['pending']:
+                verdict = next(row for row in reversed(request(env, op='policy_history'))
+                               if row.get('proposal_id')==pending['proposal_id'] and 'outcome' in row)
+                break
+            time.sleep(.12)
+        if not verdict:
+            raise AssertionError('no verified reservation verdict: '+json.dumps(state['last_decision']))
+        assert verdict['trace']['reason_code']=='ACTION_REVERTED' and verdict['outcome'] in ('harmful','inconclusive')
+        assert verdict['effect_evidence']['traffic_effect_observed'], verdict
+        assert allocation(env)['critical']==(6000,9000)
+        print(json.dumps(dict(fixture='reservation_probe', allocation=pending['proposed'],
+                              timing=pending['timing'], solve_ns=pending['optimizer']['solver_and_bridge_ns'],
+                              verdict=verdict)), flush=True)
 
 
 def main():
@@ -122,8 +165,7 @@ def main():
                 wait(lambda:any(row['result']=='hypothetical' for row in request(env,op='policy_history')))
                 assert allocation(env)==before
                 call(env,'controller','stop')
-                call(env,'controller','start','--strategy','optimizer')
-                wait(lambda:allocation(env)['critical']==(6000,9000))
+                live_ceiling(env,namespaces,inodes)
                 live_transfer(env,namespaces,inodes)
                 call(env,'controller','stop')
                 assert allocation(env)['critical']==(6000,9000)

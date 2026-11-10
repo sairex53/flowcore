@@ -33,7 +33,8 @@ STRATEGIES = {'static': static, 'threshold': threshold, 'slo': slo_aware,
 DEFAULT = dict(window_seconds=4, minimum_samples=20, enter_windows=2, cooldown_seconds=4,
                background_floor_pct=20, step_pct=5, maximum_boost_pct=15, maximum_actions=8, recovery_windows=3, maximum_reversals=2,
                evaluation_seconds=None, minimum_probe_successes=100,
-               max_background_loss_pct=15, max_class_fairness_loss_pct=5)
+               max_background_loss_pct=15, max_class_fairness_loss_pct=5,
+               max_p99_loss_pct=10, require_full_transport=True)
 
 
 def objective(window, name, intent, minimum):
@@ -259,7 +260,8 @@ class Controller:
                     timing = self.write(fallback)
                     self.action_counts['reverted'] += 1
                     self.record(result='restored_baseline', reason=reason, allocation=fallback, previous=before,
-                                timing=timing, reason_code='ACTION_REVERTED', detail_code='static_fallback')
+                                timing=timing, reason_code='ACTION_REVERTED', detail_code='static_fallback',
+                                proposal_id=(self.pending or {}).get('proposal_id'))
         finally:
             self.mode = 'off'
             self.pending = None
@@ -336,7 +338,11 @@ class Controller:
     def plan(self, window, current):
         if self.strategy == 'optimizer':
             observer = self.service.observer
-            return policy_optimizer.plan(self,window,current,objective,allow_adaptive=not observer.truncated)
+            partial_allowed = observer.truncated and not self.transport_required() and self.egress_gate()
+            plan = policy_optimizer.plan(self, window, current, objective,
+                                         allow_adaptive=not observer.truncated or partial_allowed)
+            return dict(plan, transport_complete=not observer.truncated,
+                        transport_required=self.transport_required())
         cfg, capacity = self.cfg, self.capacity()
         root = window['queue'].get('root', {})
         bg = window['queue'].get('background', {})
@@ -362,7 +368,7 @@ class Controller:
                                      borrowed=queue.get('borrowed'), guaranteed_kbit=rate,
                                      eligible=queue.get('backlogged_samples', 0) >= 2
                                      and (measured['throughput_kbit'] or 0) >= .9*rate
-                                     and not measured['failures']
+                                     and not measured['failures'] and measured['p99_us'] is not None
                                      and measured['samples'] >= self.probe_minimum())
         predictive = (dict(experimental=True,error=self.predictor.error,timing=self.prediction_timing(),
             forecasts={cls:{k:v for k,v in methods.get('hybrid',{}).items() if k!='input'}
@@ -459,6 +465,9 @@ class Controller:
             return dict(plan, action='hold', proposed=None,
                         bottleneck_gate='fresh controllable egress pressure required')
         return plan
+
+    def transport_required(self):
+        return self.strategy != 'optimizer' or self.cfg.get('require_full_transport', True) or self.egress_gate is None
 
     def probe_minimum(self):
         return max(self.cfg['minimum_samples'], self.cfg.get('minimum_probe_successes', LATENCY_MIN_SAMPLES))
@@ -559,7 +568,9 @@ class Controller:
             self.record(result='blocked', reason_code='POLICY_CONFLICT', detail_code='stale_kernel_generation',
                         actual_generation=scope_generation)
             # A stale writer must not try to restore over a newer verified policy.
-            self.detach()
+            self.mode = 'off'
+            self.stop('stale kernel generation')
+            self.current = None
             self.error = 'controller kernel generation is stale'
             return
         if actual != expected:
@@ -630,7 +641,8 @@ class Controller:
             demanded = post_bg.get('backlogged_samples', 0) > 0
             enough = measured['samples'] >= self.probe_minimum()
             offered_ratio = before['reports']*evaluation_seconds/seconds
-            comparable = (enough and not observer.truncated and not measured['probe_overlap']
+            comparable = (enough and (not observer.truncated or not self.transport_required())
+                          and not measured['probe_overlap']
                           and .8*offered_ratio <= measured['reports'] <= 1.2*offered_ratio)
             traffic = validation.frame(post, intent['priority'])
             evidence = validation.assess(old['traffic_before'], traffic,
@@ -657,10 +669,14 @@ class Controller:
                 prior = old.get('peer_before',{}).get(peer,{})
                 if after['failures'] or (after['samples'] >= self.probe_minimum()
                         and prior.get('samples',0) >= self.probe_minimum()
+                        and after['p99_us'] is not None and prior.get('p99_us') is not None
                         and after['p99_us'] > prior['p99_us']*1.1):
                     other_harm = True
             background_harm = demanded and bg is not None and bg < plan['background_floor_kbit']*.8
-            harm = degraded or other_harm or background_harm or evidence['background_throughput_regressed'] or evidence['fairness_regressed']
+            p99_harm = (measured['p99_us'] is not None and before['p99_us'] is not None
+                        and measured['p99_us'] > before['p99_us'] * (1+self.cfg.get('max_p99_loss_pct', 10)/100))
+            harm = (degraded or p99_harm or other_harm or background_harm
+                    or evidence['background_throughput_regressed'] or evidence['fairness_regressed'])
             keep = (comparable and not harm and evidence['traffic_effect_observed']
                     and (latency_improved or throughput_improved) and (not demanded or bg is not None))
             outcome = 'useful' if keep else 'harmful' if comparable and harm else 'inconclusive'
@@ -676,6 +692,9 @@ class Controller:
                         reason_code='ACTION_APPLIED' if keep else 'ACTION_REVERTED',
                         detail_code='post_action_verdict', outcome=outcome, proposal_id=old.get('proposal_id'),
                         traffic_before=old.get('traffic_before'), traffic_after=traffic, effect_evidence=evidence,
+                        regression_checks=dict(application=degraded, p99=p99_harm, peer=other_harm,
+                                               background_floor=background_harm),
+                        transport_complete=not observer.truncated,
                         before=before, measured=measured, background_kbit=bg, allocation=self.current,
                         post_start_ns=old['start_ns'], post_end_ns=old['end_ns'],
                         time_to_evaluate_ns=began-old['verified_ns'],
@@ -744,7 +763,7 @@ class Controller:
         traffic_class = self.registry.rows[name]['intent']['priority'] if 'service' in plan else None
         effect = validation.effect(plan, traffic_class)
         proposal_id = self.event_sequence + 1
-        self.record(result='proposed', reason_code='ACTION_BLOCKED', detail_code='awaiting_kernel_verification',
+        self.record(result='proposed', reason_code='ACTION_PROPOSED', detail_code='awaiting_kernel_verification',
                     proposal_id=proposal_id, effect=effect, action=plan['action'],
                     previous=previous, proposed=plan['proposed'], kernel_diff=adaptive_tc.diff(previous, plan['proposed']))
         timing = self.write(plan['proposed'])
@@ -754,7 +773,7 @@ class Controller:
         if 'service' in plan:
             verified = timing['verified_ns']
             start = ((verified + NANO - 1)//NANO + 1)*NANO
-            observer.probe_start_ns = start
+            observer.probe_start_ns = verified
             evaluation_seconds = self.cfg.get('evaluation_seconds') or seconds
             self.pending = dict(service=name, allocation=previous, before=plan['objectives'][name],
                                 start_ns=start, end_ns=start+evaluation_seconds*NANO, verified_ns=verified,

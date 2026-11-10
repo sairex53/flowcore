@@ -1,0 +1,130 @@
+{
+  "version": 3,
+  "topology": "veth-pair",
+  "network": {
+    "bandwidth_kbit": 12000,
+    "base_rtt_ms": 6,
+    "jitter_ms": 0,
+    "loss_pct": 0,
+    "reorder_pct": 0,
+    "reverse_bandwidth_kbit": 10000,
+    "loss_correlation_pct": 0,
+    "duplicate_pct": 0
+  },
+  "workload": {
+    "phases": [
+      {
+        "seconds": 20,
+        "requests_per_second": 110,
+        "background_streams": 5,
+        "udp_streams": 0
+      }
+    ],
+    "payload_bytes": 6144,
+    "max_inflight": 144,
+    "priority_weights": {
+      "critical": 100,
+      "interactive": 0,
+      "standard": 0
+    },
+    "bulk_bytes_per_stream": 0,
+    "warmup_seconds": 1,
+    "deadline_ms": 50,
+    "critical_services": 1,
+    "connection_reuse": "none",
+    "address_family": "ipv4",
+    "background_kbit_per_stream": 0,
+    "udp_kbit_per_stream": 0
+  },
+  "duration_seconds": 20,
+  "repetitions": 2,
+  "seed": 2019022577,
+  "modes": [
+    "optimizer",
+    "optimizer-local"
+  ],
+  "static_critical_pct": 30,
+  "controller": {
+    "target_p99_ms": 18,
+    "window_seconds": 4,
+    "minimum_samples": 20,
+    "bpf": "off"
+  },
+  "faults": [],
+  "regression": {
+    "p99_ms": 0.1,
+    "total_mbps": 0.1,
+    "jain_index": 0.02,
+    "cpu_seconds": 0.15,
+    "adjustments_per_minute": 2,
+    "event_loss": 5
+  },
+  "gates": {
+    "baseline": "optimizer",
+    "min_pairs": 10,
+    "margins": {
+      "p99_ms": 0.1,
+      "total_mbps": 0.1,
+      "failure_ratio": 0.01,
+      "deadline_attainment": 0.05
+    }
+  },
+  "stages": [
+    {
+      "name": "warmup",
+      "seconds": 1
+    },
+    {
+      "name": "baseline",
+      "seconds": 2
+    },
+    {
+      "name": "congestion",
+      "seconds": 4
+    },
+    {
+      "name": "fault_injection",
+      "seconds": 5
+    },
+    {
+      "name": "recovery",
+      "seconds": 4
+    },
+    {
+      "name": "post_recovery_validation",
+      "seconds": 4
+    }
+  ],
+  "events": [
+    {
+      "id": "late-reverse-load",
+      "at_seconds": 17,
+      "duration_seconds": 1,
+      "effects": {
+        "reverse_bandwidth_kbit": 9500
+      }
+    }
+  ],
+  "integrity": {
+    "version": 3,
+    "load": "open",
+    "concurrency": 0,
+    "ordering": "counterbalanced",
+    "cooldown_seconds": 1,
+    "self_test": "none",
+    "max_release_p99_ms": 25,
+    "max_loop_lag_ms": 110,
+    "max_cpu_psi_ratio": 0.15,
+    "max_steal_ratio": 0.04,
+    "max_counter_gap_ratio": 0.2,
+    "max_failure_ratio": 0.05,
+    "min_successful_requests": 100,
+    "bootstrap_resamples": 1200,
+    "power_direction_probability": 0.8,
+    "extra_gates": {
+      "background_mbps": 0.1,
+      "jain_index": 0.03,
+      "cpu_seconds": 0.2
+    }
+  }
+}
