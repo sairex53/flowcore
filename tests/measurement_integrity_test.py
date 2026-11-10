@@ -216,6 +216,43 @@ class MeasurementIntegrity(unittest.TestCase):
         data=self.synthetic(repetitions=5)
         self.assertEqual(compare_integrity(data,data,'static','fifo')['outcome'],'INCONCLUSIVE')
 
+    def test_v3_manifest_comparison_accepts_v3_pairs(self):
+        data=self.synthetic()
+        data['version']=3
+        data['manifest']['version']=3
+        outcome=compare_integrity(data,data,'static','fifo')
+        self.assertTrue(outcome['comparable_manifest_and_environment'])
+        self.assertEqual(outcome['outcome'],'PASS')
+
+    def test_client_exit_is_not_an_infrastructure_failure(self):
+        data=self.synthetic()
+        row=next(row for row in data['runs'] if row['artifact']=='r2-fifo')
+        row.update(valid=False,measurement={'state':'FAILED_WORKLOAD','issues':[{'code':'CLIENT_EXIT'}]})
+        outcome=compare_integrity(data,data,'static','fifo')
+        self.assertEqual(outcome['outcome'],'FAILED_WORKLOAD')
+        self.assertEqual(outcome['failed_workload_blocks'],['r2-fifo'])
+        self.assertFalse(outcome['schedule_mismatches'])
+        row['artifact_integrity']={'verified':False}
+        self.assertEqual(compare_integrity(data,data,'static','fifo')['outcome'],'INVALID EXPERIMENT')
+
+    def test_verify_rejects_incomplete_campaign_even_if_every_available_digest_matches(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from research_cli import dispatch
+        args=SimpleNamespace(command='bench',action='verify',summary=Path('test.json'))
+        data=self.synthetic(repetitions=1)
+        with patch('research_cli.load_summary',return_value=data):
+            for row in data['runs']:
+                row['artifact_integrity']={'verified':True}
+            report, status=dispatch(args)
+            self.assertTrue(report['verified'])
+            self.assertEqual(status,0)
+            data['runs'].pop()
+            report, status=dispatch(args)
+            self.assertFalse(report['complete'])
+            self.assertFalse(report['verified'])
+            self.assertEqual(status,2)
+
     def test_williams_order_balances_positions_and_carryover(self):
         modes=['a','b','c','d']
         orders=measurement.block_order(modes,4,random.Random(13),'counterbalanced')

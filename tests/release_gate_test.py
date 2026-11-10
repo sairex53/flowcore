@@ -1,6 +1,10 @@
 """Publication checks are fail-closed; tests never select the project license."""
 import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -29,6 +33,37 @@ class GateTest(unittest.TestCase):
             (root / "README.md").write_text("large fixture " * 20)
             (root / "LICENSE").symlink_to(root / "README.md")
             self.assertFalse(gate.evaluate(root, data)["publication_allowed"])
+
+    @unittest.skipUnless(shutil.which('git'), 'Git is required to test source packaging')
+    def test_archive_excludes_untracked_and_rejects_modified_source(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build') as directory:
+            root = Path(directory)
+            (root/'packaging').mkdir()
+            archive_script = root/'packaging/source-archive.sh'
+            shutil.copy2(ROOT/'packaging/source-archive.sh', archive_script)
+            cmake = root/'CMakeLists.txt'
+            cmake.write_text('project(flowcore VERSION 0.2.0 LANGUAGES CXX)\n')
+            git = ['git','-C',directory]
+            subprocess.run([*git,'init','-q'],check=True)
+            subprocess.run([*git,'add','--','packaging','CMakeLists.txt'],check=True)
+            subprocess.run([*git,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+                            'commit','-qm','tracked release input'],check=True)
+            epoch = subprocess.check_output([*git,'log','-1','--format=%ct'],text=True).strip()
+            env = dict(os.environ,SOURCE_DATE_EPOCH=epoch)
+            (root/'packaging'/'untracked-fixture').write_text('private fixture')
+            output = subprocess.check_output([archive_script],env=env,text=True).strip()
+            path = root/output
+            first = path.read_bytes()
+            with tarfile.open(path) as archive:
+                self.assertIn('flowcore-0.2.0/CMakeLists.txt',archive.getnames())
+                self.assertFalse(any('untracked-fixture' in name for name in archive.getnames()))
+            subprocess.run([archive_script],env=env,check=True,capture_output=True)
+            self.assertEqual(path.read_bytes(),first)
+            cmake.write_text(cmake.read_text()+'# modified\n')
+            rejected = subprocess.run([archive_script],env=env,capture_output=True,text=True)
+            self.assertNotEqual(rejected.returncode,0)
+            self.assertIn('clean tracked checkout',rejected.stderr)
+            self.assertEqual(path.read_bytes(),first)
 
     def test_invalid_input(self):
         cases = [None, {}, dict(version=True), {"unexpected": 1}]

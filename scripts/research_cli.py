@@ -129,8 +129,11 @@ def dispatch(args):
             raise ValueError('summary does not contain Measurement Integrity V3 artifacts')
         rows = [dict(artifact=row['artifact'], **row.get('artifact_integrity',dict(verified=False)))
                 for row in data['runs']]
-        valid = all(row.get('verified') for row in rows)
-        return dict(summary=str(args.summary),verified=valid,runs=rows), 0 if valid else 2
+        expected = data['manifest']['repetitions'] * len(data['manifest']['modes'])
+        complete = data.get('status') == 'complete' and len(rows) == expected
+        valid = complete and all(row.get('verified') for row in rows)
+        return dict(summary=str(args.summary),verified=valid,complete=complete,
+                    expected_runs=expected,runs=rows), 0 if valid else 2
     if action=='compare':
         baseline = load_summary(args.baseline)
         candidate = load_summary(args.candidate)

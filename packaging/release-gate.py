@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-GATES={'functional','security','performance_evidence','reproducibility','portability','documentation','packaging'}
+GATES={'functional','security','performance_evidence','reproducibility','portability','documentation','packaging','reliability','api_stability'}
 STATES={'PASS','PARTIAL','FAIL','BLOCKED','UNVERIFIED'}
 DOCS=('README.md','CONTRIBUTING.md','SECURITY.md','FEATURE_MATRIX.md',
-      'BENCHMARK_REPORT.md','RELEASE_READINESS.md','OSS_ROADMAP.md')
+      'BENCHMARK_REPORT.md','RELEASE_READINESS.md','OSS_ROADMAP.md',
+      'FLOWCORE_1_0_READINESS.md','INDEPENDENT_VALIDATION.md','PERFORMANCE_EVIDENCE.md',
+      'KNOWN_LIMITATIONS.md','NEXT_RESEARCH_ROADMAP.md')
 
 def evaluate(root,data):
     if (not isinstance(data,dict) or set(data)!={'version','scope','license_approved','production_ready','gates'}

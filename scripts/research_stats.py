@@ -247,7 +247,7 @@ def _integrity_compatible(base, candidate):
                      and base.get('environment') == candidate.get('environment'))
     fingerprints_match = (all(base['environment'].get(k) == candidate['environment'].get(k) for k in env)
                           and all(base['environment'].get(k) is not None for k in env))
-    return (left == right and base.get('version') == candidate.get('version') == 2
+    return (left == right and base.get('version') == candidate.get('version') in (2,3)
             and (same_campaign or fingerprints_match)
             and base.get('block_seeds') == candidate.get('block_seeds'))
 
@@ -270,20 +270,24 @@ def compare_integrity(base, candidate, baseline, contender):
                 and len(left) == base['manifest']['repetitions']
                 and len(right) == candidate['manifest']['repetitions'])
     selected_rows = (*left_rows,*right_rows)
+    failed_workloads = [row['artifact'] for row in selected_rows
+                        if row.get('measurement',{}).get('state') == 'FAILED_WORKLOAD']
     invalid_rows = [row['artifact'] for row in selected_rows
-                    if not row.get('valid') or row.get('measurement',{}).get('state') == 'INVALID_INFRASTRUCTURE'
+                    if (not row.get('valid') and row.get('measurement',{}).get('state') != 'FAILED_WORKLOAD')
+                    or row.get('measurement',{}).get('state') == 'INVALID_INFRASTRUCTURE'
                     or row.get('artifact_integrity',{}).get('verified') is False]
     schedule_mismatches = []
     if candidate['manifest']['integrity']['load'] == 'open':
         for repetition in sorted(left.keys() & right.keys()):
             a,b = left[repetition],right[repetition]
+            if any(not row.get('valid') or row.get('measurement',{}).get('state') == 'FAILED_WORKLOAD'
+                   for row in (a,b)):
+                continue
             a_hash = a.get('measurement',{}).get('timing',{}).get('scheduled_workload_sha256')
             b_hash = b.get('measurement',{}).get('timing',{}).get('scheduled_workload_sha256')
             if not a_hash or a_hash != b_hash:
                 schedule_mismatches.append(f'{a["artifact"]}<->{b["artifact"]}')
     invalid_rows.extend(f'{pair}: OPEN_SCHEDULE_FINGERPRINT_MISMATCH' for pair in schedule_mismatches)
-    failed_workloads = [row['artifact'] for row in selected_rows
-                        if row.get('measurement',{}).get('state') == 'FAILED_WORKLOAD']
     insufficient_runs = [row['artifact'] for row in selected_rows
                          if row.get('measurement',{}).get('state') == 'INCONCLUSIVE']
     invalid = not compatible or not seeds_match or not complete or bool(invalid_rows)

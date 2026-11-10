@@ -10,6 +10,8 @@
     "reproducibility": "PARTIAL",
     "portability": "PARTIAL",
     "documentation": "PASS",
-    "packaging": "PARTIAL"
+    "packaging": "PARTIAL",
+    "reliability": "PARTIAL",
+    "api_stability": "PARTIAL"
   }
 }

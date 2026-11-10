@@ -15,8 +15,7 @@ jobs:
       - name: Prepare ephemeral runner tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y iproute2 ethtool libcap2-bin
-          echo "FLOWCORE_TC=$(command -v tc)" >> "$GITHUB_ENV"
+          sudo apt-get install -y iproute2 ethtool libcap2-bin flex bison libmnl-dev libbpf-dev
           mkdir -p build
           uname -a > build/portability-environment.log
           systemd-detect-virt >> build/portability-environment.log || true
@@ -31,9 +30,24 @@ jobs:
       - name: Private helper security checks
         if: always() && steps.build.outcome == 'success'
         run: sudo --preserve-env=FLOWCORE_TC python3 -B tests/helper_integration.py > build/portability-helper.log 2>&1
-      - name: Owned namespace service checks
-        if: always() && steps.build.outcome == 'success'
-        run: sudo --preserve-env=FLOWCORE_TC python3 -B tests/service_integration.py > build/portability-service.log 2>&1
+      - name: Build pinned userspace tc with HTB JSON readback
+        id: tc
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-7.0.0.tar.xz \
+            -o build/iproute2-7.0.0.tar.xz
+          printf '%s  %s\n' e62890f7b5de63c05a3bf331dc8deb4c015c336013f341a4edf46969797f2f4e \
+            build/iproute2-7.0.0.tar.xz | sha256sum -c -
+          tar -xJf build/iproute2-7.0.0.tar.xz -C build
+          make -C build/iproute2-7.0.0 -j2 SUBDIRS='lib tc' > build/portability-tc-build.log 2>&1
+          tc="$GITHUB_WORKSPACE/build/iproute2-7.0.0/tc/tc"
+          "$tc" -V >> build/portability-environment.log
+          echo "FLOWCORE_TC=$tc" >> "$GITHUB_ENV"
+      - name: Owned namespace service and recovery checks
+        if: always() && steps.build.outcome == 'success' && steps.tc.outcome == 'success'
+        run: |
+          sudo --preserve-env=FLOWCORE_TC python3 -B tests/service_integration.py > build/portability-service.log 2>&1
+          sudo --preserve-env=FLOWCORE_TC python3 -B tests/safety_integration.py > build/portability-safety.log 2>&1
       - name: Bounded TCP scale
         if: always() && steps.build.outcome == 'success'
         run: sudo --preserve-env=FLOWCORE_TC python3 -B tests/release_scale.py > build/portability-scale.log 2>&1
