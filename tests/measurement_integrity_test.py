@@ -258,6 +258,18 @@ class MeasurementIntegrity(unittest.TestCase):
         self.assertEqual(compared['outcome'], 'INVALID EXPERIMENT')
         self.assertEqual(compared['schedule_mismatches'], ['r2-static<->r2-fifo'])
 
+    def test_overload_guard_preserves_complete_failure_denominator(self):
+        from overload import guard
+        data = self.synthetic()
+        for row in data['runs']:
+            if row['mode'] == 'fifo':
+                row.update(completed=220, failed=32)
+                row['measurement']['state'] = 'FAILED_WORKLOAD'
+        verdict = guard(data, 'static', 'fifo')
+        self.assertEqual(verdict['comparison']['outcome'], 'FAILED_WORKLOAD')
+        self.assertEqual(verdict['observed_regressions'], ['failure_ratio'])
+        self.assertEqual(verdict['action'], 'KEEP_BASELINE')
+
     def test_invalid_block_is_not_dropped_and_low_n_is_inconclusive(self):
         data=self.synthetic(invalid_candidate=3)
         compared=compare_integrity(data,data,'static','fifo')

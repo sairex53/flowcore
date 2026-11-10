@@ -125,7 +125,7 @@ class Pressure:
                 or self.last_ns is not None and sampled_ns < self.last_ns
                 or type(backlog) is not int or backlog < 0
                 or type(capacity_kbit) not in (int, float) or not 0 < capacity_kbit <= 1_000_000_000
-                or not isinstance(utilization, (int, float)) or not 0 <= utilization <= 2):
+                or type(utilization) not in (int, float) or not 0 <= utilization <= 2):
             self.invalidate()
             return self.state
         if sampled_ns == self.last_ns:
@@ -289,7 +289,9 @@ def guard(summary, baseline, candidate):
     regressions = []
     for item in comparison['findings']:
         interval = item['simultaneous_median_ci']
-        if eligible and interval and not item['missing_data'] and interval['low'] > item['threshold']:
+        sufficient = (not item['missing_data'] and not item['censored_p99_repetitions']
+                      and (item['metric'] != 'p99_ms' or not comparison['insufficient_data_blocks']))
+        if eligible and sufficient and interval and interval['low'] > item['threshold']:
             regressions.append(item['metric'])
     return dict(schema=1, action='KEEP_BASELINE' if regressions else 'NO_INTERVENTION',
                 observed_regressions=regressions, comparison=comparison,
