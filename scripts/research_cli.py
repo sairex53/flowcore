@@ -32,6 +32,13 @@ def add_commands(commands):
     tuning = bench.add_parser('tune-static')
     for name in ('pilot', 'evaluation', 'output'):
         tuning.add_argument(name, type=Path)
+    overload = bench.add_parser('overload', help='inspect V3 request and kernel evidence')
+    overload.add_argument('trial', type=Path)
+    overload.add_argument('--against', type=Path, help='compare recorded configurations at matching stages')
+    guard = bench.add_parser('overload-guard', help='review a matched overload experiment without actuation')
+    guard.add_argument('summary', type=Path)
+    guard.add_argument('--baseline-mode', required=True, choices=MODES)
+    guard.add_argument('--candidate-mode', required=True, choices=MODES)
     bench.add_parser('verify', help='verify checksums for an integrity-enabled experiment summary').add_argument('summary',type=Path)
     render = bench.add_parser('report')
     render.add_argument('summary',type=Path)
@@ -123,6 +130,17 @@ def dispatch(args):
             from research_soak import run_soak
             return run_soak(manifest,args.cycles,mode,args.max_minutes,
                             args.max_rss_growth_mb,args.max_fd_growth,args.max_bpf_growth),0
+    if action == 'overload':
+        from overload import compare_configuration, diagnose
+        result = diagnose(args.trial)
+        if args.against:
+            reference = diagnose(args.against)
+            result['comparison'] = compare_configuration(reference, result)
+        return result, 0
+    if action == 'overload-guard':
+        from overload import guard
+        summary = load_summary(args.summary)
+        return guard(summary, args.baseline_mode, args.candidate_mode), 0
     if action=='verify':
         data = load_summary(args.summary)
         if not data['manifest'].get('integrity'):

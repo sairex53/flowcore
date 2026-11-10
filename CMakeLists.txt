@@ -112,6 +112,7 @@ install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
 add_test(NAME research_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/research_test.py")
+add_test(NAME overload_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/overload_test.py")
 add_test(NAME measurement_integrity COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/measurement_integrity_test.py")
 set_tests_properties(measurement_integrity PROPERTIES TIMEOUT 20)
 install(FILES MEASUREMENT_INTEGRITY.md BENCHMARK_VALIDATION.md SCIENTIFIC_RESULTS_V3.md DESTINATION "${FLOWCORE_DATA}/docs")
@@ -268,6 +269,8 @@ add_test(NAME bottleneck_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURC
 install(FILES LICENSE LICENSE.GPL-2.0 DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES BOTTLENECK_ENGINE.md DIRECTIONAL_QOS.md BOTTLENECK_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES OVERLOAD_ENGINE.md REQUEST_FAILURE_DIAGNOSTICS.md OVERLOAD_REMEDIATION_RESULTS.md
+        DESTINATION "${FLOWCORE_DATA}/docs")
 
 add_test(NAME causal_diagnostics COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/causal_diagnostics_test.py")
 

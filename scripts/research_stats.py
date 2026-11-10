@@ -280,8 +280,8 @@ def compare_integrity(base, candidate, baseline, contender):
     if candidate['manifest']['integrity']['load'] == 'open':
         for repetition in sorted(left.keys() & right.keys()):
             a,b = left[repetition],right[repetition]
-            if any(not row.get('valid') or row.get('measurement',{}).get('state') == 'FAILED_WORKLOAD'
-                   for row in (a,b)):
+            # Failed attempts still participate when the full offered ledger exists.
+            if any(not row.get('valid') or not row.get('offered') for row in (a,b)):
                 continue
             a_hash = a.get('measurement',{}).get('timing',{}).get('scheduled_workload_sha256')
             b_hash = b.get('measurement',{}).get('timing',{}).get('scheduled_workload_sha256')

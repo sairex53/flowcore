@@ -251,6 +251,12 @@ class MeasurementIntegrity(unittest.TestCase):
         compared=compare_integrity(data,data,'static','fifo')
         self.assertEqual(compared['outcome'],'INVALID EXPERIMENT')
         self.assertEqual(compared['schedule_mismatches'],['r2-static<->r2-fifo'])
+        row = next(row for row in data['runs'] if row['mode']=='fifo' and row['repetition']==2)
+        row.update(completed=220, failed=32)
+        row['measurement']['state'] = 'FAILED_WORKLOAD'
+        compared = compare_integrity(data,data,'static','fifo')
+        self.assertEqual(compared['outcome'], 'INVALID EXPERIMENT')
+        self.assertEqual(compared['schedule_mismatches'], ['r2-static<->r2-fifo'])
 
     def test_invalid_block_is_not_dropped_and_low_n_is_inconclusive(self):
         data=self.synthetic(invalid_candidate=3)

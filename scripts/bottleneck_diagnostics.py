@@ -89,8 +89,12 @@ class Diagnostics:
                         socket_attribution='explicit INET_DIAG bound interface only')
         op = request['op']
         if op == 'capacity_estimate':
+            if info['scope'] == 'owned_lab_sender' and self.lab.previous:
+                info['sample_monotonic_ns'] = round(self.lab.previous[0] * 1_000_000_000)
+                info['namespace_identity'] = list(lab.identity[0])
             return {key: info[key] for key in ('schema', 'state', 'scope', 'interface', 'sample_age_seconds',
-                                              'generation', 'directions', 'capacity_reductions', 'last_capacity_reduction') if key in info}
+                                              'generation', 'directions', 'capacity_reductions', 'last_capacity_reduction',
+                                              'sample_monotonic_ns', 'namespace_identity') if key in info}
         if op == 'qos_direction':
             owned = info['scope'] == 'owned_lab_sender'
             ingress = getattr(lab, 'ingress', None) if owned else None
