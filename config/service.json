@@ -72,6 +72,7 @@
       "exit_windows": 3
     }
   },
+  "intent_api": {"priorities": ["standard"], "applications": {}},
   "adaptive": {
     "window_seconds": 4,
     "minimum_samples": 20,

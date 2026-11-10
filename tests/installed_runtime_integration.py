@@ -117,7 +117,7 @@ def main():
             created.append(name)
         app, reader = (int(run('/usr/bin/id','-u',name)) for name in (APP,READER))
         options = json.loads(old_config)
-        options['intent_api']['applications'] = {'installed-app':app, 'installed-reader':reader}
+        options.setdefault('intent_api', {'priorities':['standard']})['applications'] = {'installed-app':app, 'installed-reader':reader}
         config.write_text(json.dumps(options)+'\n')
         helper.write_text(json.dumps(dict(version=1, operators=[app], readers=[reader]))+'\n')
         control('start', 'flowcore-monitor.service', 'flowcore-sdk.socket', 'flowcore-network.socket')

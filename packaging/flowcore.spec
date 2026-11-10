@@ -17,7 +17,7 @@ Requires(preun): systemd
 Requires(postun): systemd
 Requires:       iproute
 Requires:       iproute-tc
-Requires:       util-linux
+Requires:       util-linux-core
 Requires:       ethtool
 Recommends:     nftables
 Recommends:     podman
