@@ -261,6 +261,19 @@ def test_grpc_example():
                 server.stderr.close()
 
 
+def test_postgres_schema_mount_uses_absolute_source():
+    from unittest.mock import patch
+    from real_app_lab import launch_postgres
+    with tempfile.TemporaryDirectory(dir=ROOT/'build') as tmp:
+        directory=Path(os.path.relpath(tmp))
+        with (patch('real_app_lab.shutil.which',return_value='/usr/bin/podman'),
+              patch('real_app_lab.subprocess.Popen') as start, patch('real_app_lab.wait_ready')):
+            launch_postgres('/proc/test/ns/net','test-container','pinned-image',directory,None)
+        argv=start.call_args.args[0]
+        source=argv[argv.index('-v')+1].split(':',1)[0]
+        assert Path(source).is_absolute() and Path(source).is_file()
+
+
 def test_receiver_token_fd():
     port = free_port()
     read_fd, write_fd = os.pipe()
@@ -392,6 +405,7 @@ def main():
     test_adapter_fallback()
     test_http_service()
     test_grpc_example()
+    test_postgres_schema_mount_uses_absolute_source()
     test_receiver_token_fd()
     test_receiver_http()
     print('real-app unit tests passed')

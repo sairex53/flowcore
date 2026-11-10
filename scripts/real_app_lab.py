@@ -116,7 +116,8 @@ def launch_postgres(receiver, name, image, directory, log_stream, *, statement_s
     podman = shutil.which('podman')
     if not podman:
         raise RuntimeError('Podman is not installed')
-    schema = directory / 'postgres-schema.sql'
+    # Podman interprets relative mount sources as named volumes.
+    schema = (directory / 'postgres-schema.sql').absolute()
     shutil.copyfile(APPS / 'postgres_schema.sql', schema)
     if statement_stats:
         with schema.open('a') as stream:
@@ -699,7 +700,7 @@ def main():
     if os.geteuid() != 0:
         parser.error('isolated application experiments require the privileged research runner')
     RESULTS.mkdir(exist_ok=True)
-    output = args.output or RESULTS / f'real-applications-{time.time_ns()}'
+    output = (args.output or RESULTS / f'real-applications-{time.time_ns()}').absolute()
     owned_directory(output)
     rng = random.Random(args.seed)
     trials = [(mode, repetition, seed) for repetition, seed in
