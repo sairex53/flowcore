@@ -37,8 +37,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(rpm --eval '%{_arch}')" = "$EXPECTED_ARCH"
-          epoch="$(git log -1 --format=%ct)"
-          SOURCE_DATE_EPOCH="$epoch" packaging/source-archive.sh
+          repo="$GITHUB_WORKSPACE"
+          git -C "$repo" rev-parse --show-toplevel
+          epoch="$(git -C "$repo" log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$epoch" "$repo/packaging/source-archive.sh"
           useradd --create-home --uid 10001 flowcore-builder
           top="$GITHUB_WORKSPACE/build/rpm-transaction"
           repro="$GITHUB_WORKSPACE/build/rpm-repro"
@@ -46,16 +48,16 @@ jobs:
           chown -R flowcore-builder:flowcore-builder "$top" "$repro"
           source="$GITHUB_WORKSPACE/build/release/flowcore-0.2.0.tar.gz"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 1 --skip-check \
+            python3 -B "$GITHUB_WORKSPACE/packaging/build-local-rpm.py" --release 1 --skip-check \
               --topdir "$top" --source-archive "$source"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 2 --skip-check \
+            python3 -B "$GITHUB_WORKSPACE/packaging/build-local-rpm.py" --release 2 --skip-check \
               --topdir "$top" --source-archive "$source"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 3 \
+            python3 -B "$GITHUB_WORKSPACE/packaging/build-local-rpm.py" --release 3 \
               --topdir "$top" --source-archive "$source"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 3 --skip-check \
+            python3 -B "$GITHUB_WORKSPACE/packaging/build-local-rpm.py" --release 3 --skip-check \
               --topdir "$repro" --source-archive "$source"
       - name: Compare independent RPM/SRPM builds
         run: |
