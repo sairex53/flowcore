@@ -70,6 +70,13 @@ def main():
             raise SystemExit("Fedora repository definitions are unavailable in the package test container")
         for repo_file in host_repo_files:
             shutil.copy2(repo_file, installroot_repos / repo_file.name)
+        host_gpg_keys = sorted(Path("/etc/pki/rpm-gpg").glob("RPM-GPG-KEY-fedora*"))
+        if not host_gpg_keys:
+            raise SystemExit("Fedora repository signing keys are unavailable in the package test container")
+        installroot_gpg = installroot / "etc/pki/rpm-gpg"
+        installroot_gpg.mkdir(parents=True)
+        for key in host_gpg_keys:
+            shutil.copy2(key, installroot_gpg / key.name)
         for artifact in rpms.values():
             shutil.copy2(artifact, repo / artifact.name)
         run(["createrepo_c", "--quiet", repo], log=log)
