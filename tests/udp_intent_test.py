@@ -12,9 +12,10 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = Path(os.environ.get("FLOWCORE_UDP_INTENT_BUILD", ROOT / "build"))
+TEST_CGROUP = "/flowcore-test.slice/udp-fixture.service"
 sys.path.insert(0, str(ROOT / "scripts"))
 from daemon import Service
-from intent_v2 import cgroup_matches
+from intent_v2 import cgroup_matches, identity as process_identity
 from service_config import load
 
 def current_cgroup():
@@ -32,8 +33,8 @@ class UdpIntentUnit(unittest.TestCase):
         self.config = load(ROOT / "config/service.json")
         self.config["intent_api"]["priorities"] = ["standard", "interactive", "critical"]
         self.config["intent_api"]["udp_message_policies"] = {
-            "udp_fixture4": policy(os.getuid(), current_cgroup()),
-            "udp_fixture6": policy(os.getuid(), current_cgroup()),
+            "udp_fixture4": policy(os.getuid(), TEST_CGROUP),
+            "udp_fixture6": policy(os.getuid(), TEST_CGROUP),
         }
         self.service = Service(self.config)
         self.api = self.service.intent_api
@@ -42,14 +43,17 @@ class UdpIntentUnit(unittest.TestCase):
         for token in list(self.api.leases):
             self.api.release(token, "test_cleanup")
 
-    def register(self, name="udp_fixture4", priority="critical"):
-        return self.api.call(dict(op="intent_v2", version=2, action="register", isolation="shared",
-            intent=dict(name=name, priority=priority)), os.getuid(), os.getpid())
+    def register(self, name="udp_fixture4", priority="critical", cgroup=TEST_CGROUP):
+        start, _ = process_identity(os.getpid())
+        with patch("intent_v2.identity", return_value=(start, f"0::{cgroup}")):
+            return self.api.call(dict(op="intent_v2", version=2, action="register", isolation="shared",
+                intent=dict(name=name, priority=priority)), os.getuid(), os.getpid())
 
     def test_cgroup_boundary_and_udp_grant(self):
-        self.assertTrue(cgroup_matches(f"0::{current_cgroup()}", current_cgroup()))
-        self.assertFalse(cgroup_matches("0::/system.slice/fake.service", current_cgroup()))
-        self.assertTrue(cgroup_matches(f"0::{current_cgroup()}/child", current_cgroup()))
+        trusted = "/system.slice/flowcore.service"
+        self.assertTrue(cgroup_matches(f"0::{trusted}", trusted))
+        self.assertFalse(cgroup_matches("0::/system.slice/fake.service", trusted))
+        self.assertTrue(cgroup_matches(f"0::{trusted}/child", trusted))
         self.assertFalse(cgroup_matches("2:cpu:/unified-only", current_cgroup()))
         granted = self.register()
         self.assertGreater(granted["udp_message"].pop("expires_ns"), time.monotonic_ns())
@@ -63,15 +67,14 @@ class UdpIntentUnit(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.api.call(dict(op="intent_v2", version=2, action="register", isolation="shared",
                 intent=dict(name="udp_fixture4", priority="critical")), os.getuid()+1, os.getpid())
-        with patch("intent_v2.identity", return_value=("1", "0::/system.slice/untrusted.service")):
-            with self.assertRaises(PermissionError):
-                self.register()
+        with self.assertRaises(PermissionError):
+            self.register(cgroup="/system.slice/untrusted.service")
 
     def test_renewal_revokes_moved_service(self):
         from intent_v2 import identity
         token = self.register()["lease"]
         start, _ = identity(os.getpid())
-        with patch("intent_v2.identity", return_value=(start, "0::/system.slice/untrusted.service")):
+        with patch("intent_v2.identity", return_value=(start, "0::/flowcore-test.slice/untrusted.service")):
             with self.assertRaises(PermissionError):
                 self.api.call(dict(op="intent_v2", version=2, action="renew", lease=token),
                               os.getuid(), os.getpid())

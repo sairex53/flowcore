@@ -35,7 +35,9 @@ class Security(unittest.TestCase):
                 load(cfg)
 
     def test_publication_rejects_symlink_traversal_and_existing_target(self):
-        with tempfile.TemporaryDirectory(dir=ROOT/'build') as raw:
+        # /tmp is a root-owned sticky ancestor accepted by the handoff policy.
+        # Source and build directories may be owned by the CI checkout account.
+        with tempfile.TemporaryDirectory() as raw:
             path = Path(raw)
             alias = path.with_name(path.name+'-alias')
             alias.symlink_to(path)
