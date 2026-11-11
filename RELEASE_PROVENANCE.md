@@ -18,7 +18,7 @@ Paths are recorded by artifact filename, not by absolute workspace path. Build r
 
 ## Reproducibility
 
-The source tarball is generated from Git and is tested byte-for-byte by the release-gate suite. RPM builds set SOURCE_DATE_EPOCH, a fixed build host, RPM build time, and timestamp clamping where supported. The Fedora release workflow builds the same RPM/SRPM twice in separate topdirs and compares SHA-256 digests.
+The source tarball is generated from Git and is tested byte-for-byte by the release-gate suite. RPM builds set SOURCE_DATE_EPOCH, a fixed build host, RPM build time, and timestamp clamping where supported. The Fedora release workflow builds the same RPM/SRPM twice with fixed source/build paths and separate output roots, then compares SHA-256 digests. RPM embeds expanded build paths in SRPM script sections, so the build context is deliberately normalized; this validates repeatability on the same architecture and toolchain rather than cross-host reproducibility.
 
 A PASS only means those artifacts were byte-identical on the recorded toolchain and architecture. It does not prove cross-compiler, cross-architecture, or independently administered reproducibility. Build IDs, compiler/linker versions, RPM payload implementation, and distro dependency updates can change artifacts. Signed RPMs also differ from unsigned builds because signatures are embedded.
 

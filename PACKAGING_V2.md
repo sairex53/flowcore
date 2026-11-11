@@ -33,7 +33,7 @@ On Fedora 45, with RPM build dependencies installed:
     rpm -qp --requires build/rpm-deploy/RPMS/*/flowcore-*.rpm
     python3 -B packaging/verify-rpm.py build/rpm-deploy/RPMS/*/flowcore-*.rpm
 
-The build script creates a Git archive, builds RPM and SRPM, runs %check, and records build inputs separately. packaging/rpm-dnf-transactions.py is the stronger package transaction test: it uses DNF and Fedora repositories to resolve dependencies in an empty temporary installroot, then installs, upgrades, downgrades, and erases the RPM while checking config and state preservation. It does not modify the host RPM database.
+The build script creates a Git archive, builds RPM and SRPM, runs %check, and records build inputs separately. Reproducibility jobs reuse a canonical source/build path across clean rpmbuild invocations while writing outputs to separate roots; this avoids embedding differing absolute paths in SRPM metadata and compiled clients. The result is scoped to the recorded architecture and toolchain. packaging/rpm-dnf-transactions.py is the stronger package transaction test: it uses DNF and Fedora repositories to resolve dependencies in an empty temporary installroot, then installs, upgrades, downgrades, and erases the RPM while checking config and state preservation. It does not modify the host RPM database.
 
 ## Upgrade and rollback
 

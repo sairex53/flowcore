@@ -33,7 +33,7 @@ def main():
         rows.append(dict(filename=name, first_sha256=left, second_sha256=right,
                          identical=left == right))
     status = "PASS" if all(row["identical"] for row in rows) else "MISMATCH"
-    result = dict(schema=1, status=status, scope="same commit, toolchain, architecture, independent rpmbuild topdirs",
+    result = dict(schema=1, status=status, scope="same commit, toolchain, architecture, normalized source/build paths, independent rpmbuild output roots",
                   artifacts=rows)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
