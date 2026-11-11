@@ -71,7 +71,7 @@ def main():
             "--setopt=reposdir=/etc/yum.repos.d",
             "--setopt=module_platform_id=platform:f45",
             "--setopt=install_weak_deps=False",
-            f"--setopt=cachedir={cache}", f"--setopt=logfile={work / 'dnf.log'}",
+            f"--setopt=cachedir={cache}",
             f"--repofrompath=flowcore,file://{repo}", "--enablerepo=flowcore",
             "--setopt=flowcore.gpgcheck=0", "--assumeyes",
         ]
