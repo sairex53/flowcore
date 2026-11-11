@@ -80,6 +80,9 @@ def main():
             raise SystemExit(f"Fedora repository definitions are unavailable; searched: {searched}")
         for repo_file in host_repo_files.values():
             shutil.copy2(repo_file, installroot_repos / repo_file.name)
+        with log.open("a") as stream:
+            stream.write("Fedora repositories copied into installroot: "
+                         + ", ".join(sorted(host_repo_files)) + "\n")
         key_dirs = (Path("/etc/pki/rpm-gpg"), Path("/usr/share/pki/rpm-gpg"))
         host_gpg_keys = {}
         for key_dir in key_dirs:
@@ -100,7 +103,7 @@ def main():
         run(["createrepo_c", "--quiet", repo], log=log)
         flags = [
             "dnf", "--installroot", str(installroot), "--releasever", args.releasever,
-            "--setopt=reposdir=/etc/yum.repos.d",
+            f"--setopt=reposdir={installroot_repos}",
             "--setopt=module_platform_id=platform:f45",
             "--setopt=install_weak_deps=False",
             f"--setopt=cachedir={cache}",
