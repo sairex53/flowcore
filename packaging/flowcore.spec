@@ -57,6 +57,7 @@ DESTDIR=%{buildroot} cmake --install build
 %{_bindir}/flowid-client
 %{_bindir}/flowcore-container-request
 %{_datadir}/flowcore/
+%{_libexecdir}/flowcore/evidence_bundle.py
 %{_includedir}/flowcore/
 %{_includedir}/flowid/
 %{_libdir}/libflowcore_sdk.a
