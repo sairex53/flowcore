@@ -93,8 +93,13 @@ def main():
             "environment": environment,
             "commands": [
                 "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) packaging/source-archive.sh",
-                "rpmbuild -ba packaging/flowcore.spec --define _topdir=<fresh-topdir> "
-                "--define _tmppath=<fresh-topdir>/tmp --define _buildhost flowcore-reproducible "
+                "python3 -B packaging/build-local-rpm.py --topdir <fresh-output-root> "
+                "--shared-dir <canonical-build-root>",
+                "rpmbuild -ba packaging/flowcore.spec --define _topdir=<fresh-output-root> "
+                "--define _builddir=<canonical-build-root>/BUILD "
+                "--define _sourcedir=<canonical-build-root>/SOURCES "
+                "--define _tmppath=<fresh-output-root>/tmp "
+                "--define _buildhost=flowcore-reproducible "
                 "--define 'use_source_date_epoch_as_buildtime 1' "
                 "--define 'build_mtime_policy clamp_to_source_date_epoch'",
                 "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "

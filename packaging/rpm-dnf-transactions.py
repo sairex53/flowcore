@@ -65,18 +65,36 @@ def main():
         cache.mkdir()
         installroot_repos = installroot / "etc/yum.repos.d"
         installroot_repos.mkdir(parents=True)
-        host_repo_files = sorted(Path("/etc/yum.repos.d").glob("*.repo"))
+        repo_dirs = (
+            Path("/etc/yum.repos.d"),
+            Path("/etc/dnf/repos.d"),
+            Path("/usr/share/dnf5/repos.d"),
+            Path("/usr/share/dnf/repos.d"),
+        )
+        host_repo_files = {}
+        for repo_dir in repo_dirs:
+            for repo_file in sorted(repo_dir.glob("*.repo")):
+                host_repo_files.setdefault(repo_file.name, repo_file)
         if not host_repo_files:
-            raise SystemExit("Fedora repository definitions are unavailable in the package test container")
-        for repo_file in host_repo_files:
+            searched = ", ".join(str(path) for path in repo_dirs)
+            raise SystemExit(f"Fedora repository definitions are unavailable; searched: {searched}")
+        for repo_file in host_repo_files.values():
             shutil.copy2(repo_file, installroot_repos / repo_file.name)
-        host_gpg_keys = sorted(Path("/etc/pki/rpm-gpg").glob("RPM-GPG-KEY-fedora*"))
+        key_dirs = (Path("/etc/pki/rpm-gpg"), Path("/usr/share/pki/rpm-gpg"))
+        host_gpg_keys = {}
+        for key_dir in key_dirs:
+            for key in sorted(key_dir.glob("RPM-GPG-KEY-fedora*")):
+                host_gpg_keys.setdefault(key.name, key)
         if not host_gpg_keys:
-            raise SystemExit("Fedora repository signing keys are unavailable in the package test container")
-        installroot_gpg = installroot / "etc/pki/rpm-gpg"
-        installroot_gpg.mkdir(parents=True)
-        for key in host_gpg_keys:
-            shutil.copy2(key, installroot_gpg / key.name)
+            searched = ", ".join(str(path) for path in key_dirs)
+            raise SystemExit(f"Fedora repository signing keys are unavailable; searched: {searched}")
+        # Fedora 45 repo definitions point into /usr/share/pki; also seed the
+        # legacy path for repo files that still use /etc/pki/rpm-gpg.
+        for destination in (installroot / "usr/share/pki/rpm-gpg",
+                            installroot / "etc/pki/rpm-gpg"):
+            destination.mkdir(parents=True, exist_ok=True)
+            for key in host_gpg_keys.values():
+                shutil.copy2(key, destination / key.name)
         for artifact in rpms.values():
             shutil.copy2(artifact, repo / artifact.name)
         run(["createrepo_c", "--quiet", repo], log=log)
