@@ -6,6 +6,7 @@ Summary:        Linux adaptive networking laboratory and read-only interface mon
 License:        Apache-2.0
 Source0:        %{name}-%{version}.tar.gz
 BuildRequires:  gcc-c++ >= 13
+BuildRequires:  glibc-devel
 BuildRequires:  cmake
 BuildRequires:  ninja-build
 BuildRequires:  python3

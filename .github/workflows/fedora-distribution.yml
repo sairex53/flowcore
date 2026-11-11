@@ -30,7 +30,7 @@ jobs:
       - name: Install Fedora 45 package tooling
         run: |
           dnf -y --setopt=retries=10 --setopt=timeout=60 --setopt=zchunk=False \
-            install git gcc-c++ cmake ninja-build python3 python3-devel openssl openssl-devel \
+            install git gcc-c++ glibc-devel cmake ninja-build python3 python3-devel openssl openssl-devel \
             rpm-build rpm-sign createrepo_c systemd systemd-rpm-macros iproute iproute-tc \
             util-linux-core ethtool cpio gzip tar coreutils findutils binutils curl python3-jsonschema
       - name: Build binary RPM and SRPM variants on an unprivileged build account
