@@ -99,7 +99,7 @@ class Engine(unittest.TestCase):
                 stamp = time.monotonic_ns()
                 event = dict(id=1,phase='start',start_ns=stamp,end_ns=0,cookie=int(assoc['cookie']),deadline_us=100)
                 self.assertEqual(call(action='batch',lease=lease,events=[event])['accepted'],1)
-                snapshot, limited = connections(128)
+                snapshot, limited = connections(4096)
                 matched = [dict(row,namespace='host',netns=1) for row in snapshot if row['cookie'] == f"{event['cookie']:016x}"]
                 self.assertTrue(matched)
                 service.observer.track(matched,False,time.monotonic_ns())

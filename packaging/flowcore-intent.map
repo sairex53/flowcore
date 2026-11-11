@@ -1,0 +1,6 @@
+FLOWCORE_INTENT_2 {
+    global:
+        fc_v2_*;
+    local:
+        *;
+};

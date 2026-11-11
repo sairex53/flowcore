@@ -63,7 +63,10 @@ def main():
         fallback=json.loads(command([cli,'flows','--limit','32','--json']))
         assert fallback['source']=='inet_diag' and fallback['degraded']
         libraries=list(prefix.rglob('libflowcore_intent.so'))
-        assert len(libraries)==1 and ctypes.CDLL(str(libraries[0])).fc_v2_open
+        sonames=list(prefix.rglob('libflowcore_intent.so.2'))
+        versioned=list(prefix.rglob('libflowcore_intent.so.2.0.0'))
+        assert len(libraries)==1 and len(sonames)==1 and len(versioned)==1
+        assert ctypes.CDLL(str(libraries[0])).fc_v2_open
         runtime = work/'runtime'
         private_state = work/'private-state'
         private_state.mkdir(mode=0o700)

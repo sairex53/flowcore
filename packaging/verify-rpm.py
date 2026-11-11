@@ -16,6 +16,7 @@ requires=subprocess.check_output(['rpm','-qp','--requires',rpm],text=True)
 assert 'libstdc++.so.6' in requires and 'libc.so.6' in requires and 'GLIBCXX_' in requires, 'ELF runtime dependencies missing'
 provides=subprocess.check_output(['rpm','-qp','--provides',rpm],text=True)
 assert 'libflowcore_telemetry.so.1' in provides, 'native telemetry SONAME missing'
+assert 'libflowcore_intent.so.2' in provides, 'C ABI v2 SONAME missing'
 
 with tempfile.TemporaryDirectory(dir=root/'build',prefix='rpm-stage-') as temp:
     temp=Path(temp)

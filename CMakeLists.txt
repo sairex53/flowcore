@@ -163,6 +163,12 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/flowcore-config.cmake" DESTINATION "$
 add_library(flowcore_intent SHARED src/intent_c.cpp)
 target_link_libraries(flowcore_intent PRIVATE flowcore_sdk)
 target_compile_options(flowcore_intent PRIVATE -Wall -Wextra -Wpedantic -Werror)
+set_target_properties(flowcore_intent PROPERTIES VERSION 2.0.0 SOVERSION 2)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(flowcore_intent PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/packaging/flowcore-intent.map")
+    set_property(TARGET flowcore_intent APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/flowcore-intent.map")
+endif()
 install(TARGETS flowcore_intent LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(FILES include/flowcore/intent_c.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 add_executable(flowcore-intent-v2-demo examples/intent_v2_demo.cpp)
@@ -183,6 +189,16 @@ target_include_directories(intent_c_api_unit PRIVATE include)
 target_link_libraries(intent_c_api_unit PRIVATE flowcore_intent)
 target_compile_options(intent_c_api_unit PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME intent_c_api_unit COMMAND intent_c_api_unit)
+add_executable(intent_c_abi_layout tests/intent_c_abi_layout.c)
+target_include_directories(intent_c_abi_layout PRIVATE include)
+target_compile_features(intent_c_abi_layout PRIVATE c_std_11)
+target_compile_options(intent_c_abi_layout PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME intent_c_abi_layout COMMAND intent_c_abi_layout)
+add_test(NAME intent_abi_symbols COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/check-abi.py"
+    --library $<TARGET_FILE:flowcore_intent>
+    --baseline "${CMAKE_CURRENT_SOURCE_DIR}/packaging/abi/libflowcore_intent-v2.symbols"
+    --report "${CMAKE_CURRENT_BINARY_DIR}/intent-abi-report.json")
 add_executable(intent_protocol_compat tests/intent_protocol_compat.cpp)
 target_include_directories(intent_protocol_compat PRIVATE include)
 target_link_libraries(intent_protocol_compat PRIVATE flowcore_sdk)
@@ -248,6 +264,8 @@ install(FILES REAL_APPLICATIONS.md GRPC_INTEGRATION.md DATABASE_INTEGRATION.md A
     DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES SDK_V2.md PUBLIC_API_CONTRACT.md SDK_PERFORMANCE.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES UDP_EFFICIENCY.md MPTCP_V2.md TRANSPORT_VALIDATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES PACKAGING_V2.md API_COMPATIBILITY.md SUPPLY_CHAIN.md RELEASE_PROVENANCE.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES examples/intent_v2_demo.cpp examples/intent_c_demo.c examples/intent_c_udp_demo.c
               examples/intent_rust_demo.rs examples/intent_go_demo.go DESTINATION "${FLOWCORE_DATA}/examples/intent-sdk")
 install(FILES config/real-app-v2-fedora45.txt
@@ -447,6 +465,8 @@ set_tests_properties(slo_optimization_unit PROPERTIES TIMEOUT 15
 install(FILES MULTIOBJECTIVE_OPTIMIZATION.md PARETO_ANALYSIS.md SLO_OPTIMIZATION_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 
+add_test(NAME supply_chain_unit COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/supply_chain_test.py")
 add_test(NAME evidence_bundle COMMAND /usr/bin/python3 -B
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/evidence_bundle_test.py")
 set_tests_properties(evidence_bundle PROPERTIES TIMEOUT 40)

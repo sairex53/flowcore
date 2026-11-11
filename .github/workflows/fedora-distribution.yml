@@ -1,0 +1,109 @@
+name: Fedora RPM and supply-chain validation
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  fedora-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            expected_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: fedora:45
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Fedora 45 package tooling
+        run: |
+          dnf -y install git gcc-c++ cmake ninja-build python3 python3-devel openssl openssl-devel \
+            rpm-build rpm-sign createrepo_c systemd systemd-rpm-macros iproute iproute-tc \
+            util-linux-core ethtool cpio gzip tar coreutils findutils binutils curl python3-jsonschema
+          dnf clean all
+      - name: Build binary RPM and SRPM variants on an unprivileged build account
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -euo pipefail
+          test "$(rpm --eval '%{_arch}')" = "$EXPECTED_ARCH"
+          epoch="$(git log -1 --format=%ct)"
+          useradd --create-home --uid 10001 flowcore-builder
+          chown -R flowcore-builder:flowcore-builder "$GITHUB_WORKSPACE"
+          top="$GITHUB_WORKSPACE/build/rpm-transaction"
+          runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
+            python3 -B packaging/build-local-rpm.py --release 1 --skip-check --topdir "$top"
+          runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
+            python3 -B packaging/build-local-rpm.py --release 2 --skip-check --topdir "$top"
+          runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
+            python3 -B packaging/build-local-rpm.py --release 3 --topdir "$top"
+          runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
+            python3 -B packaging/build-local-rpm.py --release 3 --skip-check \
+              --topdir "$GITHUB_WORKSPACE/build/rpm-repro"
+      - name: Compare independent RPM/SRPM builds
+        run: |
+          python3 -B packaging/compare-rpm-builds.py \
+            --first build/rpm-transaction --second build/rpm-repro \
+            --output build/distribution/reproducibility-report.json --require-match
+      - name: Dependency-resolved install, upgrade, downgrade, and erase transactions
+        run: |
+          arch="$(rpm --eval '%{_arch}')"
+          python3 -B packaging/rpm-dnf-transactions.py \
+            --packages-dir "build/rpm-transaction/RPMS/$arch" \
+            --source-archive build/release/flowcore-0.2.0.tar.gz \
+            --output-dir build/distribution
+      - name: Record source and build provenance
+        run: |
+          python3 -B packaging/release-provenance.py \
+            --source-archive build/release/flowcore-0.2.0.tar.gz \
+            --artifacts \
+              build/rpm-transaction/RPMS/$(rpm --eval '%{_arch}')/flowcore-0.2.0-3*.rpm \
+              build/rpm-transaction/SRPMS/flowcore-0.2.0-3*.src.rpm \
+              build/distribution/flowcore-runtime.spdx.json \
+              build/distribution/transaction-report.json \
+              build/distribution/reproducibility-report.json \
+            --reproducibility-report build/distribution/reproducibility-report.json \
+            --output build/distribution/release-provenance.json
+      - name: Exercise signing using a disposable test key only
+        run: |
+          arch="$(rpm --eval '%{_arch}')"
+          bash packaging/test-signing.sh \
+            "build/rpm-transaction/RPMS/$arch/flowcore-0.2.0-3.fc45.$arch.rpm" \
+            "build/rpm-transaction/SRPMS/flowcore-0.2.0-3.fc45.src.rpm" \
+            build/release/flowcore-0.2.0.tar.gz \
+            build/distribution/flowcore-runtime.spdx.json \
+            build/distribution
+      - name: Validate SBOM against the pinned SPDX 2.3 schema
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/spdx/spdx-spec/v2.3/schemas/spdx-schema.json \
+            -o build/distribution/spdx-schema-2.3.json
+          sha256sum -c packaging/spdx-schema-2.3.sha256
+          python3 -B packaging/validate-sbom.py build/distribution/flowcore-runtime.spdx.json \
+            --schema build/distribution/spdx-schema-2.3.json
+      - name: Verify unsigned publication candidate checksums
+        run: |
+          rpmfile="build/rpm-transaction/RPMS/$(rpm --eval '%{_arch}')/flowcore-0.2.0-3.fc45.$(rpm --eval '%{_arch}').rpm"
+          rpm -K --nosignature "$rpmfile"
+          python3 -B packaging/validate-sbom.py build/distribution/flowcore-runtime.spdx.json \
+            --rpm "$rpmfile" --source build/release/flowcore-0.2.0.tar.gz
+          sha256sum -c build/release/flowcore-0.2.0.tar.gz.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: flowcore-fedora45-${{ matrix.expected_arch }}
+          path: |
+            build/rpm-transaction/RPMS/
+            build/rpm-transaction/SRPMS/
+            build/release/
+            build/distribution/
+          if-no-files-found: warn

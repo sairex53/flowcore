@@ -1,7 +1,7 @@
 %global debug_package %{nil}
 Name:           flowcore
 Version:        0.2.0
-Release:        3%{?dist}
+Release:        %{?flowcore_release}%{!?flowcore_release:3}%{?dist}
 Summary:        Linux adaptive networking laboratory and read-only interface monitor
 License:        Apache-2.0
 Source0:        %{name}-%{version}.tar.gz
@@ -71,7 +71,7 @@ DESTDIR=%{buildroot} cmake --install build
 %{_bindir}/libflowcore_intelligence.so
 %{_bindir}/libflowcore_telemetry.so*
 
-%{_libdir}/libflowcore_intent.so
+%{_libdir}/libflowcore_intent.so*
 %{_libdir}/libflowcore_flowid.so
 %{_libdir}/libflowcore_pacing_lab.so
 
