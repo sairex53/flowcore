@@ -38,18 +38,25 @@ jobs:
           set -euo pipefail
           test "$(rpm --eval '%{_arch}')" = "$EXPECTED_ARCH"
           epoch="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$epoch" packaging/source-archive.sh
           useradd --create-home --uid 10001 flowcore-builder
-          chown -R flowcore-builder:flowcore-builder "$GITHUB_WORKSPACE"
           top="$GITHUB_WORKSPACE/build/rpm-transaction"
+          repro="$GITHUB_WORKSPACE/build/rpm-repro"
+          mkdir -p "$top" "$repro"
+          chown -R flowcore-builder:flowcore-builder "$top" "$repro"
+          source="$GITHUB_WORKSPACE/build/release/flowcore-0.2.0.tar.gz"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 1 --skip-check --topdir "$top"
+            python3 -B packaging/build-local-rpm.py --release 1 --skip-check \
+              --topdir "$top" --source-archive "$source"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 2 --skip-check --topdir "$top"
+            python3 -B packaging/build-local-rpm.py --release 2 --skip-check \
+              --topdir "$top" --source-archive "$source"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
-            python3 -B packaging/build-local-rpm.py --release 3 --topdir "$top"
+            python3 -B packaging/build-local-rpm.py --release 3 \
+              --topdir "$top" --source-archive "$source"
           runuser -u flowcore-builder -- env SOURCE_DATE_EPOCH="$epoch" \
             python3 -B packaging/build-local-rpm.py --release 3 --skip-check \
-              --topdir "$GITHUB_WORKSPACE/build/rpm-repro"
+              --topdir "$repro" --source-archive "$source"
       - name: Compare independent RPM/SRPM builds
         run: |
           python3 -B packaging/compare-rpm-builds.py \
