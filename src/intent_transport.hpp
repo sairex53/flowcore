@@ -23,6 +23,6 @@ public:
     Transport(const Transport&)=delete;
     Transport& operator=(const Transport&)=delete;
     void close() noexcept;
-    std::string exchange(std::string data);
+    std::string exchange(std::string data, int passed_fd = -1);
 };
 }

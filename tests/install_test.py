@@ -31,6 +31,12 @@ def main():
         assert (docs/'BOTTLENECK_ENGINE.md').is_file()
         assert (docs/'POLICY_OPTIMIZER.md').is_file()
         assert all((docs/name).is_file() for name in
+                   ('SDK_V2.md', 'PUBLIC_API_CONTRACT.md', 'SDK_PERFORMANCE.md'))
+        intent_examples = prefix/'share/flowcore/examples/intent-sdk'
+        assert all((intent_examples/name).is_file() for name in
+                   ('intent_v2_demo.cpp', 'intent_c_demo.c', 'intent_c_udp_demo.c',
+                    'intent_go_demo.go', 'intent_rust_demo.rs'))
+        assert all((docs/name).is_file() for name in
                    ('PER_MESSAGE_INTENTS.md', 'UDP_INTENT_SDK.md', 'MESSAGE_SCHEDULING_RESULTS.md'))
         assert all((docs/name).is_file() for name in
                    ('DYNAMIC_NETWORK_ENGINE.md', 'PATH_ADAPTATION.md', 'PATH_ADAPTATION_RESULTS.md'))

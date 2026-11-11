@@ -77,10 +77,10 @@ bool valid_destination(int family, const sockaddr* address, socklen_t length) no
            (family == AF_INET6 && length >= sizeof(sockaddr_in6));
 }
 
-std::uint32_t take_id(std::uint64_t& next, std::uint64_t requested) noexcept {
+std::uint32_t take_id(std::atomic<std::uint32_t>& next, std::uint64_t requested) noexcept {
     if (requested) return static_cast<std::uint32_t>(requested);
-    auto id = static_cast<std::uint32_t>(next++);
-    return id ? id : static_cast<std::uint32_t>(next++);
+    auto id=next.fetch_add(1,std::memory_order_relaxed);
+    return id ? id : next.fetch_add(1,std::memory_order_relaxed);
 }
 
 void append_message_controls(msghdr& header, std::array<std::byte, 256>& controls,
@@ -159,8 +159,7 @@ bool UrgencyBudget::active() const noexcept {
 struct MessageSender::State {
     explicit State(std::shared_ptr<UrgencyBudget> shared) : budget(std::move(shared)) {}
     std::shared_ptr<UrgencyBudget> budget;
-    std::mutex id_mutex;
-    std::uint64_t next_id = 1;
+    std::atomic<std::uint32_t> next_id{1};
     int old_timestamp_flags = 0;
     int installed_timestamp_flags = 0;
     bool restore_timestamp_flags = false;
@@ -288,6 +287,12 @@ std::vector<SendResult> MessageSender::send_batch(std::span<const Message> input
     return results;
 }
 
+bool MessageSender::send_batch_into(std::span<const Message> input, std::span<SendResult> results, int flags) {
+    if (input.size() != results.size() || input.size() > 4096) return false;
+    send_into(input, results, flags);
+    return true;
+}
+
 void MessageSender::send_into(std::span<const Message> input, std::span<SendResult> results, int flags) {
     const int error = (flags & ~(MSG_DONTWAIT | MSG_NOSIGNAL)) ? EINVAL :
         (!state_ || fd_ < 0) ? EBADF : !state_->budget->active() ? EPERM : 0;
@@ -331,10 +336,9 @@ void MessageSender::send_into(std::span<const Message> input, std::span<SendResu
                 continue;
             }
             auto item = Prepared{};
-            {
-                std::lock_guard lock(state_->id_mutex);
-                item.id = take_id(state_->next_id, request.intent.message_id);
-            }
+            // Caller-supplied IDs avoid a hot-path lock. Auto IDs use a relaxed atomic;
+            // uniqueness is local to this sender and no ordering guarantee is implied.
+            item.id = take_id(state_->next_id, request.intent.message_id);
             result.message_id = request.intent.message_id ? request.intent.message_id : item.id;
             item.effective = request.intent.traffic_class;
             const auto now = monotonic_ns();

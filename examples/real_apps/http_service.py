@@ -102,6 +102,16 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     server_version = 'FlowcoreExample/1'
 
+    def setup(self):
+        super().setup()
+        adapter = getattr(self.server, 'adapter', None)
+        if adapter is not None:
+            try:
+                adapter.prepare_socket(self.connection)
+            except (OSError, RuntimeError):
+                # Correlation is optional; continue serving this persistent connection.
+                pass
+
     def log_message(self, *_):
         return
 

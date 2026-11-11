@@ -17,10 +17,37 @@ class TransportStatistics(c.Structure):
     _fields_=[(name,c.c_uint64) for name in ('session_connections','session_requests','legacy_requests')]
 
 
+class CapabilitySnapshot(c.Structure):
+    _fields_=[('version',c.c_uint32),('size',c.c_uint32),('protocol_version',c.c_uint32),
+              ('reserved',c.c_uint32),('features',c.c_uint64),('udp_message_authorized',c.c_uint32),
+              ('reserved2',c.c_uint32)]
+
+
+class PolicySnapshot(c.Structure):
+    _fields_=[('version',c.c_uint32),('size',c.c_uint32),('state',c.c_uint32),
+              ('kernel_verified',c.c_uint32),('policy_generation',c.c_uint64),
+              ('priority',c.c_uint32),('target_latency_us',c.c_uint32),('deadline_us',c.c_uint32),
+              ('desired_kbit',c.c_uint32),('minimum_kbit',c.c_uint32),('maximum_kbit',c.c_uint32),
+              ('lifetime_seconds',c.c_uint32),('prefer_reliable',c.c_uint32),
+              ('class_rate_kbit',c.c_uint32),('class_ceil_kbit',c.c_uint32)]
+
+
+class NotificationSnapshot(c.Structure):
+    _fields_=[('version',c.c_uint32),('size',c.c_uint32),('flags',c.c_uint32),
+              ('network_observed',c.c_uint32),('observed_ns',c.c_uint64),
+              ('application_samples',c.c_uint64)]
+
+
 class Request:
     def __init__(self,library,handle):
         self.lib,self.handle=library,handle
         self.id=int(library.fc_v2_request_id(handle))
+
+    def cancel(self):
+        if not self.handle:
+            return False
+        handle,self.handle=self.handle,None
+        return bool(self.lib.fc_v2_cancel(handle))
 
     def complete(self,outcome=0):
         if not isinstance(outcome,int) or isinstance(outcome,bool) or not 0<=outcome<=3:
@@ -50,6 +77,12 @@ class Service:
         self.lib.fc_v2_stats.restype=c.c_int
         self.lib.fc_v2_notifications.argtypes=[c.c_void_p]
         self.lib.fc_v2_notifications.restype=c.c_uint32
+        for function,output in (('fc_v2_get_capabilities',CapabilitySnapshot),
+                                ('fc_v2_inspect_policy',PolicySnapshot),
+                                ('fc_v2_get_notification_snapshot',NotificationSnapshot)):
+            call=getattr(self.lib,function)
+            call.argtypes=[c.c_void_p,c.POINTER(output)]
+            call.restype=c.c_int
         self.lib.fc_v2_request_id.argtypes=[c.c_void_p]
         self.lib.fc_v2_request_id.restype=c.c_uint64
         self.lib.fc_v2_transport_stats.argtypes=[c.c_void_p,c.POINTER(TransportStatistics)]
@@ -99,6 +132,39 @@ class Service:
 
     def ready(self,timeout_ms=3000):
         return bool(self.lib.fc_v2_wait(self.handle,timeout_ms))
+
+    def subscribe_notifications(self, enabled=True):
+        function=self.lib.fc_v2_subscribe_notifications
+        function.argtypes=[c.c_void_p,c.c_uint32]
+        function.restype=c.c_int
+        if not function(self.handle,int(bool(enabled))):
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+
+    def capabilities(self):
+        result=CapabilitySnapshot(1,c.sizeof(CapabilitySnapshot))
+        if not self.lib.fc_v2_get_capabilities(self.handle,c.byref(result)):
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+        return {'protocol_version':result.protocol_version,'features':int(result.features),
+                'udp_message_authorized':bool(result.udp_message_authorized)}
+
+    def effective_policy(self):
+        result=PolicySnapshot(1,c.sizeof(PolicySnapshot))
+        if not self.lib.fc_v2_inspect_policy(self.handle,c.byref(result)):
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+        return {'generation':result.policy_generation,'state':result.state,
+                'kernel_verified':bool(result.kernel_verified),'priority':result.priority,
+                'target_latency_us':result.target_latency_us,'deadline_us':result.deadline_us,
+                'desired_kbit':result.desired_kbit,'minimum_kbit':result.minimum_kbit,
+                'maximum_kbit':result.maximum_kbit,'lifetime_seconds':result.lifetime_seconds,
+                'prefer_reliable':bool(result.prefer_reliable),'class_rate_kbit':result.class_rate_kbit,
+                'class_ceil_kbit':result.class_ceil_kbit}
+
+    def notification_snapshot(self):
+        result=NotificationSnapshot(1,c.sizeof(NotificationSnapshot))
+        if not self.lib.fc_v2_get_notification_snapshot(self.handle,c.byref(result)):
+            raise RuntimeError(self.lib.fc_v2_error().decode())
+        return {'flags':result.flags,'network_observed':bool(result.network_observed),
+                'observed_ns':result.observed_ns,'application_samples':result.application_samples}
 
     @contextlib.contextmanager
     def stream_request(self,stream_id,priority=0,deadline_us=0,cookie=0):

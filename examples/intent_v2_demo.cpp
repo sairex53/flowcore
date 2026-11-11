@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <iostream>
 #include <netinet/tcp.h>
+#include <optional>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <thread>
@@ -34,7 +35,7 @@ int main(int argc,char** argv) {
         intent.priority=std::string(argv[3])=="payment"?Priority::Critical:
                         std::string(argv[3])=="database"?Priority::Interactive:Priority::Standard;
         Service service(argv[1],intent);
-        if (!service.wait_ready(std::chrono::seconds(3))) throw std::runtime_error("registration unavailable");
+        const bool telemetry_online=service.wait_ready(std::chrono::milliseconds{250});
         int fd=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC,0);
         if (fd<0) throw std::runtime_error("socket failed");
         struct Owner { int fd; ~Owner(){close(fd);} } owner{fd};
@@ -47,18 +48,23 @@ int main(int argc,char** argv) {
         address.sin_family=AF_INET; address.sin_port=htons(static_cast<unsigned short>(port));
         inet_pton(AF_INET,"127.0.0.1",&address.sin_addr);
         if (connect(fd,reinterpret_cast<sockaddr*>(&address),sizeof(address))) throw std::runtime_error("connect failed");
-        auto cookie=service.associate_socket(fd);
+        std::uint64_t cookie=0;
+        if (telemetry_online) {
+            try { cookie=service.associate_socket(fd); }
+            catch (const std::exception&) { /* Network I/O remains independent of optional correlation. */ }
+        }
         std::vector<char> payload(static_cast<size_t>(bytes),'Q');
         std::vector<double> latencies;
         for (int i=0;i<60;++i) {
             auto begin=std::chrono::steady_clock::now();
-            auto request=service.begin_request(0,cookie);
+            std::optional<Request> request;
+            if (telemetry_online) request.emplace(service.begin_request(std::chrono::microseconds{0},cookie));
             auto length=htonl(static_cast<std::uint32_t>(payload.size()));
             transfer(fd,&length,sizeof(length),true);
             transfer(fd,payload.data(),payload.size(),true);
             char reply[64];
             transfer(fd,reply,sizeof(reply),false);
-            static_cast<void>(request.complete());
+            if (request) static_cast<void>(request->complete());
             latencies.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count());
         }
         if (!service.flush(std::chrono::seconds(3))) throw std::runtime_error("telemetry flush timeout");

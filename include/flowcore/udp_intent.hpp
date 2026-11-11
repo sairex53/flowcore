@@ -106,6 +106,10 @@ public:
                                   int flags = MSG_DONTWAIT);
     std::vector<SendResult> send_batch(std::span<const Message> messages,
                                        int flags = MSG_DONTWAIT);
+    // Reuse caller-owned result storage to avoid one allocation per batch.
+    // Returns false when the output span does not match or the batch exceeds 4096 messages.
+    bool send_batch_into(std::span<const Message> messages, std::span<SendResult> results,
+                         int flags = MSG_DONTWAIT);
     std::vector<TxTimestamp> drain_tx_timestamps(std::size_t maximum = 128) noexcept;
     static Capabilities detect_capabilities() noexcept;
     int family() const noexcept { return family_; }

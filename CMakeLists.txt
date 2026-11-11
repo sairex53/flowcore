@@ -172,6 +172,24 @@ target_link_libraries(intent_v2_native PRIVATE flowcore_sdk)
 add_executable(flowcore-intent-c-demo examples/intent_c_demo.c)
 target_include_directories(flowcore-intent-c-demo PRIVATE include)
 target_link_libraries(flowcore-intent-c-demo PRIVATE flowcore_intent)
+add_executable(flowcore-intent-c-udp-demo examples/intent_c_udp_demo.c)
+target_include_directories(flowcore-intent-c-udp-demo PRIVATE include)
+target_link_libraries(flowcore-intent-c-udp-demo PRIVATE flowcore_intent)
+add_executable(intent_old_surface_compat tests/intent_old_surface_compat.c)
+target_include_directories(intent_old_surface_compat PRIVATE include)
+target_link_libraries(intent_old_surface_compat PRIVATE flowcore_intent)
+add_executable(intent_c_api_unit tests/intent_c_api_unit.cpp)
+target_include_directories(intent_c_api_unit PRIVATE include)
+target_link_libraries(intent_c_api_unit PRIVATE flowcore_intent)
+target_compile_options(intent_c_api_unit PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME intent_c_api_unit COMMAND intent_c_api_unit)
+add_executable(intent_protocol_compat tests/intent_protocol_compat.cpp)
+target_include_directories(intent_protocol_compat PRIVATE include)
+target_link_libraries(intent_protocol_compat PRIVATE flowcore_sdk)
+target_compile_options(intent_protocol_compat PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME intent_protocol_compat COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_protocol_compat.py" $<TARGET_FILE:intent_protocol_compat>)
+set_tests_properties(intent_protocol_compat PROPERTIES TIMEOUT 15)
 add_test(NAME intent_v2_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py")
 add_test(NAME intent_v2_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py" --live)
 set_tests_properties(intent_v2_live PROPERTIES TIMEOUT 30 ENVIRONMENT "FLOWCORE_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
@@ -228,6 +246,9 @@ install(FILES TRANSPORT_AWARE.md QUIC_INTEGRATION.md TRANSPORT_RESULTS.md DESTIN
 install(FILES REAL_APPLICATIONS.md GRPC_INTEGRATION.md DATABASE_INTEGRATION.md APPLICATION_BENCHMARKS.md
     REAL_APPLICATIONS_V2.md SERVICE_STACK.md APPLICATION_PERFORMANCE_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES SDK_V2.md PUBLIC_API_CONTRACT.md SDK_PERFORMANCE.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES examples/intent_v2_demo.cpp examples/intent_c_demo.c examples/intent_c_udp_demo.c
+              examples/intent_rust_demo.rs examples/intent_go_demo.go DESTINATION "${FLOWCORE_DATA}/examples/intent-sdk")
 install(FILES config/real-app-v2-fedora45.txt
     DESTINATION "${FLOWCORE_DATA}/config")
 install(DIRECTORY examples/real_apps DESTINATION "${FLOWCORE_DATA}/examples"

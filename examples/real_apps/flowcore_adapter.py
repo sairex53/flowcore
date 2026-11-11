@@ -51,30 +51,39 @@ class FlowcoreAdapter:
                 deadline_us=int(deadline_ms * 1000) if deadline_ms else 0,
                 desired_kbit=desired_kbit, minimum_kbit=min_kbit,
                 maximum_kbit=max_kbit)
-            if not self.sdk.ready(3000):
-                self.sdk.close()
-                self.sdk = None
-                self.reason = 'FLOWCORE daemon unavailable'
-                return
-            self.reason = 'connected'
+            self.reason = 'connected' if self.sdk.ready(0) else 'connecting; application I/O is independent'
         except (OSError, ValueError, RuntimeError) as error:
             self.sdk = None
             self.reason = str(error)[:160]
 
-    def _cookie(self, sock):
-        if self.sdk is None or sock is None:
-            return 0
-        fd = sock.fileno()
-        if fd < 0:
+    @staticmethod
+    def _socket_cookie(sock):
+        if sock is None or sock.fileno() < 0:
             return 0
         try:
-            key = int.from_bytes(sock.getsockopt(socket.SOL_SOCKET, 57, 8), sys.byteorder)
+            return int.from_bytes(sock.getsockopt(socket.SOL_SOCKET, 57, 8), sys.byteorder)
         except OSError:
-            key = fd
+            return 0
+
+    def prepare_socket(self, sock):
+        """Associate a socket during connection setup, outside request hot paths."""
+        if self.sdk is None:
+            return 0
+        key = self._socket_cookie(sock)
+        if not key:
+            return 0
+        fd = sock.fileno()
         with self._lock:
             if key not in self._cookies:
                 self._cookies[key] = self.sdk.associate_socket(fd)
             return self._cookies[key]
+
+    def _cookie(self, sock):
+        key = self._socket_cookie(sock)
+        if not key:
+            return 0
+        with self._lock:
+            return self._cookies.get(key, 0)
 
     @contextlib.contextmanager
     def request(self, *, sock=None, cookie=0, deadline_ms=0, stream_id=None, stream_priority=0):
@@ -110,9 +119,17 @@ class FlowcoreAdapter:
         return self.sdk.flush(timeout_ms) if self.sdk is not None else True
 
     def status(self):
+        if self.sdk is not None:
+            self.reason = 'connected' if self.sdk.ready(0) else 'connecting/offline; application I/O is independent'
         return {'enabled': self.sdk is not None, 'service': self.service_name,
                 'connection': self.reason,
-                'sdk': self.sdk.statistics() if self.sdk is not None else None}
+                'sdk': self.sdk.statistics() if self.sdk is not None else None,
+                'capabilities': self.sdk.capabilities() if self.sdk is not None else None}
+
+    def effective_policy(self):
+        if self.sdk is None:
+            return None
+        return self.sdk.effective_policy()
 
     def close(self):
         if self.sdk is not None:

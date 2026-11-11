@@ -32,19 +32,33 @@ func main() {
 		panic(C.GoString(C.fc_v2_error()))
 	}
 	defer C.fc_v2_close(service)
-	if C.fc_v2_wait(service, 3000) == 0 {
-		return
-	} // Application keeps operating offline.
+	online := C.fc_v2_wait(service, 250) != 0
+	if online && C.fc_v2_subscribe_notifications(service, 1) == 0 {
+		panic(C.GoString(C.fc_v2_error()))
+	}
 	request := C.fc_v2_begin(service, 10000, 0)
 	if request != nil {
 		C.fc_v2_finish(request, 0)
 	}
-	if C.fc_v2_flush(service, 3000) == 0 {
+	if online && C.fc_v2_flush(service, 3000) == 0 {
 		panic("flush timed out")
 	}
+	var capabilities C.fc_v2_capability_snapshot
+	capabilities.version = 1
+	capabilities.size = C.uint32_t(C.sizeof_fc_v2_capability_snapshot)
+	if online && C.fc_v2_get_capabilities(service, &capabilities) == 0 {
+		panic(C.GoString(C.fc_v2_error()))
+	}
 	var statistics C.fc_v2_statistics
-	if C.fc_v2_stats(service, &statistics) == 0 || statistics.accepted == 0 || statistics.rejected != 0 {
-		panic("telemetry was not acknowledged")
+	if C.fc_v2_stats(service, &statistics) == 0 {
+		panic("telemetry statistics unavailable")
+	}
+	if !online {
+		fmt.Println("FLOWCORE offline; application continues without policy telemetry")
+		return
+	}
+	if statistics.rejected != 0 {
+		panic("telemetry event rejected")
 	}
 	var transport C.fc_v2_transport_statistics
 	if C.fc_v2_transport_stats(service, &transport) == 0 {

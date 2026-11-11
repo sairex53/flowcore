@@ -30,6 +30,50 @@ std::string field(std::string_view text, std::string_view key) {
 std::uint64_t integer(std::string_view text, std::string_view key) {
     return detail::unsigned_field(text,key);
 }
+bool boolean(std::string_view text, std::string_view key) noexcept {
+    const auto position=text.find(key);
+    if (position==std::string_view::npos) return false;
+    auto value=position+key.size();
+    while (value<text.size() && (text[value]==' ' || text[value]=='\t')) ++value;
+    return text.substr(value,4)=="true";
+}
+bool protocol_boolean(std::string_view text, std::string_view key) {
+    const auto position=text.find(key);
+    if (position==std::string_view::npos)
+        throw detail::RpcError(Error::ProtocolError,"missing boolean field");
+    auto value=position+key.size();
+    while (value<text.size() && (text[value]==' ' || text[value]=='\t')) ++value;
+    const bool result=text.substr(value,4)=="true";
+    if (!result && text.substr(value,5)!="false")
+        throw detail::RpcError(Error::ProtocolError,"invalid boolean field");
+    value+=result?4:5;
+    while (value<text.size() && (text[value]==' ' || text[value]=='\t')) ++value;
+    if (value>=text.size() || (text[value]!=',' && text[value]!='}' && text[value]!=']'))
+        throw detail::RpcError(Error::ProtocolError,"invalid boolean delimiter");
+    return result;
+}
+std::uint64_t feature_mask(std::string_view response) noexcept {
+    constexpr std::pair<std::string_view,Capability> features[] = {
+        {"lease_renewal",Capability::LeaseRenewal},
+        {"udp_socket_association",Capability::SocketAssociation},
+        {"socket_dissociation",Capability::SocketDissociation},
+        {"notification_quality",Capability::NotificationQuality},
+        {"transport_sessions_v1",Capability::TransportSessions},
+        {"deadline_admission_v1",Capability::DeadlineAdmission},
+        {"udp_per_message_intents_v1",Capability::UdpPerMessageIntents}
+    };
+    std::uint64_t result=0;
+    for (const auto& [name,capability] : features)
+        if (response.find(name)!=std::string_view::npos)
+            result|=static_cast<std::uint64_t>(capability);
+    return result;
+}
+
+std::uint32_t microseconds(std::chrono::microseconds value) {
+    if (value.count()<0 || value.count()>600'000'000)
+        throw std::invalid_argument("request deadline outside supported range");
+    return static_cast<std::uint32_t>(value.count());
+}
 
 bool label(std::string_view text) {
     return !text.empty() && text.size()<=32 && text[0]>='a' && text[0]<='z' &&
@@ -49,6 +93,7 @@ struct Event {
 struct Channel {
     const pid_t owner=getpid();
     const std::string path, registration;
+    const Intent requested;
     const std::uint32_t default_deadline,lifetime;
     Transport transport;
     std::mutex mutex;
@@ -57,7 +102,11 @@ struct Channel {
     std::size_t head=0, count=0;
     bool stopping=false, busy=false;
     std::string lease;
-    std::atomic<bool> connected{false}, absolute_deadlines{false}, udp_authorized{false};
+    std::atomic<bool> connected{false}, absolute_deadlines{false}, udp_authorized{false},
+                      notifications_enabled{false};
+    std::atomic<std::uint32_t> protocol_version{0};
+    std::atomic<std::uint64_t> negotiated_features{0}, application_samples{0};
+    std::atomic<bool> network_observed{false};
     std::uint32_t udp_socket_mark=0, udp_rate_pps=0, udp_burst=0, udp_max_deadline_ms=0;
     std::uint64_t udp_expires_ns=0;
     std::shared_ptr<flowcore::udp::UrgencyBudget> udp_budget;
@@ -70,7 +119,8 @@ struct Channel {
     std::thread worker;
 
     Channel(std::string socket, const Intent& intent)
-        : path(std::move(socket)), registration(make_registration(intent)), default_deadline(intent.deadline_us),lifetime(intent.lifetime_seconds),transport(path),
+        : path(std::move(socket)), registration(make_registration(intent)), requested(intent),
+          default_deadline(intent.deadline_us),lifetime(intent.lifetime_seconds),transport(path),
           worker([this]{ run(); }) {}
     static std::string make_registration(const Intent& i) {
         if ((i.priority!=Priority::Standard && i.priority!=Priority::Interactive && i.priority!=Priority::Critical) || !label(i.service) || i.deadline_us>600000000 || !i.lifetime_seconds || i.lifetime_seconds>3600 ||
@@ -131,11 +181,23 @@ struct Channel {
                 if (!connected) {
                     auto reply=transport.exchange(registration);
                     auto next=field(reply,"\"lease\": \"");
+                    const auto minimum=reply.find("\"protocol_min\": ");
+                    const auto maximum=reply.find("\"protocol_max\": ");
+                    if ((minimum==std::string::npos)!=(maximum==std::string::npos))
+                        throw RpcError(Error::ProtocolError,"incomplete protocol version range");
+                    if (minimum!=std::string::npos) {
+                        const auto low=integer(reply,"\"protocol_min\": ");
+                        const auto high=integer(reply,"\"protocol_max\": ");
+                        if (low>high || low>2 || high<2)
+                            throw RpcError(Error::ProtocolError,"no compatible intent protocol version");
+                    }
                     if (next.size()!=32 || next.find_first_not_of("0123456789abcdef")!=std::string::npos)
                         throw std::runtime_error("invalid lease");
                     { std::lock_guard lock(mutex); lease=next; token=next; }
                     can_renew=reply.find("\"renewable\": true")!=std::string::npos;
                     absolute_deadlines=reply.find("\"deadline_admission_v1\"")!=std::string::npos;
+                    protocol_version=2;
+                    negotiated_features=feature_mask(reply);
                     std::uint32_t socket_mark=0, rate=0, burst=0, horizon=0;
                     std::uint64_t expires=0;
                     const bool authorized=reply.find("\"udp_message\": {\"authorized\": true")!=std::string::npos;
@@ -158,7 +220,7 @@ struct Channel {
                         udp_socket_mark=socket_mark; udp_rate_pps=rate; udp_burst=burst; udp_max_deadline_ms=horizon;
                         udp_expires_ns=expires;
                         udp_authorized=authorized && expires>deadline::monotonic_ns();
-                        notifications=0;notification_time=0;
+                        notifications=0;notification_time=0;application_samples=0;network_observed=false;
                         ++generation;
                     }
                     connected=true;
@@ -176,36 +238,41 @@ struct Channel {
                         }
                         renew_after=deadline::monotonic_ns()+static_cast<std::uint64_t>(lifetime)*500000000ULL;
                     }
-                    std::string message=envelope("batch",token)+",\"events\":[";
-                    std::size_t sent=0;
-                    constexpr const char* phases[]={"start","ok","timeout","failure","cancelled"};
-                    for (std::size_t i=0;i<size;++i) {
-                        const auto& e=batch[i];
-                        if (e.generation!=generation) { ++dropped; continue; }
-                        if (sent++) message+=",";
-                        message+="{\"id\":"+std::to_string(e.id)+",\"phase\":\""+phases[e.phase]+
-                            "\",\"start_ns\":"+std::to_string(e.start)+",\"end_ns\":"+std::to_string(e.end)+
-                            ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null");
-                        if (e.absolute_ns) message+=",\"deadline_ns\":"+std::to_string(e.absolute_ns);
-                        if (e.logical) message+=",\"stream_id\":"+std::to_string(e.stream)+",\"stream_priority\":"+std::to_string(e.priority);
-                        message+="}";
+                    if (size || notifications_enabled.load(std::memory_order_acquire)) {
+                        std::string message=envelope("batch",token)+",\"events\":[";
+                        std::size_t sent=0;
+                        constexpr const char* phases[]={"start","ok","timeout","failure","cancelled"};
+                        for (std::size_t i=0;i<size;++i) {
+                            const auto& e=batch[i];
+                            if (e.generation!=generation) { ++dropped; continue; }
+                            if (sent++) message+=",";
+                            message+="{\"id\":"+std::to_string(e.id)+",\"phase\":\""+phases[e.phase]+
+                                "\",\"start_ns\":"+std::to_string(e.start)+",\"end_ns\":"+std::to_string(e.end)+
+                                ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null");
+                            if (e.absolute_ns) message+=",\"deadline_ns\":"+std::to_string(e.absolute_ns);
+                            if (e.logical) message+=",\"stream_id\":"+std::to_string(e.stream)+",\"stream_priority\":"+std::to_string(e.priority);
+                            message+="}";
+                        }
+                        message+="]}";
+                        auto reply=transport.exchange(std::move(message));
+                        auto acknowledged=integer(reply,"\"accepted\": ");
+                        auto invalid=integer(reply,"\"rejected\": ");
+                        if (acknowledged>sent || invalid>sent || acknowledged+invalid!=sent)
+                            throw RpcError(Error::ProtocolError,"invalid event acknowledgement counts");
+                        accepted+=acknowledged;
+                        rejected+=invalid;
+                        last_error=invalid?Error::EventRejected:Error::None;
+                        std::uint32_t flags=0;
+                        constexpr const char* names[]={"slo_risk","congestion","policy_fallback","interface_degradation","insufficient_capacity"};
+                        for (unsigned i=0;i<5;++i)
+                            if (reply.find("\""+std::string(names[i])+"\": true")!=std::string::npos) flags|=1U<<i;
+                        notifications=flags;
+                        if (reply.find("\"observed_ns\": ")!=std::string::npos)
+                            notification_time=integer(reply,"\"observed_ns\": ");
+                        if (reply.find("\"application_samples\": ")!=std::string::npos)
+                            application_samples=integer(reply,"\"application_samples\": ");
+                        network_observed=boolean(reply,"\"network_observed\": ");
                     }
-                    message+="]}";
-                    auto reply=transport.exchange(std::move(message));
-                    auto acknowledged=integer(reply,"\"accepted\": ");
-                    auto invalid=integer(reply,"\"rejected\": ");
-                    if (acknowledged>sent || invalid>sent || acknowledged+invalid!=sent)
-                        throw RpcError(Error::ProtocolError,"invalid event acknowledgement counts");
-                    accepted+=acknowledged;
-                    rejected+=invalid;
-                    last_error=invalid?Error::EventRejected:Error::None;
-                    std::uint32_t flags=0;
-                    constexpr const char* names[]={"slo_risk","congestion","policy_fallback","interface_degradation","insufficient_capacity"};
-                    for (unsigned i=0;i<5;++i)
-                        if (reply.find("\""+std::string(names[i])+"\": true")!=std::string::npos) flags|=1U<<i;
-                    notifications=flags;
-                    if (reply.find("\"observed_ns\": ")!=std::string::npos)
-                        notification_time=integer(reply,"\"observed_ns\": ");
                 }
             } catch (const RpcError& error) {
                 ++errors; dropped+=size; last_error=error.code;
@@ -234,7 +301,21 @@ struct Channel {
 };
 }
 Service::Service(std::string path, Intent intent) : channel_(std::make_shared<detail::Channel>(std::move(path),intent)) {}
+std::expected<Service,OpenError> Service::try_open(std::string path, Intent intent) noexcept {
+    try {
+        return Service(std::move(path),std::move(intent));
+    } catch (const std::invalid_argument& error) {
+        return std::unexpected(OpenError{Error::InvalidRequest,error.what()});
+    } catch (const std::exception& error) {
+        return std::unexpected(OpenError{Error::TransportUnavailable,error.what()});
+    } catch (...) {
+        return std::unexpected(OpenError{Error::TransportUnavailable,"unknown SDK initialization error"});
+    }
+}
 Request Service::begin_request(std::uint32_t deadline, std::uint64_t cookie) const { return Request(channel_,deadline,cookie); }
+Request Service::begin_request(std::chrono::microseconds deadline, std::uint64_t cookie) const {
+    return begin_request(microseconds(deadline),cookie);
+}
 bool Service::ready() const noexcept { return channel_->owner==getpid() && channel_->connected; }
 bool Service::wait_ready(std::chrono::milliseconds timeout) const {
     if (channel_->owner!=getpid()) return false;
@@ -252,10 +333,71 @@ Statistics Service::statistics() const noexcept {
 TransportStatistics Service::transport_statistics() const noexcept {
     return {channel_->transport.connections,channel_->transport.requests,channel_->transport.legacy};
 }
+CapabilitySnapshot Service::capabilities() const noexcept {
+    if (!ready()) return {};
+    return {channel_->protocol_version.load(),channel_->negotiated_features.load(),channel_->udp_authorized.load()};
+}
+NotificationSnapshot Service::notification_snapshot() const noexcept {
+    return {channel_->notifications.load(),channel_->notification_time.load(),
+            channel_->application_samples.load(),channel_->network_observed.load()};
+}
+void Service::subscribe_notifications(bool enabled) const noexcept {
+    if (channel_->owner!=getpid()) return;
+    channel_->notifications_enabled.store(enabled,std::memory_order_release);
+    channel_->changed.notify_one();
+}
 Error Service::last_error() const noexcept { return channel_->last_error; }
 std::uint64_t Service::registration_generation() const noexcept { return channel_->generation; }
 std::uint64_t Service::notifications_time_ns() const noexcept { return channel_->notification_time; }
 std::uint32_t Service::notifications() const noexcept { return channel_->notifications; }
+std::expected<EffectivePolicy,OpenError> Service::effective_policy() const noexcept {
+    if (channel_->owner!=getpid())
+        return std::unexpected(OpenError{Error::TransportUnavailable,"service handle cannot be used after fork"});
+    if (!ready())
+        return std::unexpected(OpenError{Error::TransportUnavailable,"FLOWCORE daemon is offline"});
+    try {
+        std::string lease;
+        {
+            std::lock_guard lock(channel_->mutex);
+            if (!ready()) return std::unexpected(OpenError{Error::TransportUnavailable,"FLOWCORE daemon is offline"});
+            lease=channel_->lease;
+        }
+        detail::Transport transport(channel_->path);
+        const auto reply=transport.exchange(channel_->envelope("inspect",lease)+"}");
+        EffectivePolicy result;
+        result.accepted_intent=channel_->requested;
+        const auto read_u32=[&](std::string_view key,std::uint32_t maximum) {
+            const auto value=integer(reply,key);
+            if (value>maximum) throw detail::RpcError(Error::ProtocolError,"policy value exceeds protocol bound");
+            return static_cast<std::uint32_t>(value);
+        };
+        const auto priority=read_u32("\"accepted_priority\": ",static_cast<std::uint32_t>(Priority::Critical));
+        result.accepted_intent.priority=static_cast<Priority>(priority);
+        result.accepted_intent.target_latency_us=read_u32("\"target_latency_us\": ",600000000);
+        result.accepted_intent.deadline_us=read_u32("\"deadline_us\": ",600000000);
+        result.accepted_intent.desired_kbit=read_u32("\"desired_kbit\": ",1000000);
+        result.accepted_intent.minimum_kbit=read_u32("\"minimum_kbit\": ",1000000);
+        result.accepted_intent.maximum_kbit=read_u32("\"maximum_kbit\": ",1000000);
+        result.accepted_intent.lifetime_seconds=read_u32("\"lifetime_seconds\": ",3600);
+        result.accepted_intent.prefer_reliable=protocol_boolean(reply,"\"prefer_reliable\": ");
+        result.generation=integer(reply,"\"policy_generation\": ");
+        result.kernel_verified=protocol_boolean(reply,"\"kernel_verified\": ");
+        result.class_rate_kbit=read_u32("\"class_rate_kbit\": ",1000000);
+        result.class_ceil_kbit=read_u32("\"class_ceil_kbit\": ",1000000);
+        if (!result.accepted_intent.target_latency_us || !result.accepted_intent.lifetime_seconds ||
+            (result.accepted_intent.minimum_kbit>result.accepted_intent.maximum_kbit &&
+                result.accepted_intent.maximum_kbit))
+            throw detail::RpcError(Error::ProtocolError,"inconsistent accepted policy values");
+        result.state=result.kernel_verified?PolicyState::KernelVerified:PolicyState::RegisteredOnly;
+        return result;
+    } catch (const detail::RpcError& error) {
+        return std::unexpected(OpenError{error.code,error.what()});
+    } catch (const std::exception& error) {
+        return std::unexpected(OpenError{Error::ProtocolError,error.what()});
+    } catch (...) {
+        return std::unexpected(OpenError{Error::ProtocolError,"unknown policy inspection failure"});
+    }
+}
 std::unique_ptr<flowcore::udp::MessageSender> Service::udp_message_sender(int fd, bool enable_timestamps) const {
     if (channel_->owner!=getpid() || !ready()) throw std::runtime_error("daemon unavailable or service inherited across fork");
     std::lock_guard lock(channel_->mutex);
@@ -271,7 +413,8 @@ std::uint64_t Service::associate_socket(int fd) const {
     { std::lock_guard lock(channel_->mutex);
       if (!ready()) throw std::runtime_error("daemon unavailable");
       token=channel_->lease; }
-    auto reply=flowcore::detail::exchange(channel_->path,channel_->envelope("associate",token)+"}",fd);
+    detail::Transport transport(channel_->path);
+    auto reply=transport.exchange(channel_->envelope("associate",token)+"}",fd);
     return std::stoull(field(reply,"\"cookie\": \""));
 }
 void Service::declare_transport(const TransportHints& hints) const {
@@ -326,6 +469,10 @@ std::uint64_t Service::dissociate_socket(std::uint64_t cookie) const {
 Request Service::begin_stream_request(std::uint64_t stream, unsigned priority,
                                       std::uint32_t deadline, std::uint64_t cookie) const {
     return Request(channel_,deadline,cookie,stream,priority,true);
+}
+Request Service::begin_stream_request(std::uint64_t stream, unsigned priority,
+                                      std::chrono::microseconds deadline, std::uint64_t cookie) const {
+    return begin_stream_request(stream,priority,microseconds(deadline),cookie);
 }
 deadline::Admission Service::admit(const deadline::Work& work, std::uint64_t cookie) const {
     const auto current = deadline::monotonic_ns();
@@ -408,6 +555,14 @@ DeadlineRequest::DeadlineRequest(Request request, deadline::Work work) noexcept
 DeadlineRequest::DeadlineRequest(DeadlineRequest&& other) noexcept
     : request_(std::move(other.request_)), work_(other.work_), completed_(other.completed_),
       finished_(std::exchange(other.finished_, true)) {}
+DeadlineRequest& DeadlineRequest::operator=(DeadlineRequest&& other) noexcept {
+    if (this==&other) return *this;
+    request_=std::move(other.request_);
+    work_=other.work_;
+    completed_=other.completed_;
+    finished_=std::exchange(other.finished_,true);
+    return *this;
+}
 std::chrono::nanoseconds DeadlineRequest::remaining() const noexcept {
     const auto current = deadline::monotonic_ns();
     return std::chrono::nanoseconds(work_.deadline_ns > current ? work_.deadline_ns-current : 0);
@@ -449,6 +604,16 @@ Request::Request(std::shared_ptr<detail::Channel> channel, std::uint32_t deadlin
 Request::Request(Request&& other) noexcept
     : channel_(std::move(other.channel_)),id_(other.id_),start_(other.start_),
       generation_(other.generation_),cookie_(other.cookie_),deadline_(other.deadline_),stream_(other.stream_),absolute_ns_(other.absolute_ns_),priority_(other.priority_),logical_(other.logical_) {}
+Request& Request::operator=(Request&& other) noexcept {
+    if (this==&other) return *this;
+    if (channel_) static_cast<void>(complete(Outcome::Cancelled));
+    channel_=std::move(other.channel_);
+    id_=other.id_;start_=other.start_;generation_=other.generation_;cookie_=other.cookie_;
+    deadline_=other.deadline_;stream_=other.stream_;absolute_ns_=other.absolute_ns_;
+    priority_=other.priority_;logical_=other.logical_;
+    other.id_=0;
+    return *this;
+}
 Request::~Request() { if (channel_) static_cast<void>(complete(Outcome::Cancelled)); }
 bool Request::complete(Outcome outcome) noexcept { return finish_at(outcome, deadline::monotonic_ns()); }
 bool Request::finish_at(Outcome outcome, std::uint64_t end) noexcept {

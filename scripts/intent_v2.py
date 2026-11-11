@@ -154,7 +154,7 @@ class IntentAPI:
             row['expires']=time.time()+max(0,row['monotonic_expiry']-time.monotonic())
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='registered',uid=uid,service=intent['name'],pid=pid,process_start=start))
             self.service.log('intent_v2_registered',uid=uid,service=intent['name'],pid=pid,process_start=start)
-            response=dict(version=2,lease=token,renewable=True,
+            response=dict(version=2,protocol_min=2,protocol_max=2,lease=token,renewable=True,
                         features=['lease_renewal','udp_socket_association','socket_dissociation','notification_quality','transport_sessions_v1','deadline_admission_v1','udp_per_message_intents_v1'],
                         isolation='preference_only',identity='SO_PEERCRED+process_start',
                         constraints='class contracts require admitted HTB lab',notifications={})
@@ -198,6 +198,28 @@ class IntentAPI:
             self.audit.append(dict(time_ns=time.monotonic_ns(),event='renewed',uid=uid,service=lease['name'],pid=pid,process_start=lease['process_start']))
             self.service.log('intent_v2_renewed',uid=uid,service=lease['name'],pid=pid,process_start=lease['process_start'])
             return dict(version=2,expires_ns=lease['expires_ns'])
+        if action=='inspect':
+            keys(request,('op','version','action','lease'))
+            row=self.service.controller.registry.rows.get(lease['name'])
+            if row is None or row.get('owner_uid') != uid:
+                raise UnknownLease('registered policy is no longer available')
+            controller=self.service.controller
+            verified=bool(self.service.lab is not None and controller.allocation_confirmed and controller.current)
+            intent=row['intent']
+            allocation=controller.current.get(intent['priority']) if verified else None
+            if allocation is None:
+                verified=False
+            rate,ceil=allocation if verified else (0,0)
+            priorities={'standard':0,'interactive':1,'critical':2}
+            return dict(version=2,policy_generation=self.service.controller.registry.revision,
+                        kernel_verified=verified,class_rate_kbit=rate,class_ceil_kbit=ceil,
+                        accepted_priority=priorities[intent['priority']],
+                        target_latency_us=round(float(intent['target_p99_ms'])*1000),
+                        deadline_us=round(float(intent['deadline_ms'])*1000) if intent['deadline_ms'] is not None else 0,
+                        desired_kbit=intent['desired_kbit'],minimum_kbit=intent['min_kbit'],
+                        maximum_kbit=intent['max_kbit'],lifetime_seconds=intent['ttl_seconds'],
+                        prefer_reliable=intent['reliability']=='prefer_reliable',
+                        enforcement='kernel_verified_class' if verified else 'registered_intent_only')
         if action=='status':
             keys(request,('op','version','action','lease'))
             return dict(version=2,inflight=len(lease['requests']),outcomes=dict(lease['outcomes']),

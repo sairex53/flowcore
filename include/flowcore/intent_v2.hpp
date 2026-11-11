@@ -3,7 +3,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace flowcore::udp { class MessageSender; }
@@ -31,14 +33,49 @@ struct TransportHints {
 struct Statistics {
     std::uint64_t queued, accepted, dropped, rejected, transport_errors;
 };
+enum class Capability : std::uint64_t {
+    LeaseRenewal = 1ULL << 0, SocketAssociation = 1ULL << 1,
+    SocketDissociation = 1ULL << 2, NotificationQuality = 1ULL << 3,
+    TransportSessions = 1ULL << 4, DeadlineAdmission = 1ULL << 5,
+    UdpPerMessageIntents = 1ULL << 6
+};
+struct CapabilitySnapshot {
+    std::uint32_t protocol_version = 0;
+    std::uint64_t features = 0;
+    bool udp_message_authorized = false;
+    bool supports(Capability value) const noexcept {
+        return (features & static_cast<std::uint64_t>(value)) != 0;
+    }
+};
+struct NotificationSnapshot {
+    std::uint32_t flags = 0;
+    std::uint64_t observed_ns = 0;
+    std::uint64_t application_samples = 0;
+    bool network_observed = false;
+};
+enum class PolicyState : std::uint32_t { Unknown = 0, RegisteredOnly = 1, KernelVerified = 2 };
+struct EffectivePolicy {
+    Intent accepted_intent;
+    std::uint64_t generation = 0;
+    PolicyState state = PolicyState::Unknown;
+    std::uint32_t class_rate_kbit = 0;
+    std::uint32_t class_ceil_kbit = 0;
+    bool kernel_verified = false;
+};
+struct OpenError {
+    Error code = Error::InvalidRequest;
+    std::string message;
+};
 namespace detail { struct Channel; }
 class Request {
 public:
     Request(Request&&) noexcept;
+    Request& operator=(Request&&) noexcept;
     Request(const Request&) = delete;
     Request& operator=(const Request&) = delete;
     ~Request();
     bool complete(Outcome = Outcome::Ok) noexcept;
+    bool cancel() noexcept { return complete(Outcome::Cancelled); }
     std::uint64_t id() const noexcept { return id_; }
 private:
     friend class Service;
@@ -57,12 +94,14 @@ struct DeadlineCompletion { bool missed, telemetry_queued; };
 class DeadlineRequest {
 public:
     DeadlineRequest(DeadlineRequest&&) noexcept;
+    DeadlineRequest& operator=(DeadlineRequest&&) noexcept;
     std::uint64_t id() const noexcept { return request_.id(); }
     std::chrono::nanoseconds remaining() const noexcept;
     bool should_cancel() const noexcept;
     bool progress(std::uint64_t completed_egress_bytes) noexcept;
     deadline::Work remaining_work() const noexcept;
     std::optional<DeadlineCompletion> complete(Outcome = Outcome::Ok) noexcept;
+    std::optional<DeadlineCompletion> cancel() noexcept { return complete(Outcome::Cancelled); }
 private:
     friend class Service;
     DeadlineRequest(Request request, deadline::Work work) noexcept;
@@ -74,9 +113,18 @@ private:
 class Service {
 public:
     Service(std::string socket_path, Intent intent);
+    Service(const Service&) = default; // Copies share one lease, queue and background connection.
+    Service& operator=(const Service&) = default;
+    Service(Service&&) noexcept = default;
+    Service& operator=(Service&&) noexcept = default;
+    // Non-throwing local construction. Daemon availability remains asynchronous and optional.
+    static std::expected<Service, OpenError> try_open(std::string socket_path, Intent intent) noexcept;
     Request begin_request(std::uint32_t deadline_us = 0, std::uint64_t cookie = 0) const;
+    Request begin_request(std::chrono::microseconds deadline, std::uint64_t cookie = 0) const;
     Request begin_stream_request(std::uint64_t stream_id, unsigned priority,
                                  std::uint32_t deadline_us = 0, std::uint64_t cookie = 0) const;
+    Request begin_stream_request(std::uint64_t stream_id, unsigned priority,
+                                 std::chrono::microseconds deadline, std::uint64_t cookie = 0) const;
     DeadlineRequest begin_deadline_request(const deadline::Work&, std::uint64_t cookie = 0) const;
     DeadlineRequest begin_deadline_stream(const deadline::Work&, std::uint64_t stream_id,
                                           unsigned advisory_priority, std::uint64_t cookie = 0) const;
@@ -87,9 +135,16 @@ public:
     bool ready() const noexcept;
     Statistics statistics() const noexcept;
     TransportStatistics transport_statistics() const noexcept;
+    CapabilitySnapshot capabilities() const noexcept;
+    NotificationSnapshot notification_snapshot() const noexcept;
+    // Opt in to periodic empty-batch polling for degradation notifications. Off by default.
+    void subscribe_notifications(bool enabled = true) const noexcept;
     Error last_error() const noexcept;
     std::uint64_t registration_generation() const noexcept;
     std::uint64_t notifications_time_ns() const noexcept;
+    // Synchronous, read-only and bounded to the local IPC timeout. Kernel state is reported
+    // separately from an accepted intent; a registration is not itself a QoS guarantee.
+    std::expected<EffectivePolicy, OpenError> effective_policy() const noexcept;
     // Blocking setup operation. Returned cookie is attested by a received FD.
     std::uint64_t associate_socket(int fd) const;
     // Requires a daemon-authorized service lease and a socket bearing the operator-required SO_MARK.

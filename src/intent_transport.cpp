@@ -6,6 +6,7 @@
 #include <chrono>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <unistd.h>
 namespace flowcore::detail { std::string exchange(const std::string&,std::string,int); }
@@ -58,9 +59,9 @@ Transport::Transport(std::string path):path_(std::move(path)) {
 }
 Transport::~Transport() { close(); }
 void Transport::close() noexcept { if (fd_>=0) ::close(fd_); fd_=-1; }
-std::string Transport::exchange(std::string data) {
+std::string Transport::exchange(std::string data, int passed_fd) {
     if (endpoint_.empty()) {
-        ++legacy; return versioned(flowcore::detail::exchange(path_,std::move(data),-1));
+        ++legacy; return versioned(flowcore::detail::exchange(path_,std::move(data),passed_fd));
     }
     auto deadline=Clock::now()+std::chrono::milliseconds(250);
     try {
@@ -73,7 +74,7 @@ std::string Transport::exchange(std::string data) {
                 const int error=errno;
                 if (error==ENOENT) {
                     close(); ++legacy;
-                    return versioned(flowcore::detail::exchange(path_,std::move(data),-1));
+                    return versioned(flowcore::detail::exchange(path_,std::move(data),passed_fd));
                 }
                 if (error!=EINPROGRESS) throw RpcError(Error::TransportUnavailable,"intent daemon unavailable");
                 wait(fd_,POLLOUT,deadline);
@@ -91,7 +92,24 @@ std::string Transport::exchange(std::string data) {
         if (data.size()>65536) throw RpcError(Error::InvalidRequest,"intent frame exceeds bound");
         while (true) {
             wait(fd_,POLLOUT,deadline);
-            auto sent=send(fd_,data.data(),data.size(),MSG_NOSIGNAL);
+            ssize_t sent=-1;
+            if (passed_fd>=0) {
+                iovec payload{data.data(),data.size()};
+                alignas(cmsghdr) char control[CMSG_SPACE(sizeof(int))]{};
+                msghdr message{};
+                message.msg_iov=&payload;
+                message.msg_iovlen=1;
+                message.msg_control=control;
+                message.msg_controllen=sizeof(control);
+                auto* header=CMSG_FIRSTHDR(&message);
+                header->cmsg_level=SOL_SOCKET;
+                header->cmsg_type=SCM_RIGHTS;
+                header->cmsg_len=CMSG_LEN(sizeof(int));
+                std::memcpy(CMSG_DATA(header),&passed_fd,sizeof(passed_fd));
+                sent=sendmsg(fd_,&message,MSG_NOSIGNAL);
+            } else {
+                sent=send(fd_,data.data(),data.size(),MSG_NOSIGNAL);
+            }
             if (sent<0 && (errno==EAGAIN || errno==EINTR)) continue;
             if (sent!=static_cast<ssize_t>(data.size()))
                 throw RpcError(Error::TransportUnavailable,"intent send failed");

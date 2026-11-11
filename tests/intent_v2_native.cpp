@@ -2,6 +2,7 @@
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <utility>
 #include <vector>
 using namespace flowcore::v2;
 int main(int argc,char** argv) {
@@ -9,6 +10,39 @@ int main(int argc,char** argv) {
     Intent intent;intent.service="concurrent";
     Service service(argv[1],intent);
     if (!service.wait_ready(std::chrono::seconds(3))) return 3;
+    const auto capabilities=service.capabilities();
+    if (capabilities.protocol_version!=2 ||
+        !capabilities.supports(Capability::LeaseRenewal) ||
+        !capabilities.supports(Capability::TransportSessions)) return 9;
+    const auto policy=service.effective_policy();
+    if (!policy) { std::cerr << "policy inspection failed: " << policy.error().message << '\n'; return 10; }
+    if (policy->accepted_intent.service!="concurrent" ||
+        (policy->kernel_verified != (policy->state==PolicyState::KernelVerified))) {
+        std::cerr << "unexpected policy snapshot " << policy->accepted_intent.service << ' '
+                  << static_cast<unsigned>(policy->state) << ' ' << policy->kernel_verified << '\n';
+        return 10;
+    }
+    auto invalid_open=Service::try_open("/nonexistent-flowcore.sock",Intent{});
+    if (invalid_open || invalid_open.error().code!=Error::InvalidRequest) return 11;
+    Intent offline_intent;offline_intent.service="offline_open";
+    auto offline_open=Service::try_open("/nonexistent-flowcore.sock",offline_intent);
+    if (!offline_open || offline_open->ready()) return 12;
+    {
+        auto first=service.begin_request(std::chrono::microseconds{1000});
+        auto second=service.begin_request(std::chrono::microseconds{2000});
+        first=std::move(second); // The overwritten RAII scope is reported as cancelled.
+        if (!first.cancel()) return 13;
+        try { static_cast<void>(service.begin_request(std::chrono::microseconds{-1})); return 14; }
+        catch (const std::invalid_argument&) {}
+    }
+    if (!service.flush(std::chrono::seconds(2))) return 15;
+    const auto idle_requests=service.transport_statistics().session_requests;
+    std::this_thread::sleep_for(std::chrono::milliseconds(650));
+    if (service.transport_statistics().session_requests!=idle_requests) return 16;
+    service.subscribe_notifications();
+    std::this_thread::sleep_for(std::chrono::milliseconds(650));
+    if (service.transport_statistics().session_requests<=idle_requests) return 17;
+    service.subscribe_notifications(false);
     std::vector<std::thread> clients;
     for (int i=0;i<4;++i) clients.emplace_back([&service]{
         for (int n=0;n<32;++n) {

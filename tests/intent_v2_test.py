@@ -66,6 +66,20 @@ class API(unittest.TestCase):
             self.call(action='status',lease=token)
         self.assertNotIn('v2_demo',self.service.controller.registry.rows)
 
+    def test_scoped_policy_inspection_and_protocol_capabilities(self):
+        registered=self.api.call(packet(action='register',isolation='shared',
+            intent=dict(name='inspect_demo',priority='standard')),self.uid,self.pid)
+        token=registered['lease']
+        self.assertEqual((registered['protocol_min'],registered['protocol_max']),(2,2))
+        self.assertIn('notification_quality',registered['features'])
+        snapshot=self.call(action='inspect',lease=token)
+        self.assertEqual(snapshot['kernel_verified'],False)
+        self.assertEqual(snapshot['enforcement'],'registered_intent_only')
+        self.assertGreaterEqual(snapshot['policy_generation'],1)
+        self.assertEqual((snapshot['class_rate_kbit'],snapshot['class_ceil_kbit']),(0,0))
+        with self.assertRaises(ValueError):
+            self.api.call(packet(action='inspect',lease=token,service='other'),self.uid,self.pid)
+
     def test_deadline_absolute_and_admission(self):
         token=self.register()
         now=time.monotonic_ns()-20_000
@@ -244,14 +258,27 @@ def live():
                 session_output=subprocess.check_output([BUILD/'intent_session_native',path],text=True,timeout=12)
                 assert json.loads(session_output)['connections']==1
                 subprocess.run([BUILD/"deadline_test",path],check=True,timeout=5)
-                output=subprocess.check_output([BUILD/'intent_v2_native',path],text=True,timeout=8)
+                try:
+                    output=subprocess.check_output([BUILD/'intent_v2_native',path],text=True,timeout=8,stderr=subprocess.STDOUT)
+                except subprocess.CalledProcessError as failure:
+                    print('intent daemon diagnostic:',(directory/'daemon.log').read_text(errors='replace')[-12000:])
+                    print('native diagnostic:',failure.output)
+                    raise
                 assert int(output.split()[0])>0
                 subprocess.run([BUILD/'flowcore-intent-c-demo',path],check=True,timeout=5)
+                subprocess.run([BUILD/'intent_old_surface_compat',path],check=True,timeout=5)
                 go=BUILD/'flowcore-intent-go-demo'
                 if go.exists():
                     assert 'accepted=' in subprocess.check_output([go,path],text=True,timeout=5)
                 with Bridge(BUILD/'libflowcore_intent.so',path,'python_demo') as client:
                     assert client.ready()
+                    caps=client.capabilities()
+                    assert caps['protocol_version']==2 and caps['features'] & (1<<0)
+                    policy=client.effective_policy()
+                    assert policy['state']==1 and not policy['kernel_verified']
+                    assert policy['priority']==0 and policy['target_latency_us']==30000
+                    note=client.notification_snapshot()
+                    assert note['flags']==0 and not note['network_observed']
                     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as probe:
                         probe.settimeout(2)
                         probe.connect(str(path))

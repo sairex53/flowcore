@@ -124,8 +124,10 @@ void exercise_family(const std::string& path, const char* service_name, int fami
         {routine, {flowcore::udp::MessageClass::Standard, 0,
                    flowcore::udp::ExpirationPolicy::Drop, 104}}
     }};
-    const auto batch_results = sender->send_batch(batch);
-    check(batch_results.size() == 3, "sendmmsg batch result count mismatch");
+    std::array<flowcore::udp::SendResult,3> batch_results{};
+    check(sender->send_batch_into(batch,batch_results), "reusable sendmmsg batch rejected");
+    check(!sender->send_batch_into(batch,std::span<flowcore::udp::SendResult>(batch_results.data(),2)),
+          "mismatched output span accepted");
     const auto& second = batch_results[0];
     const auto& background_result = batch_results[1];
     const auto& third = batch_results[2];
