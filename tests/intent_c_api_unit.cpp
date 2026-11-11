@@ -29,6 +29,7 @@ int main() {
     result.size=sizeof(result);
     if (fc_v2_udp_send(nullptr, &message, &result) != 0) return 4;
     if (fc_v2_udp_send_batch(nullptr, nullptr, 0, nullptr) != 0) return 5;
+    if (fc_v2_udp_quota_rejections(nullptr) != 0) return 13;
     fc_v2_capability_snapshot capabilities{};
     capabilities.version=1;
     capabilities.size=sizeof(capabilities);

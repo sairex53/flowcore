@@ -71,6 +71,7 @@ private:
     void revoke() noexcept;
     void renew(std::uint64_t expires_ns) noexcept;
     bool active() const noexcept;
+    std::uint64_t quota_rejections() const noexcept;
     std::unique_ptr<State> state_;
 };
 class MessageSender {
@@ -114,6 +115,8 @@ public:
     static Capabilities detect_capabilities() noexcept;
     int family() const noexcept { return family_; }
     bool timestamping_enabled() const noexcept { return timestamping_enabled_; }
+    // Shared lease-scoped count of urgent messages rejected by the local token bucket.
+    std::uint64_t urgency_quota_rejections() const noexcept;
 
 private:
     friend class flowcore::v2::Service;

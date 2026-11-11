@@ -123,6 +123,7 @@ struct UrgencyBudget::State {
     std::chrono::steady_clock::time_point last;
     const pid_t owner=getpid();
     std::atomic<std::uint64_t> expires_ns;
+    std::atomic<std::uint64_t> quota_rejections{0};
     std::atomic<bool> enabled{true};
 };
 
@@ -141,7 +142,10 @@ bool UrgencyBudget::reserve() noexcept {
     const auto elapsed = std::chrono::duration<double>(now - state_->last).count();
     state_->tokens = std::min<double>(state_->burst, state_->tokens + elapsed * state_->rate_pps);
     state_->last = now;
-    if (state_->tokens < 1.0) return false;
+    if (state_->tokens < 1.0) {
+        state_->quota_rejections.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
     state_->tokens -= 1.0;
     return true;
 }
@@ -154,6 +158,9 @@ void UrgencyBudget::renew(std::uint64_t expires_ns) noexcept { state_->expires_n
 bool UrgencyBudget::active() const noexcept {
     return state_->enabled.load(std::memory_order_acquire) && state_->owner==getpid() &&
            monotonic_ns()<state_->expires_ns.load(std::memory_order_acquire);
+}
+std::uint64_t UrgencyBudget::quota_rejections() const noexcept {
+    return state_->quota_rejections.load(std::memory_order_relaxed);
 }
 
 struct MessageSender::State {
@@ -232,6 +239,10 @@ MessageSender& MessageSender::operator=(MessageSender&& other) noexcept {
     std::swap(family_, temporary.family_);
     std::swap(timestamping_enabled_, temporary.timestamping_enabled_);
     return *this;
+}
+
+std::uint64_t MessageSender::urgency_quota_rejections() const noexcept {
+    return state_ ? state_->budget->quota_rejections() : 0;
 }
 
 MessageSender::~MessageSender() {

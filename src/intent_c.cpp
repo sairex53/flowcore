@@ -105,6 +105,9 @@ fc_v2_udp_sender* fc_v2_udp_sender_open(fc_v2_service* s,int fd,uint32_t timesta
     } catch (...) { save();return nullptr; }
 }
 void fc_v2_udp_sender_close(fc_v2_udp_sender* sender) { delete sender; }
+uint64_t fc_v2_udp_quota_rejections(fc_v2_udp_sender* sender) {
+    return sender && sender->value ? sender->value->urgency_quota_rejections() : 0;
+}
 namespace {
 bool convert_udp_message(const fc_v2_udp_message& input,flowcore::udp::Message& output) {
     if (input.version!=1 || input.size<sizeof(input) || input.traffic_class>FC_V2_UDP_BACKGROUND ||

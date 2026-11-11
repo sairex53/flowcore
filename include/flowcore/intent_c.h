@@ -81,6 +81,8 @@ int fc_v2_get_notification_snapshot(fc_v2_service *, fc_v2_notification_snapshot
 int fc_v2_subscribe_notifications(fc_v2_service *, uint32_t enabled); /* enable periodic bounded polling */
 fc_v2_udp_sender *fc_v2_udp_sender_open(fc_v2_service *, int fd, uint32_t enable_timestamps);
 void fc_v2_udp_sender_close(fc_v2_udp_sender *);
+/* Shared service-lease count of urgent messages locally rejected by its quota. */
+uint64_t fc_v2_udp_quota_rejections(fc_v2_udp_sender *);
 int fc_v2_udp_send(fc_v2_udp_sender *, const fc_v2_udp_message *, fc_v2_udp_result *);
 int fc_v2_udp_send_batch(fc_v2_udp_sender *, const fc_v2_udp_message *, uint32_t count,
                          fc_v2_udp_result *); /* bounded to 4096 messages */

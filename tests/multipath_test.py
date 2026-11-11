@@ -39,6 +39,25 @@ class MultipathPolicy(unittest.TestCase):
         self.assertTrue(aware['probe_target_feasible'])
         self.assertIn('not an application-latency guarantee', aware['target_semantics'])
 
+    def test_stability_and_measured_recovery_break_quality_ties(self):
+        rows=[dict(path_id=1,attempts=5,successes=5,availability=1.0,
+                   probe_failure_ratio=0.0,rtt_p95_ms=10.0,throughput_mbps=5.0,
+                   rtt_spread_ms=2.0,recovery_ms=5.0),
+              dict(path_id=2,attempts=5,successes=5,availability=1.0,
+                   probe_failure_ratio=0.0,rtt_p95_ms=10.0,throughput_mbps=5.0,
+                   rtt_spread_ms=1.0,recovery_ms=20.0)]
+        latency=choose_path('latency-preferred',rows)
+        self.assertEqual(latency['chosen_path_id'],2)  # lower RTT variation precedes recovery
+        rows=[dict(row,rtt_spread_ms=1.0) for row in rows]
+        rows[0]['recovery_ms']=20.0
+        rows[1]['recovery_ms']=5.0
+        reliability=choose_path('reliability-preferred',rows)
+        self.assertEqual(reliability['chosen_path_id'],2)
+        self.assertTrue(reliability['observations'][0]['recovery_measured'])
+        rows[1]['recovery_ms']=-1
+        with self.assertRaises(ValueError):
+            choose_path('reliability-preferred',rows)
+
     def test_probe_target_does_not_hide_infeasibility(self):
         plan = choose_path('slo-aware', qualities(), target_latency_ms=3)
         self.assertFalse(plan['probe_target_feasible'])

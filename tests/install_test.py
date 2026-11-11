@@ -32,6 +32,8 @@ def main():
         assert (docs/'POLICY_OPTIMIZER.md').is_file()
         assert all((docs/name).is_file() for name in
                    ('SDK_V2.md', 'PUBLIC_API_CONTRACT.md', 'SDK_PERFORMANCE.md'))
+        assert all((docs/name).is_file() for name in
+                   ('UDP_EFFICIENCY.md', 'MPTCP_V2.md', 'TRANSPORT_VALIDATION_RESULTS.md'))
         intent_examples = prefix/'share/flowcore/examples/intent-sdk'
         assert all((intent_examples/name).is_file() for name in
                    ('intent_v2_demo.cpp', 'intent_c_demo.c', 'intent_c_udp_demo.c',

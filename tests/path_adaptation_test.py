@@ -54,6 +54,34 @@ class EvidenceTest(unittest.TestCase):
         for t,(rate,up,event) in enumerate(plan,1):
             self.assertEqual(model.observe(observed(t,rate,available=up))['event'],event)
 
+    def test_rtt_spread_requires_multiple_successful_probes(self):
+        model=PathEvidence()
+        first=model.observe(observed(1))
+        self.assertIsNone(first['rtt_spread_ms'])
+        second=model.observe(dict(observed(2),probe_ms=10))
+        self.assertEqual(second['rtt_spread_ms'],6)
+
+    def test_recovery_time_requires_a_successful_post_recovery_probe(self):
+        model=PathEvidence()
+        model.observe(observed(1))
+        model.observe(observed(2,available=False))
+        model.observe(observed(3,available=False))
+        no_probe=model.observe(dict(observed(4),probe_ms=None))
+        self.assertEqual(no_probe['event'],'LINK_RECOVERY')
+        self.assertIsNone(no_probe['recovery_ms'])
+        recovered=model.observe(observed(5))
+        self.assertEqual(recovered['recovery_samples'],1)
+        self.assertEqual(recovered['recovery_ms'],3000.0)
+        self.assertEqual(recovered['recovery_source'],'sampled_link_down_to_successful_probe')
+
+    def test_route_identity_change_discards_unrelated_recovery_history(self):
+        model=PathEvidence()
+        model.observe(observed(1))
+        model.observe(observed(2,available=False))
+        row=model.observe(observed(3,identity='route2'))
+        self.assertIsNone(row['recovery_ms'])
+        self.assertEqual(row['recovery_samples'],0)
+
     def test_competing_demand_requires_pressure_and_history(self):
         model=PathEvidence()
         for t in (1,2,3):
@@ -95,6 +123,40 @@ class ControllerTest(unittest.TestCase):
         alternate=dict(alternate,sample_ns=5*NANO)
         self.assertEqual(policy.evaluate(5*NANO,{1:recovered,2:alternate},{})['action'],'NO_INTERVENTION')
         self.assertEqual(policy.evaluate(8*NANO,{1:recovered,2:alternate},{})['action'],'NO_INTERVENTION')
+
+    def test_path_spread_and_sample_stability_break_equal_latency_ties(self):
+        policy=PathController(PathIntent(preference='reliability',deadline_ms=20))
+        current=candidate(1,2,capacity=8000,pressure=True)
+        current.update(probe_p50_ms=4,probe_samples=5,probe_failures=0,probe_stability=1.0,
+                       rtt_spread_ms=3,recovery_ms=20,recovery_samples=1)
+        alternate=candidate(2,2,capacity=8000)
+        alternate.update(probe_p50_ms=4,probe_samples=5,probe_failures=0,probe_stability=1.0,
+                         rtt_spread_ms=1,recovery_ms=10,recovery_samples=1)
+        self.assertEqual(policy.evaluate(2*NANO,{1:current,2:alternate},{})['action'],'NO_INTERVENTION')
+        current=dict(current,sample_ns=3*NANO)
+        alternate=dict(alternate,sample_ns=3*NANO)
+        decision=policy.evaluate(3*NANO,{1:current,2:alternate},{})
+        self.assertEqual(decision['chosen_path_id'],2)
+        self.assertEqual(decision['candidate_metrics']['recovery_ms'],10)
+
+    def test_return_after_recovery_requires_three_distinct_windows(self):
+        policy=PathController(PathIntent())
+        primary=candidate(1,2,capacity=12000)
+        backup=candidate(2,2,capacity=8000)
+        primary=dict(primary,available=False,route_valid=False)
+        switched=policy.evaluate(2*NANO,{1:primary,2:backup},{})
+        self.assertEqual(switched['chosen_path_id'],2)
+        policy.commit(2,2*NANO)
+        for when in (4,5):
+            restored=candidate(1,when,capacity=12000,event='LINK_RECOVERY')
+            standby=candidate(2,when,capacity=8000)
+            result=policy.evaluate(when*NANO,{1:restored,2:standby},{})
+            self.assertEqual(result['action'],'NO_INTERVENTION')
+            self.assertEqual(result['recovery_confirmations_required'],3)
+        restored=candidate(1,6,capacity=12000,event='LINK_RECOVERY')
+        standby=candidate(2,6,capacity=8000)
+        result=policy.evaluate(6*NANO,{1:restored,2:standby},{})
+        self.assertEqual(result['action'],'MPTCP_BACKUP_PREFERENCE')
 
     def test_cooperative_intent_schema(self):
         path=Path(__file__).resolve().parents[1]/'config'/'path-intent.json'

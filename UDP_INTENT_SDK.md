@@ -62,8 +62,13 @@ timestamping disabled if another component owns the error queue.
 ## Operator configuration
 
 Set a specific UID, an operator-owned cgroup prefix and a launcher-assigned
-mark. The following is the `intent_api` section of the normal service
-configuration. Replace the example identity with the service's actual identity.
+mark. The SDK rate and burst grant is currently per process-bound lease, not
+aggregate across multiple processes using the same service name. For aggregate
+cross-process enforcement, pair the mark with an operator-owned tc policer; the
+sample lab verifies that behavior only inside owned namespaces. FLOWCORE does
+not automatically install a host policer. The following is the `intent_api`
+section of the normal service configuration. Replace the example identity with
+the service's actual identity.
 
 ```json
 {

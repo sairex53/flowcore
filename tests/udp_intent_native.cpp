@@ -113,6 +113,8 @@ void exercise_family(const std::string& path, const char* service_name, int fami
     auto second_wrapper=service.udp_message_sender(sender_fd);
     const auto shared_budget=second_wrapper->send_urgent(urgent,0,107);
     check(shared_budget.status==flowcore::udp::SendStatus::BudgetExhausted, "sender wrappers did not share a budget");
+    check(sender->urgency_quota_rejections()==1 && second_wrapper->urgency_quota_rejections()==1,
+          "lease-scoped quota rejection count was not shared");
     const auto cork=sender->send_message(routine,{},nullptr,0,MSG_MORE);
     check(cork.status==flowcore::udp::SendStatus::LocalError && cork.error_number==EINVAL,
           "UDP corking flags were accepted");
@@ -142,6 +144,8 @@ void exercise_family(const std::string& path, const char* service_name, int fami
     check(background_result.status == flowcore::udp::SendStatus::Sent &&
           background_result.applied_class == flowcore::udp::MessageClass::Background, "background batch item failed");
     check(third.status == flowcore::udp::SendStatus::Sent, "ordinary send failed");
+    check(sender->urgency_quota_rejections()==2,
+          "over-budget demotion was not visible in the service quota counter");
     check(expired.status == flowcore::udp::SendStatus::Expired, "expired request was sent");
     check(too_far.status == flowcore::udp::SendStatus::InvalidDeadline, "overlong deadline was accepted");
     const auto one = receive_one(receiver, family);

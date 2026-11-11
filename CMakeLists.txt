@@ -247,6 +247,7 @@ install(FILES REAL_APPLICATIONS.md GRPC_INTEGRATION.md DATABASE_INTEGRATION.md A
     REAL_APPLICATIONS_V2.md SERVICE_STACK.md APPLICATION_PERFORMANCE_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES SDK_V2.md PUBLIC_API_CONTRACT.md SDK_PERFORMANCE.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES UDP_EFFICIENCY.md MPTCP_V2.md TRANSPORT_VALIDATION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES examples/intent_v2_demo.cpp examples/intent_c_demo.c examples/intent_c_udp_demo.c
               examples/intent_rust_demo.rs examples/intent_go_demo.go DESTINATION "${FLOWCORE_DATA}/examples/intent-sdk")
 install(FILES config/real-app-v2-fedora45.txt
@@ -375,6 +376,9 @@ add_executable(flowcore-udp-intent-demo examples/udp_intent_demo.cpp)
 target_link_libraries(flowcore-udp-intent-demo PRIVATE flowcore_sdk)
 target_compile_options(flowcore-udp-intent-demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore-udp-intent-demo RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+add_executable(udp_ancillary_kernel tests/udp_ancillary_kernel.cpp)
+target_compile_options(udp_ancillary_kernel PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME udp_ancillary_kernel COMMAND udp_ancillary_kernel)
 add_test(NAME udp_intent_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/udp_intent_test.py")
 add_test(NAME udp_intent_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/udp_intent_test.py" --live)
 set_tests_properties(udp_intent_live PROPERTIES SKIP_RETURN_CODE 77)

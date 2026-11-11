@@ -74,6 +74,10 @@ def _validate_quality(row):
     if latency is not None and (type(latency) not in (int, float) or
                                 not math.isfinite(latency) or latency < 0):
         raise ValueError('invalid path RTT P95')
+    for key in ('rtt_spread_ms','recovery_ms'):
+        value=row.get(key)
+        if value is not None and (type(value) not in (int,float) or not math.isfinite(value) or value<0):
+            raise ValueError(f'invalid path stability field: {key}')
     return path_id
 
 
@@ -97,17 +101,25 @@ def choose_path(strategy, qualities, target_latency_ms=None, unavailable=()):
     if not usable:
         raise ValueError('no measured usable path remains')
 
+    def stability(row):
+        spread=row.get('rtt_spread_ms')
+        recovery=row.get('recovery_ms')
+        # Keep missing recovery explicit. It is only a tie-break after primary
+        # objectives, never treated as a measured zero.
+        recovery_key=(0,recovery) if recovery is not None else (1,0)
+        return (spread if spread is not None else math.inf,recovery_key)
+
     def latency(row):
         return (row['rtt_p95_ms'] if row['rtt_p95_ms'] is not None else math.inf,
-                row['probe_failure_ratio'], row['path_id'])
+                row['probe_failure_ratio'], *stability(row), row['path_id'])
 
     def reliability(row):
-        return (row['probe_failure_ratio'], -row['availability'],
+        return (row['probe_failure_ratio'], -row['availability'], *stability(row),
                 row['rtt_p95_ms'] if row['rtt_p95_ms'] is not None else math.inf,
                 row['path_id'])
 
     def throughput(row):
-        return (-row['throughput_mbps'], row['probe_failure_ratio'],
+        return (-row['throughput_mbps'], row['probe_failure_ratio'], *stability(row),
                 row['rtt_p95_ms'] if row['rtt_p95_ms'] is not None else math.inf,
                 row['path_id'])
 
@@ -132,9 +144,9 @@ def choose_path(strategy, qualities, target_latency_ms=None, unavailable=()):
     rationale = {
         'linux-default': 'Keep every configured endpoint active; leave path choice to the Linux MPTCP scheduler.',
         'static-endpoints': 'Keep path 1 as the fixed primary; mark other owned endpoints as backups.',
-        'latency-preferred': 'Choose the lowest measured probe RTT P95 as primary; use other paths as backups.',
-        'reliability-preferred': 'Choose the lowest observed probe failure ratio, then availability and RTT; keep other paths as backups.',
-        'throughput-preferred': 'Choose the highest measured per-path probe goodput as primary; keep other paths as backups.',
+        'latency-preferred': 'Choose lowest probe RTT P95, then failure ratio and RTT spread; observed recovery is a tie-break only.',
+        'reliability-preferred': 'Choose lowest probe failure ratio, then availability, RTT spread and any measured recovery history; unknown recovery is not a zero measurement.',
+        'throughput-preferred': 'Choose highest measured per-path probe goodput, then stability evidence; keep other paths as backups.',
         'slo-aware': 'Use probe RTT P95 and availability as a path-selection heuristic; application SLO attainment is measured separately.',
     }[strategy]
     all_active = strategy == 'linux-default'
@@ -155,6 +167,8 @@ def choose_path(strategy, qualities, target_latency_ms=None, unavailable=()):
             probe_failure_ratio=row['probe_failure_ratio'],
             availability=row['availability'],
             throughput_mbps=row['throughput_mbps'],
+            rtt_spread_ms=row.get('rtt_spread_ms'),recovery_ms=row.get('recovery_ms'),
+            recovery_measured=row.get('recovery_ms') is not None,
             available=row['path_id'] not in unavailable,
         ) for row in qualities],
     )
