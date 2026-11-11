@@ -33,8 +33,8 @@ python3 -B "$test_root/packaging/release-provenance.py" --source-archive "$sourc
 rpmroot="$temp/rpmroot"
 mkdir -p "$rpmroot"
 rpm --root "$rpmroot" --initdb
-gpg --batch --export "$fingerprint" > "$temp/test-public.gpg"
-rpm --root "$rpmroot" --import "$temp/test-public.gpg"
+gpg --batch --armor --export "$fingerprint" > "$temp/test-public.asc"
+rpm --root "$rpmroot" --import "$temp/test-public.asc"
 rpm --root "$rpmroot" --checksig --verbose "$rpm_path"
 rpm --root "$rpmroot" --checksig --verbose "$srpm_path"
 for artifact in "$rpm_path" "$srpm_path" "$source_path" "$sbom_path" "$provenance"; do
