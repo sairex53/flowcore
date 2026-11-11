@@ -421,3 +421,13 @@ set_tests_properties(slo_optimization_unit PROPERTIES TIMEOUT 15
     ENVIRONMENT "FLOWCORE_SLO_TEST_BUILD=$<TARGET_FILE_DIR:flowcore_intelligence>")
 install(FILES MULTIOBJECTIVE_OPTIMIZATION.md PARETO_ANALYSIS.md SLO_OPTIMIZATION_RESULTS.md
     DESTINATION "${FLOWCORE_DATA}/docs")
+
+add_test(NAME evidence_bundle COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/evidence_bundle_test.py")
+set_tests_properties(evidence_bundle PROPERTIES TIMEOUT 40)
+install(FILES EVIDENCE_FORMAT.md REPRODUCIBILITY_GUIDE.md PUBLIC_BUNDLE_REVIEW.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
+install(PROGRAMS packaging/evidence_bundle.py
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/flowcore")
+install(FILES packaging/evidence-release-metadata.json
+    DESTINATION "${FLOWCORE_DATA}/evidence")

@@ -96,6 +96,8 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Contribution and changes | [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md) |
 | Engineering priorities | [OSS_ROADMAP.md](OSS_ROADMAP.md) |
 
+Portable benchmark evidence uses a privacy-filtered, SHA-256 indexed archive with a stdlib-only verifier. See [the evidence format](EVIDENCE_FORMAT.md), [reproduction guide](REPRODUCIBILITY_GUIDE.md), and [publication review](PUBLIC_BUNDLE_REVIEW.md). Candidate archives are not uploaded automatically.
+
 Historical result documents are retained for traceability. They are not independent reproductions. Complete local raw artifacts stay under results/ and are excluded from Git. No physical Linux machine has been validated in this review.
 
 For directional bottleneck evidence and the opt-in IFB lab, see [Bottleneck Intelligence Engine](BOTTLENECK_ENGINE.md) and [Directional QoS](DIRECTIONAL_QOS.md).

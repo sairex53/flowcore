@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "inventory_documents": [
+    "BENCHMARK_REPORT.md",
+    "PERFORMANCE_EVIDENCE.md",
+    "RELEASE_READINESS.md",
+    "ADAPTIVE_RESULTS.md",
+    "ADAPTIVE_V2_RESULTS.md",
+    "APPLICATION_PERFORMANCE_RESULTS.md",
+    "AUTOTUNING_RESULTS.md",
+    "BOTTLENECK_RESULTS.md",
+    "CONTAINER_RESULTS.md",
+    "COOPERATIVE_RESULTS.md",
+    "EXTERNAL_RESULTS.md",
+    "FAULT_INJECTION_RESULTS.md",
+    "FLOWID_RESULTS.md",
+    "HYBRID_V3_RESULTS.md",
+    "KERNEL_EXPERIMENT_RESULTS.md",
+    "MESSAGE_SCHEDULING_RESULTS.md",
+    "MIGRATION_RESULTS.md",
+    "MODEL_TEST_RESULTS.md",
+    "MULTIPATH_RESULTS.md",
+    "OBSERVABILITY_RESULTS.md",
+    "OPTIMIZATION_RESULTS.md",
+    "OVERLOAD_REMEDIATION_RESULTS.md",
+    "PACING_REGRESSION_RESULTS.md",
+    "PATH_ADAPTATION_RESULTS.md",
+    "PLATFORM_RESULTS.md",
+    "PREDICTIVE_RESULTS.md",
+    "RESILIENCE_RESULTS.md",
+    "RESULTS.md",
+    "ROLLOUT_RESULTS.md",
+    "SLO_OPTIMIZATION_RESULTS.md",
+    "STRATEGY_RESULTS.md",
+    "TCP_PACING_RESULTS.md",
+    "TRANSPORT_RESULTS.md",
+    "ACTION_VALIDATION_RESULTS.md"
+  ],
+  "campaigns": [
+    {
+      "name": "Independent primary strategy evaluation",
+      "source": "results/review-primary-1794013173664498860/summary.json",
+      "scope": "release_claim_primary",
+      "rationale": "Primary multi-strategy comparison cited by the benchmark report."
+    },
+    {
+      "name": "Linux qdisc baseline matrix",
+      "source": "results/review-baselines-1794014094472115202/summary.json",
+      "scope": "release_claim_baselines",
+      "rationale": "FIFO, fq_codel, CAKE, and static QoS reference runs."
+    },
+    {
+      "name": "Low congestion reference",
+      "source": "results/review-low-1794014196307277881/summary.json",
+      "scope": "release_claim_low_load",
+      "rationale": "Low-load comparison to test whether control is useful when resources are abundant."
+    },
+    {
+      "name": "Linux default reference",
+      "source": "results/review-linux_default-1794014296991932472/summary.json",
+      "scope": "release_claim_linux_default",
+      "rationale": "Linux default networking reference campaign."
+    },
+    {
+      "name": "Static QoS paired follow-up",
+      "source": "results/research-1794016468042146959/summary.json",
+      "scope": "held_out_paired_follow_up",
+      "rationale": "Disjoint-seed paired static30 and hybrid comparison; report records the frozen scenario.",
+      "preregistered_held_out": true,
+      "preregistration_evidence_ref": "BENCHMARK_REPORT.md#static30-hybrid-v2"
+    },
+    {
+      "name": "Timing ledger defect investigation",
+      "source": "results/research-1794270125017657985/summary.json",
+      "scope": "invalid_and_interrupted_preservation",
+      "rationale": "Preserves valid, infrastructure-invalid, interrupted, and one invalid run without a request ledger."
+    },
+    {
+      "name": "Hybrid V3 overload failure",
+      "source": "results/research-1794271034359405578/summary.json",
+      "scope": "negative_workload_failure",
+      "rationale": "All selected overload runs crossed the declared workload failure gate."
+    },
+    {
+      "name": "Unshaped Linux comparison",
+      "source": "results/research-1794271804578041977/summary.json",
+      "scope": "reference_baseline",
+      "rationale": "Unshaped Linux reference under the recorded workload."
+    },
+    {
+      "name": "Mixed TCP UDP overload matrix",
+      "source": "results/research-1794271830208968921/summary.json",
+      "scope": "negative_mixed_transport",
+      "rationale": "Retains the full mixed workload matrix, including workload failures and invalid runs."
+    },
+    {
+      "name": "Overload remediation paired study",
+      "source": "results/research-1794301242685434911/summary.json",
+      "scope": "overload_remediation",
+      "rationale": "Retains both valid and failed workload outcomes."
+    },
+    {
+      "name": "Overload confirmation",
+      "source": "results/research-1794301522854762111/summary.json",
+      "scope": "overload_confirmation",
+      "rationale": "Small confirmatory run set; two runs do not establish a stable performance effect."
+    },
+    {
+      "name": "Overload integration smoke",
+      "source": "results/research-1794301579635212087/summary.json",
+      "scope": "integration_smoke",
+      "rationale": "Single integration run; not an independent performance comparison."
+    },
+    {
+      "name": "Strategy engine exploratory comparison",
+      "source": "results/research-1794307045998214853/summary.json",
+      "scope": "exploratory_strategy_comparison",
+      "rationale": "Five strategies with two repetitions each; exploratory only."
+    },
+    {
+      "name": "Strategy holdout low-repetition study",
+      "source": "results/research-1794307283477695110/summary.json",
+      "scope": "exploratory_holdout_low_repetition",
+      "rationale": "Five valid modes with one repetition each; insufficient for paired inference."
+    },
+    {
+      "name": "Strategy experiment with infrastructure invalidity A",
+      "source": "results/research-1794307428444881377/summary.json",
+      "scope": "infrastructure_invalidity",
+      "rationale": "Retains the infrastructure-invalid run and its original validity state."
+    },
+    {
+      "name": "Strategy experiment with infrastructure invalidity B",
+      "source": "results/research-1794307576124270798/summary.json",
+      "scope": "infrastructure_invalidity",
+      "rationale": "Retains the infrastructure-invalid run and its original validity state."
+    },
+    {
+      "name": "Strategy partial-evidence run",
+      "source": "results/research-1794307734249579866/summary.json",
+      "scope": "insufficient_repetitions",
+      "rationale": "Two runs are retained; no broad performance inference is supported."
+    }
+  ]
+}

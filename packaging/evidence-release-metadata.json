@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "asset_name": "flowcore-evidence-v1.tar.gz",
+  "media_type": "application/gzip",
+  "status": "LOCAL_CANDIDATE_NOT_UPLOADED",
+  "upload_authorized": false,
+  "workflow_uploads_enabled": false,
+  "sha256_sidecar": "flowcore-evidence-v1.tar.gz.sha256",
+  "verification_command": "python3 -I tools/evidence_bundle.py verify flowcore-evidence-v1.tar.gz --replay"
+}
