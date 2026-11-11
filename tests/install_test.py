@@ -120,32 +120,25 @@ def main():
             'target_link_libraries(consumer PRIVATE flowcore::sdk)\n')
         (sdk/'main.cpp').write_text(
             '#include <flowcore/client.hpp>\n#include <flowcore/intent_v2.hpp>\n#include <flowcore/udp_intent.hpp>\n'
-            'int main(int argc,char** argv){(void)flowcore::udp::MessageSender::detect_capabilities();flowcore::Client c("/nonexistent");'
-            'flowcore::v2::Intent i;i.service="installed";'
-            'flowcore::v2::Service s(argc==2?argv[1]:"/nonexistent",i);'
-            'if(argc==2){if(!s.wait_ready(std::chrono::seconds(3)))return 2;'
-            'for(int n=0;n<16;++n){auto r=s.begin_request();(void)r.complete();'
-            'if(!s.flush(std::chrono::seconds(3)))return 4;'
-            'if(s.statistics().accepted>=2){auto t=s.transport_statistics();'
-            'return t.session_connections==1 && !t.legacy_requests?0:5;}}return 3;} }\n')
+            'int main(){(void)flowcore::udp::MessageSender::detect_capabilities();'
+            'flowcore::Client c("/nonexistent");flowcore::v2::Intent i;i.service="installed";'
+            'flowcore::v2::Service s("/nonexistent",i);return 0;}\n')
         command(['cmake','-S',sdk,'-B',sdk/'build','-G','Ninja',f'-DCMAKE_PREFIX_PATH={prefix}'])
         command(['cmake','--build',sdk/'build'])
         command([sdk/'build/consumer'])
-        with (work/'installed-intent.log').open('w') as log:
-            proc=subprocess.Popen([daemon],env=env,stdout=log,stderr=log)
-            try:
-                deadline=time.monotonic()+3
-                while not (runtime/'control.sock').exists():
-                    assert proc.poll() is None and time.monotonic()<deadline
-                    time.sleep(.01)
-                command([sdk/'build/consumer',runtime/'control.sock'])
-            finally:
-                proc.terminate()
-                proc.wait(timeout=5)
+        probe = subprocess.run(
+            [sys.executable,'-I','-B','-c',
+             'import sys;sys.path.insert(0,sys.argv[1]);from installed_runtime import root_file;\n'
+             'try: root_file(sys.argv[2],65536)\n'
+             'except PermissionError: print("rejected")\n'
+             'else: raise SystemExit(1)',
+             prefix/'share/flowcore/scripts', prefix/'share/flowcore/config/service.json'],
+            text=True,capture_output=True,timeout=5)
+        assert probe.returncode==0 and probe.stdout.strip()=='rejected'
         for path in manifest:
             path.unlink()
         assert not any(path.is_file() for path in stage.rglob('*'))
-    print('PASS: installed runtime, zero capabilities, parser rejection, watchdog, Prometheus, systemd unit, SDK consumer and staged uninstall')
+    print('PASS: installed runtime, zero capabilities, parser rejection, watchdog, Prometheus, systemd unit, offline SDK consumer and untrusted control config rejection, and staged uninstall')
 
 
 if __name__=='__main__':

@@ -88,6 +88,7 @@ Cooperating applications can resume an authenticated, ordered message session ac
 | Audited policy rollout | [FLEET_MANAGEMENT.md](FLEET_MANAGEMENT.md) |
 | Read-only network dashboard | [DASHBOARD.md](DASHBOARD.md) |
 | Deployment and troubleshooting | [DEPLOYMENT.md](DEPLOYMENT.md), [OPERATIONS.md](OPERATIONS.md), [RECOVERY.md](RECOVERY.md) |
+| Installed privilege and SELinux checks | [Runtime layout](INSTALLED_RUNTIME.md), [SELinux evidence and limits](SELINUX_VALIDATION.md), [helper boundary](PRIVILEGED_HELPER_SECURITY.md) |
 | Safety validation | [Invariants](SAFETY_INVARIANTS.md), [model test results](MODEL_TEST_RESULTS.md) |
 | Runtime safety and recovery | [Safety](RUNTIME_SAFETY.md), [recovery](RECOVERY_ENGINE.md), [fault tests](FAULT_INJECTION_RESULTS.md) |
 | Security and privileges | [SECURITY.md](SECURITY.md), [PRIVILEGES.md](PRIVILEGES.md) |

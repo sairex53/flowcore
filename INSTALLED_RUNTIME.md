@@ -50,3 +50,23 @@ disposable source environment.
 
 [SELinux validation](SELINUX_VALIDATION.md) ·
 [Helper security](PRIVILEGED_HELPER_SECURITY.md)
+
+## Starting the installed roles
+
+The RPM does not enable services on installation. For read-only host monitoring, start the separate monitor and point the CLI at its private runtime directory:
+
+~~~sh
+sudo systemctl enable --now flowcore-monitor.service
+sudo env FLOWCORE_RUNTIME=/run/flowcore-monitor /usr/bin/flowcore ops status
+sudo journalctl -u flowcore-monitor.service
+~~~
+
+Application intent is a separate service. Add only approved service-name-to-UID entries to root-owned /etc/flowcore/service.json, add those users to flowcore-app, then start flowcore-sdk.socket. The socket activates flowcored.service; start the socket rather than invoking the service without an activation descriptor. SDK clients connect to /run/flowcore-sdk/intent.sock. The control daemon accepts only standard, ephemeral telemetry leases. Changing the ACL requires a controlled service restart.
+
+The monitor uses /run/flowcore-monitor/control.sock. The control daemon uses /run/flowcore/control.sock for its local admin API and /run/flowcore-sdk/intent.sock for applications. Run the CLI with the matching FLOWCORE_RUNTIME. The network helper remains a separate, explicit operator activation.
+
+## Verification record
+
+The final 0.2.0-3.fc45.aarch64 RPM was built on Fedora 45 ARM64 and exercised in three distinct ways: its RPM payload passed the staged install/SDK test, DNF installed it in a pinned Fedora container with networking disabled and rpm -V flowcore clean, and its extracted payload ran under transient systemd services while the host SELinux policy remained Enforcing. The transient test exercised distinct service and client UIDs, zero daemon capabilities, a helper with only CAP_NET_ADMIN inside a private network namespace, authenticated intent registration, helper authorization and revision races, a FIFO set/readback/clear cycle, output path attacks, reload, and SIGKILL recovery. A normalized before/after host snapshot covered links, addresses, IPv4/IPv6 routes, and available TC qdiscs, classes, and filters.
+
+Reproduction and evidence are in tests/install_test.py, tests/installed_rpm_transient.sh, build/installed-oci-rpm.sh, and local results/installed-validation artifacts. The RPM is a local unsigned build, so verify its published digest through a trusted channel before use. These disposable checks do not establish production readiness or a dedicated SELinux domain.

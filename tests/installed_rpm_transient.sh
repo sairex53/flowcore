@@ -27,11 +27,56 @@ cleanup() {
 }
 trap cleanup EXIT
 host_net() {
-    ip -j link show
-    ip -j address show
-    ip -j route show table all
-    ip -6 -j route show table all
-    if command -v tc >/dev/null; then tc -j qdisc show; fi
+    python3 - <<'PYHOST'
+import json
+import shutil
+import subprocess
+
+def query(*argv):
+    return json.loads(subprocess.run(argv, check=True, capture_output=True, text=True).stdout)
+
+links = query('ip', '-j', '-details', 'link', 'show')
+link_fields = ('ifindex', 'ifname', 'flags', 'mtu', 'qdisc', 'operstate',
+               'linkmode', 'group', 'txqlen', 'link_type', 'address',
+               'broadcast', 'link', 'link_index', 'master', 'linkinfo',
+               'num_tx_queues', 'num_rx_queues')
+links = [{key: row[key] for key in link_fields if key in row} for row in links]
+addresses = query('ip', '-j', 'address', 'show')
+addresses = [{'ifname': row.get('ifname'),
+              'addr_info': sorted(({key: item[key] for key in
+                  ('family', 'local', 'prefixlen', 'scope', 'label', 'flags', 'peer', 'broadcast')
+                  if key in item} for item in row.get('addr_info', [])),
+                  key=lambda item: json.dumps(item, sort_keys=True))}
+             for row in addresses]
+route_fields = ('dst', 'dev', 'gateway', 'protocol', 'table', 'scope',
+                'prefsrc', 'metric', 'type', 'flags', 'tos', 'priority',
+                'nhid', 'via', 'encap')
+routes = []
+for args in (('ip', '-j', 'route', 'show', 'table', 'all'),
+             ('ip', '-6', '-j', 'route', 'show', 'table', 'all')):
+    rows = query(*args)
+    routes.extend({key: row[key] for key in route_fields if key in row} for row in rows)
+routes.sort(key=lambda item: json.dumps(item, sort_keys=True))
+
+def stable(value):
+    dynamic = {'stats', 'stats2', 'bytes', 'packets', 'drops', 'overlimits',
+               'requeues', 'backlog', 'qlen', 'used', 'lastuse'}
+    if isinstance(value, dict):
+        return {key: stable(item) for key, item in sorted(value.items()) if key not in dynamic}
+    if isinstance(value, list):
+        return [stable(item) for item in value]
+    return value
+
+traffic_control = []
+tc = shutil.which('tc')
+if tc:
+    for kind in ('qdisc', 'class', 'filter'):
+        rows = query(tc, '-j', '-details', kind, 'show')
+        traffic_control.append((kind, stable(rows)))
+print(json.dumps({'links': links, 'addresses': addresses,
+                  'routes': routes, 'traffic_control': traffic_control},
+                 sort_keys=True, separators=(',', ':')))
+PYHOST
 }
 before="$(host_net)"
 test ! -e "$sdk_socket" && test ! -e "$helper_socket"
