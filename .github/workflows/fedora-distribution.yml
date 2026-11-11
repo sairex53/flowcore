@@ -22,24 +22,25 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Install Git before checkout
-        run: dnf -y install git
+        run: dnf -y --setopt=retries=10 --setopt=timeout=60 --setopt=zchunk=False install git
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Install Fedora 45 package tooling
         run: |
-          dnf -y install git gcc-c++ cmake ninja-build python3 python3-devel openssl openssl-devel \
+          dnf -y --setopt=retries=10 --setopt=timeout=60 --setopt=zchunk=False \
+            install git gcc-c++ cmake ninja-build python3 python3-devel openssl openssl-devel \
             rpm-build rpm-sign createrepo_c systemd systemd-rpm-macros iproute iproute-tc \
             util-linux-core ethtool cpio gzip tar coreutils findutils binutils curl python3-jsonschema
-          dnf clean all
       - name: Build binary RPM and SRPM variants on an unprivileged build account
         env:
           EXPECTED_ARCH: ${{ matrix.expected_arch }}
         run: |
           set -euo pipefail
           test "$(rpm --eval '%{_arch}')" = "$EXPECTED_ARCH"
-          repo="$(git rev-parse --show-toplevel)"
+          repo="$(pwd -P)"
+          git config --global --add safe.directory "$repo"
           git -C "$repo" rev-parse --show-toplevel
           epoch="$(git -C "$repo" log -1 --format=%ct)"
           SOURCE_DATE_EPOCH="$epoch" "$repo/packaging/source-archive.sh"
