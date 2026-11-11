@@ -63,6 +63,13 @@ def main():
         installroot.mkdir()
         repo.mkdir()
         cache.mkdir()
+        installroot_repos = installroot / "etc/yum.repos.d"
+        installroot_repos.mkdir(parents=True)
+        host_repo_files = sorted(Path("/etc/yum.repos.d").glob("*.repo"))
+        if not host_repo_files:
+            raise SystemExit("Fedora repository definitions are unavailable in the package test container")
+        for repo_file in host_repo_files:
+            shutil.copy2(repo_file, installroot_repos / repo_file.name)
         for artifact in rpms.values():
             shutil.copy2(artifact, repo / artifact.name)
         run(["createrepo_c", "--quiet", repo], log=log)
