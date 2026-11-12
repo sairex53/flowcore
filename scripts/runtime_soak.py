@@ -735,8 +735,12 @@ def run_soak(args):
                                  environment, min_free_bytes)
             step['cycle'] = cycle
             completed.append(step)
-            _write_json(output_dir / 'progress.json', dict(status='running', steps=completed,
-                                                          latest_sample=samples[-1]))
+            _write_json(output_dir / 'progress.json', dict(
+                status='running', completed_steps=len(completed),
+                completed_cycles=completed_cycle_count(completed, steps),
+                latest_step={key: step.get(key) for key in
+                             ('cycle', 'profile', 'status', 'returncode', 'elapsed_seconds')},
+                latest_sample=samples[-1]))
             if step['status'] != 'PASS':
                 stop_reason = step['status']
                 break
