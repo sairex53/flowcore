@@ -301,6 +301,11 @@ if(FLOWCORE_SANITIZE)
 endif()
 
 add_test(NAME release_gate COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_gate_test.py")
+add_test(NAME runtime_soak_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_soak_test.py")
+add_test(NAME reboot_qualification_unit COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/reboot_qualification_test.py")
+add_test(NAME release_qualification_unit COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_qualification_test.py")
 add_test(NAME documentation_links COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/packaging/check-docs.py")
 install(FILES API.md FEATURE_MATRIX.md RELEASE_READINESS.md BENCHMARK_REPORT.md
     OSS_ROADMAP.md REVIEW_FINDINGS.md CONTRIBUTING.md CHANGELOG.md
@@ -330,6 +335,8 @@ install(FILES POLICY_OPTIMIZER.md OPTIMIZER_TESTS.md OPTIMIZATION_RESULTS.md DES
 install(FILES RUNTIME_SAFETY.md RECOVERY_ENGINE.md FAULT_INJECTION_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES FLOWCORE_1_0_READINESS.md INDEPENDENT_VALIDATION.md PERFORMANCE_EVIDENCE.md
     KNOWN_LIMITATIONS.md NEXT_RESEARCH_ROADMAP.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES SOAK_TEST_RESULTS.md REBOOT_VALIDATION.md HARDWARE_VALIDATION.md
+    RELEASE_QUALIFICATION.md DESTINATION "${FLOWCORE_DATA}/docs")
 add_test(NAME safety_model COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/safety_model_test.py")
 
 install(FILES SAFETY_INVARIANTS.md STATE_MACHINE_SPEC.md MODEL_TEST_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+BUILD = Path(os.environ.get('FLOWCORE_BUILD_DIR', ROOT / 'build')).resolve()
 sys.path.insert(0, str(ROOT / 'scripts'))
 from benchmark import owned_directory, run
 from cli import request
@@ -36,7 +37,7 @@ def await_status(predicate, timeout=8):
 
 
 def cli(*args, code=0):
-    result = subprocess.run([ROOT / 'build/flowcore', *args], text=True, capture_output=True, timeout=30)
+    result = subprocess.run([BUILD / 'flowcore', *args], text=True, capture_output=True, timeout=30)
     check(result.returncode == code, f'{args}: {result.returncode} {result.stderr}')
     return json.loads(result.stdout) if code == 0 else result.stderr
 
@@ -75,7 +76,7 @@ def main():
     output = ROOT / 'results' / f'service-test-{time.time_ns()}'
     owned_directory(output)
     log = (output / 'daemon.jsonl').open('w')
-    proc = subprocess.Popen([ROOT / 'build/flowcored'], stdout=log, stderr=log)
+    proc = subprocess.Popen([BUILD / 'flowcored'], stdout=log, stderr=log)
     pids = []
     try:
         await_status(lambda status: not status['lab_up'])
@@ -134,7 +135,7 @@ def main():
     cli('status', code=3)
 
     with (output / 'crash.jsonl').open('w') as crash_log:
-        crashed = subprocess.Popen([ROOT / 'build/flowcored'], stdout=crash_log, stderr=crash_log)
+        crashed = subprocess.Popen([BUILD / 'flowcored'], stdout=crash_log, stderr=crash_log)
         try:
             await_status(lambda status: not status['lab_up'])
             cli('lab', 'up')
@@ -146,7 +147,7 @@ def main():
         while any(Path(f'/proc/{pid}/ns/net').exists() for pid in holders):
             check(time.monotonic() < deadline, 'holders survived daemon SIGKILL')
             time.sleep(.1)
-        restarted = subprocess.Popen([ROOT / 'build/flowcored'], stdout=crash_log, stderr=crash_log)
+        restarted = subprocess.Popen([BUILD / 'flowcored'], stdout=crash_log, stderr=crash_log)
         try:
             await_status(lambda status: not status['lab_up'])
             check(not list((ROOT / 'runtime').glob('lab-*')), 'stale workspace survived restart')

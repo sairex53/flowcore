@@ -1,0 +1,176 @@
+{
+  "baseline_sha256": "b3994d44d5a631241ba2c2b3f3209ddf0e7b024853916be76f121bbed021bff4",
+  "blocking_gates": [
+    "functional",
+    "security",
+    "performance_evidence",
+    "reproducibility",
+    "portability",
+    "packaging",
+    "reliability",
+    "api_stability",
+    "prompt52:long_soak",
+    "prompt52:reboot_and_recovery",
+    "prompt52:power_loss",
+    "prompt52:physical_network",
+    "prompt52:fault_injection",
+    "prompt52:resource_safety",
+    "prompt52:api_and_package_lifecycle",
+    "prompt52:signed_distribution"
+  ],
+  "decision": "Release blocked",
+  "evidence_manifest": "results/prompt52-validation/manifest.json",
+  "generated_at": "2026-11-12T19:53:26.206686+00:00",
+  "policy": {
+    "minimum_qualified_soak_seconds": 86400,
+    "missing_physical_hardware_is_not_a_pass": true,
+    "qemu_abrupt_stop_counts_as_power_loss": false
+  },
+  "production_ready": false,
+  "prompt52": {
+    "api_and_package_lifecycle": {
+      "evidence": [
+        "results/prompt52-validation/x86-ctest.json",
+        "results/prompt52-validation/arm64-ctest.json"
+      ],
+      "reason": "Selected C ABI checks passed; installed RPM lifecycle, upgrade, and service security were not qualified.",
+      "status": "UNVERIFIED"
+    },
+    "concurrency": {
+      "evidence": "results/prompt52-validation/x86-scale-summary.json",
+      "scope": "x86_64 isolated loopback: 10,000 held TCP connections; 11,100 requests; zero failures.",
+      "status": "PASS"
+    },
+    "cross_architecture": {
+      "evidence": [
+        "results/prompt52-validation/x86-ctest.json",
+        "results/prompt52-validation/arm64-ctest.json",
+        "results/prompt52-validation/x86-service-current-report.json",
+        "results/prompt52-validation/arm64-service-report.json"
+      ],
+      "scope": "Selected tests/builds on x86_64 and aarch64 Fedora 45 under QEMU TCG; architecture-specific runtime durations are not compared.",
+      "status": "PASS"
+    },
+    "fault_injection": {
+      "evidence": "results/prompt52-validation/reboot-report.json",
+      "reason": "Daemon SIGKILL/recovery paths were exercised, but the complete network, telemetry, low-disk, kernel-rejection, and package-upgrade fault matrix was not run.",
+      "status": "UNVERIFIED"
+    },
+    "long_soak": {
+      "elapsed_seconds": 27.357,
+      "minimum_seconds": 86400,
+      "path": "results/prompt52-validation/x86-service-current-report.json",
+      "profile": "service",
+      "reason": "report lacks a complete 24-hour service/full soak, passing resource gates, successful steps, or retained logs",
+      "resource_gate_states": [
+        "UNVERIFIED",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "UNVERIFIED",
+        "PASS"
+      ],
+      "sha256": "c526c0ac78158c126d2b4ca3436d8c96a4d3281da85a935be7549b85ae6ddc3e",
+      "status": "UNVERIFIED",
+      "steps": {
+        "count": 1,
+        "log_sha256": [
+          "549d74d6148b3010e7814b099896d9c05150eadb3bb7297740df6c33f033c203"
+        ],
+        "valid": true
+      }
+    },
+    "physical_network": {
+      "evidence": "HARDWARE_VALIDATION.md",
+      "reason": "NIC inventory only; no controlled peer or dedicated test path.",
+      "status": "BLOCKED"
+    },
+    "power_loss": {
+      "reason": "QEMU process interruption is not host power-loss validation",
+      "status": "UNVERIFIED"
+    },
+    "reboot_and_recovery": {
+      "abrupt_qemu_stop": "PASS",
+      "base_image_unchanged": true,
+      "clean_reboot": "PASS",
+      "lifecycle_statuses": [
+        "BLOCKED",
+        "UNVERIFIED",
+        "BLOCKED"
+      ],
+      "path": "results/prompt52-validation/reboot-report.json",
+      "reason": "reboot/recovery report is incomplete or failed",
+      "sha256": "abfbd85f154bbcbef248553eb87494b833ecae0b9a1a8a86601324a26444cdc1",
+      "status": "BLOCKED"
+    },
+    "resource_safety": {
+      "evidence": [
+        "results/prompt52-validation/x86-service-current-report.json",
+        "results/prompt52-validation/arm64-service-report.json",
+        "results/prompt52-validation/x86-disk-guard-report.json"
+      ],
+      "reason": "Both service smokes passed host-network, namespace, qdisc and process-cleanup checks; drift has one cycle, ARM container inventory is unavailable; the disk guard correctly blocked before the copied VM was expanded.",
+      "status": "UNVERIFIED"
+    },
+    "signed_distribution": {
+      "reason": "No operator-controlled production signing key or verified signed artifact.",
+      "status": "BLOCKED"
+    }
+  },
+  "release_gates": {
+    "api_stability": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    },
+    "documentation": {
+      "declared_status": "PASS",
+      "source": "config/release-gates.json",
+      "status": "PASS"
+    },
+    "functional": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    },
+    "packaging": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    },
+    "performance_evidence": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    },
+    "portability": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    },
+    "reliability": {
+      "reason": "report lacks a complete 24-hour service/full soak, passing resource gates, successful steps, or retained logs",
+      "source": "Prompt 52 soak gate",
+      "status": "BLOCKED"
+    },
+    "reproducibility": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    },
+    "security": {
+      "declared_status": "PARTIAL",
+      "source": "config/release-gates.json",
+      "status": "UNVERIFIED"
+    }
+  },
+  "schema_version": 1,
+  "scope": "experimental source candidate",
+  "source_commit": "ae51621850dae4e2c55f69a8a37f4150e320c29a",
+  "source_diff_sha256": "b4e5496ddaf9cfa3c5e8ac8707409f2af1f80014ff8342e72a8e86a25a99f019",
+  "source_tree_dirty": true
+}

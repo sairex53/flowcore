@@ -17,3 +17,24 @@ Each request duration and transfer goodput use elapsed time from the worker's lo
 Agent startup schedules each worker with a relative lead time. The coordinator records its own request and response bounds around remote clock samples and keeps the worker's monotonic and realtime readings. NTP status and chrony tracking are collected when available. The exchange duration includes transport and userspace scheduling. These samples are diagnostic and do not synchronize the workers or provide one-way network timing. Treat start and fault offsets on the coordinator and remote hosts as approximate. Compare per-host elapsed intervals and use clock error bounds before correlating events across hosts.
 
 Ethtool reports whether a device supports hardware timestamping. This lab does not request packet timestamps or read a PTP clock. Only use hardware timestamps in a separate validation after verifying driver support, clock synchronization and which timestamps the workload actually collected.
+
+## Prompt 52 host inventory (2026-11-13)
+
+The development host is x86_64, kernel `7.2.15-1-omarchy`. Read-only PCI/sysfs
+inventory found a Realtek RTL8125 2.5GbE adapter using `r8169` and an Intel 700
+Series CNVi Wi-Fi adapter using `iwlwifi`. The Ethernet adapter had no carrier;
+Wi-Fi was the active management path. Interface error/drop counters were zero
+at inventory time. `ethtool` 7.2 readback recorded the RTL8125 firmware
+`rtl8125b-2_0.0.2`, RX/TX rings of 256, and enabled checksum, segmentation and
+receive offloads. The driver did not support channel enumeration. The Wi-Fi
+driver reported firmware `89.d2579d43.0 so-a0-gf-a0-89.uc`; its ring and channel
+settings were unavailable. No traffic, offload, route, MTU, qdisc, or IRQ
+changes were made. `ethtool` was installed on the development host to collect
+these read-only details.
+
+This establishes only that physical Linux NICs are present. There was no
+controlled peer on a dedicated test path, so no physical TCP/UDP workload,
+capacity measurement, failure test, or comparison with namespace results was
+run. The hardware performance gate is therefore **BLOCKED**; the wireless
+management link was not used as an experimental bottleneck. The RTL8125 link
+was down, and no hardware result is inferred from virtual interfaces.
