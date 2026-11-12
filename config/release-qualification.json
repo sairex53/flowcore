@@ -20,7 +20,8 @@
   ],
   "decision": "Release blocked",
   "evidence_manifest": "results/prompt52-validation/manifest.json",
-  "generated_at": "2026-11-12T19:54:29.957155+00:00",
+  "evidence_manifest_sha256": "b2687b3961c6e3d5afb853fb720d30f6b2119264d1db8307c0571dc352c93018",
+  "generated_at": "2026-11-12T20:12:13.821315+00:00",
   "policy": {
     "minimum_qualified_soak_seconds": 86400,
     "missing_physical_hardware_is_not_a_pass": true,
@@ -57,11 +58,11 @@
       "status": "UNVERIFIED"
     },
     "long_soak": {
-      "elapsed_seconds": 27.357,
+      "elapsed_seconds": 81.684,
       "minimum_seconds": 86400,
       "path": "results/prompt52-validation/x86-service-current-report.json",
       "profile": "service",
-      "reason": "report lacks a complete 24-hour service/full soak, passing resource gates, successful steps, or retained logs",
+      "reason": "report lacks a complete target-duration service/full soak, passing resource gates, successful steps, or retained logs",
       "resource_gate_states": [
         "UNVERIFIED",
         "PASS",
@@ -71,15 +72,17 @@
         "PASS",
         "PASS",
         "PASS",
-        "UNVERIFIED",
+        "PASS",
         "PASS"
       ],
-      "sha256": "c526c0ac78158c126d2b4ca3436d8c96a4d3281da85a935be7549b85ae6ddc3e",
+      "sha256": "80516c83ec1a5ae8110741922317e5e8d882854ed79848b37990ef288929d141",
       "status": "UNVERIFIED",
       "steps": {
-        "count": 1,
+        "count": 3,
         "log_sha256": [
-          "549d74d6148b3010e7814b099896d9c05150eadb3bb7297740df6c33f033c203"
+          "f0072a293eca1aea6302a568e1267aeccf61f2438b633fe32e7d48ade08385e6",
+          "4a605c2f79430825673e2e9ec55eef8c5187b3199ddf25b5a8bbce57de486037",
+          "406868dc0dfa019c4121b8a0a02ba84d7bc8df36184d3738dfde9ddf1f6ae26b"
         ],
         "valid": true
       }
@@ -113,7 +116,7 @@
         "results/prompt52-validation/arm64-service-report.json",
         "results/prompt52-validation/x86-disk-guard-report.json"
       ],
-      "reason": "Both service smokes passed host-network, namespace, qdisc and process-cleanup checks; drift has one cycle, ARM container inventory is unavailable; the disk guard correctly blocked before the copied VM was expanded.",
+      "reason": "The current x86 service target run completed three clean cycles with zero host network, namespace, qdisc, or process-cleanup deltas; ARM had one cycle and no container inventory, while bpftool is unavailable on x86.",
       "status": "UNVERIFIED"
     },
     "signed_distribution": {
@@ -153,7 +156,7 @@
       "status": "UNVERIFIED"
     },
     "reliability": {
-      "reason": "report lacks a complete 24-hour service/full soak, passing resource gates, successful steps, or retained logs",
+      "reason": "report lacks a complete target-duration service/full soak, passing resource gates, successful steps, or retained logs",
       "source": "Prompt 52 soak gate",
       "status": "BLOCKED"
     },
@@ -170,7 +173,7 @@
   },
   "schema_version": 1,
   "scope": "experimental source candidate",
-  "source_commit": "6f0ccb3f32e5f61f1138c7acfe7bd91206defd7b",
+  "source_commit": "095806500646bf8c2b994182f9a2b1cec46445b1",
   "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "source_tree_dirty": false
 }
