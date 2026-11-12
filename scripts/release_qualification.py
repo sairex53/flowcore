@@ -151,6 +151,7 @@ def _report_status(root, name, minimum_seconds=86_400):
         regression = data.get('regression', {}).get('resource_gates', {})
         statuses = [row.get('status') for row in regression.values() if isinstance(row, dict)]
         duration = data.get('elapsed_seconds', 0)
+        target_duration = data.get('duration_target_seconds')
         if data.get('status') == 'FAIL':
             return dict(status='FAIL', path=str(path.relative_to(root)),
                         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -162,6 +163,8 @@ def _report_status(root, name, minimum_seconds=86_400):
         checks = (data.get('schema_version') == 1 and data.get('status') == 'PASS'
                   and data.get('profile') in ('full', 'service')
                   and type(duration) in (int, float) and duration >= minimum_seconds
+                  and type(target_duration) is int and target_duration >= minimum_seconds
+                  and data.get('duration_target_reached') is True
                   and type(data.get('samples')) is int and data['samples'] >= 20
                   and statuses and all(s == 'PASS' for s in statuses))
         steps = _soak_steps(root, data)
@@ -171,7 +174,7 @@ def _report_status(root, name, minimum_seconds=86_400):
                     elapsed_seconds=duration, minimum_seconds=minimum_seconds,
                     profile=data.get('profile'), resource_gate_states=statuses,
                     steps=steps,
-                    reason=None if checks else 'report lacks a complete 24-hour service/full soak, passing resource gates, successful steps, or retained logs')
+                    reason=None if checks else 'report lacks a complete target-duration service/full soak, passing resource gates, successful steps, or retained logs')
     tests = data.get('tests', {})
     boot = tests.get('initial_boot', {}).get('status')
     clean = tests.get('clean_reboot', {}).get('status')
@@ -268,6 +271,8 @@ def evaluate(root, *, soak_report=None, reboot_report=None, validation_manifest=
                 decision=decision, release_gates=gates, prompt52=prompt52,
                 blocking_gates=blockers,
                 evidence_manifest=(str(manifest_path.relative_to(root)) if manifest_path else None),
+                evidence_manifest_sha256=(hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                                          if manifest_path else None),
                 policy=dict(minimum_qualified_soak_seconds=minimum_soak_seconds,
                             qemu_abrupt_stop_counts_as_power_loss=False,
                             missing_physical_hardware_is_not_a_pass=True))

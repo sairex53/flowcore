@@ -16,9 +16,24 @@ changes; a mismatch fails the run.
 Example bounded command:
 
 ```sh
-sudo python3 -B scripts/runtime_soak.py --profile full --cycles 2 \
+sudo python3 -B scripts/runtime_soak.py --profile full --cycles 100 \
   --duration-seconds 1800 --sample-seconds 5 --max-minutes 15
 ```
+
+`--duration-seconds` is a wall-time target. The runner finishes the current
+complete profile cycle after that target is reached; `--max-minutes` bounds
+each individual step. `--cycles` is an upper bound (1–10,000), so select enough
+cycles for the requested target. A qualified 24-hour service run can use:
+
+```sh
+sudo python3 -B scripts/runtime_soak.py --profile service --cycles 10000 \
+  --duration-seconds 86400 --sample-seconds 30 --max-minutes 15 \
+  --max-output-mb 8192
+```
+
+The resulting report records whether the target duration was reached. The
+release gate also checks the actual elapsed time, successful complete cycles,
+resource gates, and retained step logs.
 
 The runner writes `metadata.json`, progress, raw resource samples, per-step
 logs and `report.json` below a private `results/runtime-soak-*` directory.
@@ -48,10 +63,12 @@ first bounded service run completed in 28.648 seconds. After the 1 GiB free
 space guard was added, a repeat correctly stopped before workload launch when
 the copied Fedora root had 82 MiB free. The copied VM's root LV was expanded
 from 15 GiB to 40 GiB; the original UTM image was not changed. The current-code
-service run then passed in 27.357 seconds with 27 samples. Process cleanup,
-host-network fingerprint, namespace, qdisc, disk, temporary-file and output
-checks passed. BPF inventory is unavailable and one cycle is insufficient for
-early/late drift, so those fields remain `UNVERIFIED`.
+service run then passed in 27.357 seconds with 27 samples. A 60-second target
+run completed three whole service cycles in 81.684 seconds with 41 samples; it
+marked the target reached after finishing cycle 3. Process cleanup,
+host-network fingerprint, namespace, qdisc, disk, temporary-file, output and
+three-cycle resource-drift checks passed. BPF inventory remains `UNVERIFIED`
+because `bpftool` is unavailable on x86_64.
 
 A separate Fedora 45 AArch64 guest was built and tested under QEMU TCG. It
 passed the same 13 selected CTest checks. Its bounded service run passed in

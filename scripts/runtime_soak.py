@@ -348,10 +348,10 @@ def _profile_command(profile, manifest, mode, max_minutes, build_dir):
 def validate_args(args):
     if args.profile not in PROFILE_STEPS:
         raise ValueError('unknown runtime soak profile')
-    if type(args.cycles) is not int or not 1 <= args.cycles <= 1000:
-        raise ValueError('cycles must be in [1, 1000]')
-    if not 1 <= args.duration_seconds <= 86_400:
-        raise ValueError('duration must be in [1, 86400] seconds')
+    if type(args.cycles) is not int or not 1 <= args.cycles <= 10_000:
+        raise ValueError('cycles must be in [1, 10000]')
+    if type(args.duration_seconds) is not int or not 1 <= args.duration_seconds <= 604_800:
+        raise ValueError('duration must be in [1, 604800] seconds')
     if not 1 <= args.sample_seconds <= 300:
         raise ValueError('sample interval must be in [1, 300] seconds')
     if not 1 <= args.max_output_mb <= 65_536:
@@ -590,6 +590,21 @@ def _stability_summary(steps, limits):
                 resource_drift_status=drift_status)
 
 
+def completed_cycle_count(steps, expected_profiles):
+    expected = set(expected_profiles)
+    by_cycle = {}
+    for step in steps:
+        cycle = step.get('cycle')
+        if type(cycle) is not int:
+            continue
+        row = by_cycle.setdefault(cycle, dict(profiles=[], passed=True))
+        row['profiles'].append(step.get('profile'))
+        row['passed'] = row['passed'] and step.get('status') == 'PASS'
+    return sum(1 for row in by_cycle.values()
+               if row['passed'] and len(row['profiles']) == len(expected)
+               and set(row['profiles']) == expected)
+
+
 def _leaked_processes(observed, rows=None):
     rows = process_table() if rows is None else rows
     leaked = []
@@ -677,7 +692,7 @@ def run_soak(args):
     os.environ['FLOWCORE_TC'] = str(args.tc)
     steps = PROFILE_STEPS[args.profile]
     start = time.monotonic()
-    deadline = start + args.duration_seconds
+    duration_target = start + args.duration_seconds
     limits = dict(netns=args.max_netns_growth, qdiscs=args.max_qdisc_growth,
                   bpf=args.max_bpf_growth, volumes=args.max_volume_growth,
                   rss_growth_bytes=args.max_rss_growth_mb*1024*1024,
@@ -687,7 +702,7 @@ def run_soak(args):
     min_free_bytes = limits['disk_free_minimum_bytes']
     _write_json(output_dir / 'metadata.json', dict(
         schema_version=1, profile=args.profile, cycles_requested=args.cycles,
-        duration_limit_seconds=args.duration_seconds, sample_interval_seconds=args.sample_seconds,
+        duration_target_seconds=args.duration_seconds, sample_interval_seconds=args.sample_seconds,
         mode=args.mode if args.profile in ('research', 'full') else None,
         manifest=str(args.manifest) if args.profile in ('research', 'full') else None,
         architecture=os.uname().machine, kernel=os.uname().release, git=_git_metadata(),
@@ -700,10 +715,10 @@ def run_soak(args):
     for cycle in range(args.cycles):
         if stop_reason:
             break
+        if time.monotonic() >= duration_target:
+            stop_reason = 'DURATION_REACHED'
+            break
         for profile in steps:
-            if time.monotonic() >= deadline:
-                stop_reason = 'TIME_LIMIT'
-                break
             argv = _profile_command(profile, args.manifest, args.mode, args.max_minutes,
                                     args.build_dir)
             if profile == 'research' and not Path(argv[0]).is_file():
@@ -714,7 +729,8 @@ def run_soak(args):
                 environment = os.environ.copy()
                 environment['FLOWCORE_BUILD_DIR'] = str(args.build_dir)
                 environment['FLOWCORE_TC'] = str(args.tc)
-                step = _run_step(profile, argv, output_dir, log, deadline,
+                step_deadline = time.monotonic() + args.max_minutes * 60
+                step = _run_step(profile, argv, output_dir, log, step_deadline,
                                  args.sample_seconds, args.max_output_mb*1024*1024, samples,
                                  environment, min_free_bytes)
             step['cycle'] = cycle
@@ -725,6 +741,9 @@ def run_soak(args):
                 stop_reason = step['status']
                 break
         if stop_reason:
+            break
+        if time.monotonic() >= duration_target:
+            stop_reason = 'DURATION_REACHED'
             break
     final = resource_snapshot(None, output_dir)
     samples.append(final)
@@ -747,12 +766,12 @@ def run_soak(args):
     else:
         gates['output_size'] = dict(status='PASS', bytes=output_bytes,
                                     limit_bytes=args.max_output_mb*1024*1024)
-    all_steps_pass = len(completed) == args.cycles*len(steps) and all(
-        row['status'] == 'PASS' for row in completed)
-    completed_cycles = sum(1 for cycle in range(args.cycles)
-                           if len([row for row in completed if row['cycle'] == cycle]) == len(steps)
-                           and all(row['status'] == 'PASS' for row in completed
-                                   if row['cycle'] == cycle))
+    completed_cycles = completed_cycle_count(completed, steps)
+    observed_cycles = len({row['cycle'] for row in completed})
+    all_steps_pass = bool(completed) and completed_cycles == observed_cycles
+    if not stop_reason:
+        stop_reason = ('DURATION_REACHED' if time.monotonic()-start >= args.duration_seconds
+                       else 'CYCLE_LIMIT_REACHED')
     failed_gates = [name for name, gate in gates.items() if gate['status'] == 'FAIL']
     blocked_gates = [name for name, gate in gates.items() if gate['status'] == 'BLOCKED']
     if failed_gates or any(row['status'].startswith('FAIL') or row['status'] == 'STOPPED_OUTPUT_GUARD'
@@ -760,7 +779,7 @@ def run_soak(args):
         outcome = 'FAIL'
     elif blocked_gates or any(row['status'] == 'STOPPED_DISK_GUARD' for row in completed):
         outcome = 'BLOCKED'
-    elif all_steps_pass and not stop_reason:
+    elif all_steps_pass and stop_reason in ('DURATION_REACHED', 'CYCLE_LIMIT_REACHED'):
         outcome = 'PASS'
     elif stop_reason:
         outcome = 'BLOCKED' if stop_reason in ('BLOCKED_LOW_DISK_SPACE', 'STOPPED_DISK_GUARD') else stop_reason
@@ -772,10 +791,13 @@ def run_soak(args):
     if gates['resource_drift']['status'] == 'FAIL':
         failed_gates.append('resource_drift')
         outcome = 'FAIL'
+    elapsed_seconds = round(time.monotonic()-start, 3)
     report = dict(schema_version=1, status=outcome, decision='PASS' if outcome == 'PASS' else 'INCOMPLETE',
                   profile=args.profile, steps=completed, cycles_completed=(
                       completed_cycles),
-                  elapsed_seconds=round(time.monotonic()-start, 3),
+                  cycles_requested=args.cycles, duration_target_seconds=args.duration_seconds,
+                  duration_target_reached=elapsed_seconds >= args.duration_seconds,
+                  elapsed_seconds=elapsed_seconds,
                   samples=len(samples), baseline=initial, final=final,
                   regression=dict(resource_gates=gates, failed_gates=failed_gates,
                                   blocked_gates=blocked_gates,
@@ -798,7 +820,8 @@ def main(argv=None):
                         default=Path(shutil.which('tc') or ROOT/'tools/root/usr/bin/tc'))
     parser.add_argument('--mode', default='optimizer-overload')
     parser.add_argument('--cycles', type=int, default=1)
-    parser.add_argument('--duration-seconds', type=int, default=900)
+    parser.add_argument('--duration-seconds', type=int, default=900,
+                        help='target wall time; finish the current complete profile cycle')
     parser.add_argument('--sample-seconds', type=int, default=5)
     parser.add_argument('--max-minutes', type=float, default=15,
                         help='bound each inner Research Lab trial')

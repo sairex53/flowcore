@@ -98,6 +98,12 @@ class RuntimeSoakTest(unittest.TestCase):
             manifest=ROOT/'README.md', mode='optimizer-overload')
         validated = soak.validate_args(args)
         self.assertTrue(validated.tc.is_file())
+        args.cycles = 10_000
+        args.duration_seconds = 604_800
+        soak.validate_args(args)
+        args.cycles = 10_001
+        with self.assertRaisesRegex(ValueError, 'cycles'):
+            soak.validate_args(args)
 
     def test_early_late_resources_and_request_denominators_are_preserved(self):
         steps = [
@@ -120,6 +126,16 @@ class RuntimeSoakTest(unittest.TestCase):
         self.assertEqual(trial['failed_requests'], 11)
         self.assertEqual(trial['controller_adjustments'], 3)
         self.assertEqual(trial['controller_rollbacks'], 1)
+
+    def test_only_complete_successful_profile_cycles_count(self):
+        rows = [
+            dict(cycle=0, profile='service', status='PASS'),
+            dict(cycle=0, profile='udp', status='PASS'),
+            dict(cycle=1, profile='service', status='PASS'),
+            dict(cycle=2, profile='service', status='PASS'),
+            dict(cycle=2, profile='udp', status='FAIL'),
+        ]
+        self.assertEqual(soak.completed_cycle_count(rows, ('service', 'udp')), 1)
 
     def test_qdisc_gate_fails_only_for_host_namespace_change(self):
         def snapshot(qdiscs):

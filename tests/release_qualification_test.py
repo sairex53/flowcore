@@ -52,7 +52,8 @@ class ReleaseQualificationTests(unittest.TestCase):
             (root / 'logs').mkdir()
             (root / 'logs/service.log').write_text('service completed\n')
             report = {'schema_version': 1, 'status': 'PASS', 'profile': 'service',
-                      'elapsed_seconds': 3600, 'samples': 20,
+                      'elapsed_seconds': 3600, 'duration_target_seconds': 3600,
+                      'duration_target_reached': True, 'samples': 20,
                       'regression': {'resource_gates': {'host_network_unchanged': {'status': 'PASS'}}},
                       'steps': [{'status': 'PASS', 'returncode': 0,
                                  'leaked_process_count': 0, 'log': 'logs/service.log'}]}
@@ -76,6 +77,7 @@ class ReleaseQualificationTests(unittest.TestCase):
             (root / 'manifest.json').write_text(json.dumps(manifest))
             report = MODULE.evaluate(root, validation_manifest='manifest.json')
             self.assertEqual(report['prompt52']['cross_architecture']['status'], 'UNVERIFIED')
+            self.assertEqual(len(report['evidence_manifest_sha256']), 64)
             del manifest['concurrency']
             (root / 'manifest.json').write_text(json.dumps(manifest))
             with self.assertRaisesRegex(ValueError, 'schema version'):
