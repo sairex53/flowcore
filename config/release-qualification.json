@@ -21,7 +21,7 @@
   "decision": "Release blocked",
   "evidence_manifest": "results/prompt52-validation/manifest.json",
   "evidence_manifest_sha256": "b2687b3961c6e3d5afb853fb720d30f6b2119264d1db8307c0571dc352c93018",
-  "generated_at": "2026-11-12T20:12:13.821315+00:00",
+  "generated_at": "2026-11-12T20:14:40.208755+00:00",
   "policy": {
     "minimum_qualified_soak_seconds": 86400,
     "missing_physical_hardware_is_not_a_pass": true,
@@ -173,7 +173,7 @@
   },
   "schema_version": 1,
   "scope": "experimental source candidate",
-  "source_commit": "095806500646bf8c2b994182f9a2b1cec46445b1",
+  "source_commit": "bfa93364363535eb0b9f2717744bd5f79d461e10",
   "source_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "source_tree_dirty": false
 }
