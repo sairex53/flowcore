@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "synthetic estimator fixtures; not a packet-level benchmark",
+  "scenarios": [
+    {"name": "idle_critical_heavy_background", "expected": "DEMAND_LIMITED", "purpose": "verify unused link capacity when reported critical demand is low"},
+    {"name": "heavy_background_transfer", "expected": "LOCAL_CAPACITY_LIMITED", "purpose": "root queue grows near configured link capacity"},
+    {"name": "bursty_critical_before", "expected": "DEMAND_LIMITED", "purpose": "low demand before the burst"},
+    {"name": "bursty_critical_after", "expected": "LOCAL_CAPACITY_LIMITED", "purpose": "queue-backed capacity limit after a burst"},
+    {"name": "receiver_limited_tcp", "expected": "RECEIVER_LIMITED_SUSPECTED", "purpose": "TCP receive-window-limited evidence with local queues quiet"},
+    {"name": "socket_pacing_bottleneck", "expected": "SOCKET_PACING_RESTRICTED", "purpose": "socket pacing ceiling below configured link capacity"},
+    {"name": "htb_class_bottleneck", "expected": "CLASS_RESTRICTED", "purpose": "configured class ceiling binds while the root has headroom"},
+    {"name": "external_emulated_bottleneck", "expected": "REMOTE_BOTTLENECK_SUSPECTED", "purpose": "remote pressure reported while local queues remain quiet"},
+    {"name": "capacity_collapse_12_to_6_mbit", "expected": "LOCAL_CAPACITY_LIMITED", "purpose": "capacity reduction with demand and root backlog"},
+    {"name": "capacity_recovery_6_to_12_mbit", "expected": "DEMAND_LIMITED", "purpose": "post-recovery capacity exceeds reported demand"},
+    {"name": "mixed_tcp_udp_demand", "expected": "DEMAND_LIMITED", "purpose": "separate UDP attempted, transmitted, failed, urgent and background message counters"},
+    {"name": "missing_demand_and_capacity_evidence", "expected": "UNKNOWN", "purpose": "refuse classification when demand and capacity are not observable"},
+    {"name": "tcp_sender_buffer_limited", "expected": "UNKNOWN", "purpose": "report sender-buffer pressure without calling it network congestion"}
+  ]
+}

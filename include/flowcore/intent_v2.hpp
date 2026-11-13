@@ -66,6 +66,15 @@ struct OpenError {
     Error code = Error::InvalidRequest;
     std::string message;
 };
+// Optional application-owned traffic counters. Byte fields are independent
+// directions; local transport acceptance does not imply remote delivery.
+struct TrafficAccounting {
+    bool valid = false;
+    std::uint64_t bytes_offered = 0, bytes_admitted = 0;
+    std::uint64_t bytes_transmitted = 0, bytes_received = 0;
+    std::uint32_t udp_messages_attempted = 0, udp_messages_transmitted = 0;
+    std::uint32_t udp_send_failures = 0, udp_urgent_messages = 0, udp_background_messages = 0;
+};
 namespace detail { struct Channel; }
 class Request {
 public:
@@ -75,12 +84,13 @@ public:
     Request& operator=(const Request&) = delete;
     ~Request();
     bool complete(Outcome = Outcome::Ok) noexcept;
+    bool complete(Outcome, const TrafficAccounting&) noexcept;
     bool cancel() noexcept { return complete(Outcome::Cancelled); }
     std::uint64_t id() const noexcept { return id_; }
 private:
     friend class Service;
     friend class DeadlineRequest;
-    bool finish_at(Outcome, std::uint64_t) noexcept;
+    bool finish_at(Outcome, std::uint64_t, const TrafficAccounting* = nullptr) noexcept;
     Request(std::shared_ptr<detail::Channel>, std::uint32_t, std::uint64_t,
             std::uint64_t stream = 0, unsigned priority = 0, bool logical = false, std::uint64_t absolute_ns = 0);
     std::shared_ptr<detail::Channel> channel_;
@@ -101,6 +111,7 @@ public:
     bool progress(std::uint64_t completed_egress_bytes) noexcept;
     deadline::Work remaining_work() const noexcept;
     std::optional<DeadlineCompletion> complete(Outcome = Outcome::Ok) noexcept;
+    std::optional<DeadlineCompletion> complete(Outcome, const TrafficAccounting&) noexcept;
     std::optional<DeadlineCompletion> cancel() noexcept { return complete(Outcome::Cancelled); }
 private:
     friend class Service;

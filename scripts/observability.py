@@ -3,7 +3,7 @@ import os
 import resource
 import struct
 import time
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 from bpf_source import BpfSource
@@ -15,6 +15,9 @@ from telemetry_windows import Windows
 
 NANO = 1_000_000_000
 FAILURE_REASONS = ('connect_refused', 'connect_timeout', 'reset', 'request_timeout', 'other')
+TRAFFIC_BYTES = ('bytes_offered', 'bytes_admitted', 'bytes_transmitted', 'bytes_received')
+TRAFFIC_MESSAGES = ('udp_messages_attempted', 'udp_messages_transmitted', 'udp_send_failures',
+                    'udp_urgent_messages', 'udp_background_messages')
 CLOSING = {'fin_wait_1', 'fin_wait_2', 'closing', 'close_wait', 'last_ack', 'time_wait', 'closed'}
 
 
@@ -56,6 +59,7 @@ class Observer:
         self.scope = 'current_network_namespace'
         self.windows = Windows(max(*self.cfg['windows'], self.cfg['thresholds']['window_seconds'], 7)+1)
         self.requests = {}
+        self.intent_inflight = Counter()
         self.current = {}
         self.previous = {}
         self.last_rows = []
@@ -91,6 +95,19 @@ class Observer:
         self.events.append(dict(sequence=self.event_sequence, time_ns=ts, generation=self.generation,
                                 kind=kind, scope=self.scope, **detail))
 
+    def intent_request_start(self, service):
+        if self.cfg['enabled'] and service in self.cfg['services']:
+            self.intent_inflight[service] += 1
+            bucket = self.windows.at(self.clock())
+            if bucket is not None:
+                bucket.counters[f'app.{service}.application.request_started'] += 1
+
+    def intent_request_complete(self, service):
+        if self.intent_inflight.get(service, 0) > 0:
+            self.intent_inflight[service] -= 1
+            if self.intent_inflight[service] == 0:
+                del self.intent_inflight[service]
+
     def ingest(self, request, uid, *, record=True, deadline_missed=None):
         if not self.cfg['enabled']:
             raise ValueError('observability disabled')
@@ -114,6 +131,10 @@ class Observer:
             import secrets
             token = secrets.token_hex(16)
             self.requests[token] = now, name, uid, deadline
+            bucket = self.windows.at(now)
+            if bucket is None:
+                raise RuntimeError('application timestamp expired')
+            bucket.counters['app.'+name+'.ipc_boundary.request_started'] += 1
             return dict(token=token, started_ns=now, source='daemon IPC boundary')
         outcome = request.get('outcome')
         if outcome not in ('ok', 'timeout', 'failure'):
@@ -121,6 +142,24 @@ class Observer:
         reason = request.get('failure_reason')
         if reason is not None and (outcome == 'ok' or reason not in FAILURE_REASONS):
             raise ValueError('invalid failure reason for outcome')
+        protocol = request.get('transport')
+        if protocol is not None and protocol not in ('tcp', 'udp', 'mptcp', 'unknown'):
+            raise ValueError('unsupported application transport label')
+        byte_values = [request.get(field) for field in TRAFFIC_BYTES]
+        if any(value is not None for value in byte_values):
+            if any(type(value) is not int or not 0 <= value <= 1 << 40 for value in byte_values):
+                raise ValueError('application byte accounting must provide four bounded integers')
+            offered, admitted, transmitted, _ = byte_values
+            if admitted > offered or transmitted > admitted:
+                raise ValueError('application byte accounting is inconsistent')
+        message_values = [request.get(field) for field in TRAFFIC_MESSAGES]
+        if any(value is not None for value in message_values):
+            if any(type(value) is not int or not 0 <= value <= 1_000_000 for value in message_values):
+                raise ValueError('UDP message accounting must provide five bounded integers')
+            attempted, transmitted, failures, urgent, background = message_values
+            if (transmitted > attempted or failures > attempted or urgent > attempted or
+                    background > attempted-urgent or (any(message_values) and protocol != 'udp')):
+                raise ValueError('UDP message accounting is inconsistent or lacks UDP transport attribution')
         if operation == 'request_complete':
             token = request.get('token')
             item = self.requests.get(token) if isinstance(token, str) else None
@@ -141,6 +180,19 @@ class Observer:
             raise RuntimeError('application timestamp expired')
         key = f'app.{name}.{source}'
         bucket.counters[f'{key}.{outcome}'] += 1
+        if any(value is not None for value in byte_values):
+            bucket.counters[f'{key}.traffic_reports'] += 1
+            for field, value in zip(TRAFFIC_BYTES, byte_values):
+                bucket.counters[f'{key}.traffic.{field}'] += value
+                if protocol:
+                    bucket.counters[f'{key}.traffic.{protocol}.{field}'] += value
+            if protocol:
+                bucket.counters[f'{key}.traffic.{protocol}.reports'] += 1
+            if protocol == 'udp' and all(value is not None for value in message_values):
+                bucket.counters[f'{key}.traffic.udp.message_reports'] += 1
+                for field, value in zip(TRAFFIC_MESSAGES, message_values):
+                    bucket.counters[f'{key}.traffic.{field}'] += value
+                    bucket.counters[f'{key}.traffic.udp.{field}'] += value
         if self.probe_start_ns is not None and stamp-int(duration*1000) < self.probe_start_ns:
             bucket.counters[f'{key}.probe_overlap'] += 1
         if reason:
@@ -332,10 +384,28 @@ class Observer:
                 key = f'app.{name}.{source}'
                 counts = {outcome: counters[f'{key}.{outcome}'] for outcome in ('ok', 'failure', 'timeout', 'deadline_miss', 'deadline_reported', 'probe_overlap')}
                 total = counts['ok'] + counts['failure'] + counts['timeout']
+                traffic = {field: counters[f'{key}.traffic.{field}'] for field in TRAFFIC_BYTES}
+                transports = {}
+                for protocol in ('tcp', 'udp', 'mptcp'):
+                    reports = counters[f'{key}.traffic.{protocol}.reports']
+                    if reports:
+                        transports[protocol] = {
+                            **{field: counters[f'{key}.traffic.{protocol}.{field}']
+                               for field in (*TRAFFIC_BYTES, *TRAFFIC_MESSAGES)},
+                            'reports': reports,
+                            'message_reports': counters[f'{key}.traffic.{protocol}.message_reports']}
                 app[name][source] = dict(**hist.get(key, empty), **counts,
+                                         requests_started=counters[f'{key}.request_started'],
+                                         intent_inflight=self.intent_inflight.get(name, 0)
+                                            if source == 'application' else 0,
+                                         request_window_complete=bool(
+                                            counters[f'{key}.request_started'] == total and total > 0 and
+                                            (source != 'application' or self.intent_inflight.get(name, 0) == 0)),
                                          failure_reasons={reason: counters[f'{key}.reason.{reason}']
                                                           for reason in FAILURE_REASONS},
-                                         error_ratio=(counts['failure'] + counts['timeout']) / total if total else None)
+                                         error_ratio=(counts['failure'] + counts['timeout']) / total if total else None,
+                                         traffic_reports=counters[f'{key}.traffic_reports'],
+                                         traffic=traffic, transports=transports)
         queue = {}
         for name in self.previous:
             prefix = f'q.{name}.'

@@ -221,6 +221,7 @@ def live():
         directory=Path(os.path.relpath(directory))
         cfg=load(ROOT/'config/service.json')
         cfg['intent_api']['priorities']=['standard','interactive','critical']
+        cfg['observability']['services']['short_lease']=dict(**{'class':'standard','slo_ms':30})
         config=directory/'config.json'
         config.write_text(json.dumps(cfg))
         runtime=directory/'run'
@@ -232,7 +233,8 @@ def live():
                 path=runtime/'control.sock'
                 for _ in range(100):
                     if path.exists(): break
-                    if proc.poll() is not None: raise RuntimeError(log.name)
+                    if proc.poll() is not None:
+                        raise RuntimeError(log.name + ': ' + (directory/'daemon.log').read_text(errors='replace'))
                     time.sleep(.05)
                 with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as handed:
                     handed.settimeout(2)
@@ -255,8 +257,13 @@ def live():
                             assert not json.loads(probe.recv(4096))['ok']
                 time.sleep(.05)
                 assert len(list(Path(f'/proc/{proc.pid}/fd').iterdir()))<=baseline
-                session_output=subprocess.check_output([BUILD/'intent_session_native',path],text=True,timeout=12)
-                assert json.loads(session_output)['connections']==1
+                try:
+                    session_output=subprocess.check_output([BUILD/'intent_session_native',path],text=True,timeout=12)
+                except subprocess.CalledProcessError as failure:
+                    raise RuntimeError((directory/'daemon.log').read_text(errors='replace')) from failure
+                session_metrics=json.loads(session_output)
+                assert session_metrics['connections']==1
+                assert session_metrics['traffic_observed']
                 subprocess.run([BUILD/"deadline_test",path],check=True,timeout=5)
                 try:
                     output=subprocess.check_output([BUILD/'intent_v2_native',path],text=True,timeout=8,stderr=subprocess.STDOUT)

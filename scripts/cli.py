@@ -78,6 +78,11 @@ def main():
         if action != 'start':
             sub.add_argument('--outcome', choices=('ok', 'timeout', 'failure'), required=True)
             sub.add_argument('--failure-reason', choices=FAILURE_REASONS)
+            sub.add_argument('--transport', choices=('tcp', 'udp', 'mptcp', 'unknown'))
+            for field in ('bytes_offered', 'bytes_admitted', 'bytes_transmitted', 'bytes_received',
+                          'udp_messages_attempted', 'udp_messages_transmitted', 'udp_send_failures',
+                          'udp_urgent_messages', 'udp_background_messages'):
+                sub.add_argument('--' + field.replace('_', '-'), type=int)
         if action == 'sample':
             sub.add_argument('--duration-us', type=float, required=True)
         if action == 'complete':
@@ -293,7 +298,12 @@ def main():
             print(json.dumps(request('ops_'+args.action),indent=2))
             return 0
         if args.command == 'report':
-            fields = {key: getattr(args, key) for key in ('service', 'outcome', 'duration_us', 'deadline_ms', 'token', 'failure_reason')
+            fields = {key: getattr(args, key) for key in ('service', 'outcome', 'duration_us', 'deadline_ms',
+                                                           'token', 'failure_reason', 'transport',
+                                                           'bytes_offered', 'bytes_admitted', 'bytes_transmitted',
+                                                           'bytes_received', 'udp_messages_attempted',
+                                                           'udp_messages_transmitted', 'udp_send_failures',
+                                                           'udp_urgent_messages', 'udp_background_messages')
                       if hasattr(args, key) and getattr(args, key) is not None}
             operation = {'start': 'request_start', 'complete': 'request_complete', 'sample': 'request_sample'}
             print(json.dumps(request(operation[args.action], **fields)))

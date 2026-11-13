@@ -89,6 +89,7 @@ struct Event {
     unsigned priority=0;
     bool logical=false;
     std::uint64_t absolute_ns=0;
+    v2::TrafficAccounting traffic{};
 };
 struct Channel {
     const pid_t owner=getpid();
@@ -251,6 +252,18 @@ struct Channel {
                                 ",\"deadline_us\":"+std::to_string(e.deadline)+",\"cookie\":"+(e.cookie?std::to_string(e.cookie):"null");
                             if (e.absolute_ns) message+=",\"deadline_ns\":"+std::to_string(e.absolute_ns);
                             if (e.logical) message+=",\"stream_id\":"+std::to_string(e.stream)+",\"stream_priority\":"+std::to_string(e.priority);
+                            if (e.traffic.valid) {
+                                const auto& t=e.traffic;
+                                message+=",\"traffic\":{\"bytes_offered\":"+std::to_string(t.bytes_offered)+
+                                    ",\"bytes_admitted\":"+std::to_string(t.bytes_admitted)+
+                                    ",\"bytes_transmitted\":"+std::to_string(t.bytes_transmitted)+
+                                    ",\"bytes_received\":"+std::to_string(t.bytes_received)+
+                                    ",\"udp_messages_attempted\":"+std::to_string(t.udp_messages_attempted)+
+                                    ",\"udp_messages_transmitted\":"+std::to_string(t.udp_messages_transmitted)+
+                                    ",\"udp_send_failures\":"+std::to_string(t.udp_send_failures)+
+                                    ",\"udp_urgent_messages\":"+std::to_string(t.udp_urgent_messages)+
+                                    ",\"udp_background_messages\":"+std::to_string(t.udp_background_messages)+"}";
+                            }
                             message+="}";
                         }
                         message+="]}";
@@ -585,6 +598,15 @@ std::optional<DeadlineCompletion> DeadlineRequest::complete(Outcome outcome) noe
     const auto end = deadline::monotonic_ns();
     return DeadlineCompletion{outcome != Outcome::Ok || end > work_.deadline_ns, request_.finish_at(outcome, end)};
 }
+std::optional<DeadlineCompletion> DeadlineRequest::complete(Outcome outcome,
+                                                             const TrafficAccounting& traffic) noexcept {
+    if (finished_) return {};
+    const auto end = deadline::monotonic_ns();
+    const bool queued = request_.finish_at(outcome, end, &traffic);
+    if (!queued) return {};
+    finished_ = true;
+    return DeadlineCompletion{outcome != Outcome::Ok || end > work_.deadline_ns, true};
+}
 
 Request::Request(std::shared_ptr<detail::Channel> channel, std::uint32_t deadline, std::uint64_t cookie,
                  std::uint64_t stream, unsigned priority, bool logical, std::uint64_t absolute)
@@ -616,10 +638,28 @@ Request& Request::operator=(Request&& other) noexcept {
 }
 Request::~Request() { if (channel_) static_cast<void>(complete(Outcome::Cancelled)); }
 bool Request::complete(Outcome outcome) noexcept { return finish_at(outcome, deadline::monotonic_ns()); }
-bool Request::finish_at(Outcome outcome, std::uint64_t end) noexcept {
+bool Request::complete(Outcome outcome, const TrafficAccounting& traffic) noexcept {
+    return finish_at(outcome, deadline::monotonic_ns(), &traffic);
+}
+bool Request::finish_at(Outcome outcome, std::uint64_t end, const TrafficAccounting* traffic) noexcept {
+    if (traffic && traffic->valid &&
+        (traffic->bytes_offered > (1ULL << 40) || traffic->bytes_admitted > (1ULL << 40) ||
+         traffic->bytes_transmitted > (1ULL << 40) || traffic->bytes_received > (1ULL << 40) ||
+         traffic->bytes_admitted > traffic->bytes_offered ||
+         traffic->bytes_transmitted > traffic->bytes_admitted ||
+         traffic->udp_messages_attempted > 1'000'000 || traffic->udp_messages_transmitted > 1'000'000 ||
+         traffic->udp_send_failures > 1'000'000 || traffic->udp_urgent_messages > 1'000'000 ||
+         traffic->udp_background_messages > 1'000'000 ||
+         traffic->udp_messages_transmitted > traffic->udp_messages_attempted ||
+         traffic->udp_send_failures > traffic->udp_messages_attempted ||
+         traffic->udp_urgent_messages > traffic->udp_messages_attempted ||
+         traffic->udp_background_messages > traffic->udp_messages_attempted-traffic->udp_urgent_messages))
+        return false;
     auto channel=std::move(channel_);
     if (!channel) return false;
     unsigned phase=outcome==Outcome::Ok?1:outcome==Outcome::Timeout?2:outcome==Outcome::Failure?3:4;
-    return channel->push({id_,start_,end,generation_,cookie_,deadline_,phase,stream_,priority_,logical_,absolute_ns_});
+    detail::Event event{id_,start_,end,generation_,cookie_,deadline_,phase,stream_,priority_,logical_,absolute_ns_};
+    if (traffic) event.traffic=*traffic;
+    return channel->push(event);
 }
 }

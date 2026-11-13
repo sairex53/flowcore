@@ -276,6 +276,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repetitions', type=int, default=3, choices=range(1, 6))
     parser.add_argument('--seed', type=int, default=20261107)
+    parser.add_argument('--cases', nargs='+', choices=tuple(CASES), default=tuple(CASES),
+                        help='select isolated namespace cases; ingress requires a preloaded IFB driver')
     args = parser.parse_args()
     rng = random.Random(args.seed)
     with exclusive():
@@ -287,7 +289,7 @@ def main():
         print(f'Evidence: {output}', flush=True)
         try:
             for rep in range(args.repetitions):
-                for case in rng.sample(list(CASES), len(CASES)):
+                for case in rng.sample(args.cases, len(args.cases)):
                     directory = output/f'r{rep}-{case}'
                     owned_directory(directory)
                     row = dict(repetition=rep, artifact=directory.name, **case_run(directory, case, config))

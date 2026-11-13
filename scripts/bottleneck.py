@@ -1,7 +1,14 @@
 """Directional bottleneck evidence from bounded, monotonic observations."""
 from collections import deque
+import os
 import statistics
 import time
+
+try:
+    from demand_intelligence import NativeDemand, EVIDENCE as DEMAND_EVIDENCE
+except (ImportError, OSError):
+    NativeDemand = None
+    DEMAND_EVIDENCE = {}
 
 
 EGRESS = 'LOCAL_EGRESS_CONGESTION'
@@ -99,23 +106,34 @@ def tcp_evidence(current, previous, elapsed):
     matched = [(key, row, previous[key]) for key, row in current.items() if key in previous]
     active = []
     for key, row, old in matched:
-        acked = counter_delta(row, old, 'bytes_acked')
-        busy = counter_delta(row, old, 'busy_time_us')
-        limited = counter_delta(row, old, 'receive_window_limited_us')
+        info, old_info = row['tcp_info'], old['tcp_info']
+        acked = counter_delta(info, old_info, 'bytes_acked')
+        busy = counter_delta(info, old_info, 'busy_time_us')
+        limited = counter_delta(info, old_info, 'receive_window_limited_us')
+        sendbuf_limited = counter_delta(info, old_info, 'send_buffer_limited_us')
         if not acked and not (busy and busy >= elapsed * 1e6 * .25):
             continue
-        retrans = counter_delta(row, old, 'total_retrans_segments')
-        segments = counter_delta(row, old, 'data_segments_out')
-        rtt = nonnegative(row.get('rtt_us'))
-        minimum = nonnegative(row.get('min_rtt_us'))
+        retrans = counter_delta(info, old_info, 'total_retrans_segments')
+        segments = counter_delta(info, old_info, 'data_segments_out')
+        rtt = nonnegative(info.get('rtt_us'))
+        minimum = nonnegative(info.get('min_rtt_us'))
         rwnd = limited / busy if limited is not None and busy and limited <= busy else None
-        active.append(dict(port=key[5], rtt_us=rtt, min_rtt_us=minimum, rttvar_us=row.get('rttvar_us'),
+        snd = sendbuf_limited / busy if sendbuf_limited is not None and busy and sendbuf_limited <= busy else None
+        active.append(dict(port=key[5], rtt_us=rtt, min_rtt_us=minimum, rttvar_us=info.get('rttvar_us'),
                            retransmits=retrans, segments=segments, rwnd_fraction=rwnd,
+                           sendbuf_fraction=snd, busy_time_us=busy,
                            window_pressure=(rwnd is not None and rwnd >= .65 and
-                                            bool(row.get('notsent_bytes') or row.get('unacked_segments'))),
+                                            bool(info.get('notsent_bytes') or info.get('unacked_segments'))),
                            inflated=bool(segments and segments >= 20 and rtt and minimum and
                                          rtt >= 2 * minimum and rtt-minimum >= 2000),
-                           stable=bool(rtt and minimum and rtt-minimum <= max(1500, minimum * .5))))
+                           stable=bool(rtt and minimum and rtt-minimum <= max(1500, minimum * .5)),
+                           app_limited=bool(info.get('delivery_rate_app_limited')),
+                           delivery_rate=info.get('delivery_rate_bytes_per_second'),
+                           pacing_cap=info.get('max_pacing_rate_bytes_per_second'),
+                           send_queue_before=old.get('send_queue_bytes'),
+                           send_queue_after=row.get('send_queue_bytes'),
+                           notsent=info.get('notsent_bytes'),
+                           sndbuf=row.get('send_buffer_bytes')))
     def median(key):
         values = [row[key] for row in active if row[key] is not None]
         return statistics.median(values) if values else None
@@ -127,11 +145,32 @@ def tcp_evidence(current, previous, elapsed):
     path_retrans = sum(row['retransmits'] for row in path_rows)
     stable_ports = {row['port'] for row in active if row['stable']} - {
         row['port'] for row in active if not row['stable']}
+    busy_total = sum(row['busy_time_us'] or 0 for row in active)
+    rwnd_limited = sum(row['rwnd_fraction'] * row['busy_time_us'] for row in active
+                       if row['rwnd_fraction'] is not None and row['busy_time_us'])
+    sendbuf_limited = sum(row['sendbuf_fraction'] * row['busy_time_us'] for row in active
+                          if row['sendbuf_fraction'] is not None and row['busy_time_us'])
+    rates = [row['delivery_rate'] for row in active if type(row['delivery_rate']) is int]
+    pacing = [row['pacing_cap'] for row in active if type(row['pacing_cap']) is int and
+              0 < row['pacing_cap'] < 1_000_000_000_000]
+    send_before = [row['send_queue_before'] for row in active if type(row['send_queue_before']) is int]
+    send_after = [row['send_queue_after'] for row in active if type(row['send_queue_after']) is int]
+    notsent = [row['notsent'] for row in active if type(row['notsent']) is int]
+    sndbuf = [row['sndbuf'] for row in active if type(row['sndbuf']) is int]
     return dict(matched_sockets=len(matched), active_sockets=len(active), rtt_us=median('rtt_us'),
                 rttvar_us=median('rttvar_us'), min_rtt_us=median('min_rtt_us'),
                 retransmit_segments=retrans if retrans_pairs else None, data_segments=segments if retrans_pairs else None,
                 retransmit_ratio=retrans / segments if segments else None,
                 receive_window_limited_fraction=median('rwnd_fraction'),
+                rwnd_limited_fraction=rwnd_limited / busy_total if busy_total and rwnd_limited <= busy_total else None,
+                sendbuf_limited_fraction=sendbuf_limited / busy_total if busy_total and sendbuf_limited <= busy_total else None,
+                app_limited_fraction=sum(row['app_limited'] for row in active) / len(active) if active else None,
+                socket_delivery_bps=sum(rates) * 8 if active and len(rates) == len(active) else None,
+                socket_pacing_bps=min(pacing) * 8 if active and len(pacing) == len(active) else None,
+                socket_send_queue_before_bytes=sum(send_before) if active and len(send_before) == len(active) else None,
+                socket_send_queue_after_bytes=sum(send_after) if active and len(send_after) == len(active) else None,
+                socket_notsent_bytes=sum(notsent) if active and len(notsent) == len(active) else None,
+                socket_sndbuf_bytes=sum(sndbuf) if active and len(sndbuf) == len(active) else None,
                 receiver_pressure=any(row['window_pressure'] for row in active),
                 path_pressure=any(row['inflated'] and not row['window_pressure'] for row in active) or
                 bool(path_segments >= 20 and path_retrans >= 2 and path_retrans / path_segments >= .02),
@@ -152,8 +191,56 @@ def class_rates(current, previous, elapsed):
             demand = max(0, served + backlog - earlier) / (125 * elapsed)
         result[name] = dict(served_kbit=served / (125 * elapsed) if served is not None else None,
                             queue_accounted_demand_kbit=demand, backlog_bytes=backlog,
-                            dropped_packets=drops, guaranteed_kbit=row['rate']/125 if 'rate' in row else None)
+                            backlog_before_bytes=earlier, served_bytes=served, dropped_packets=drops,
+                            class_rate_bps=row['rate'] * 8 if type(row.get('rate')) is int else None,
+                            class_ceil_bps=row['ceil'] * 8 if type(row.get('ceil')) is int else None,
+                            guaranteed_kbit=row['rate']/125 if type(row.get('rate')) is int else None)
     return result
+
+
+def application_totals(rows):
+    totals = dict(requests_attempted=None, requests_admitted=None, requests_completed=None,
+                  requests_failed=None, requests_rejected=None, deadline_misses=0,
+                  terminal_outcomes_observed=0, request_counts_complete=bool(rows),
+                  request_window_complete=bool(rows), traffic_reports=0,
+                  udp_reports=0, udp_message_reports=0)
+    fields = ('bytes_offered', 'bytes_admitted', 'bytes_transmitted', 'bytes_received',
+              'udp_messages_attempted', 'udp_messages_transmitted', 'udp_send_failures',
+              'udp_urgent_messages', 'udp_background_messages')
+    totals.update({field: 0 for field in fields})
+    exact_counts = ('requests_attempted', 'requests_admitted', 'requests_completed',
+                    'requests_failed', 'requests_rejected')
+    count_sums = {field: 0 for field in exact_counts}
+    for row in rows:
+        outcomes = row.get('ok', 0) + row.get('failure', 0) + row.get('timeout', 0)
+        totals['terminal_outcomes_observed'] += outcomes
+        totals['deadline_misses'] += row.get('deadline_misses', row.get('deadline_miss', 0))
+        totals['request_counts_complete'] &= bool(row.get('request_counts_complete', False))
+        totals['request_window_complete'] &= bool(row.get('request_window_complete', False))
+        for field in exact_counts:
+            value = row.get(field)
+            if type(value) is not int or value < 0:
+                totals['request_counts_complete'] = False
+            else:
+                count_sums[field] += value
+        totals['traffic_reports'] += row.get('traffic_reports', 0)
+        traffic = row.get('traffic', {})
+        for field in fields[:4]:
+            totals[field] += traffic.get(field, 0)
+        udp = row.get('transports', {}).get('udp')
+        if udp:
+            totals['udp_reports'] += udp.get('reports', 0)
+            totals['udp_message_reports'] += udp.get('message_reports', 0)
+            for field in fields[4:]:
+                totals[field] += udp.get(field, 0)
+    if totals['request_counts_complete']:
+        totals.update(count_sums)
+    totals['udp_accounting_complete'] = bool(totals['udp_reports'] and
+                                             totals['udp_message_reports'] == totals['udp_reports'])
+    totals['traffic_accounting_complete'] = bool(
+        totals['traffic_reports'] and totals['request_window_complete'] and
+        totals['traffic_reports'] == totals['terminal_outcomes_observed'])
+    return totals
 
 
 class Bottleneck:
@@ -170,6 +257,160 @@ class Bottleneck:
         self.latest = {}
         self.generation = 0
         self.last_capacity_reduction = None
+        self.demand_history = {}
+        self.demand_forecast_capacity = None
+        self.demand_forecast_last_ns = 0
+        self.demand_forecasts = {}
+        try:
+            self.demand_model = NativeDemand() if NativeDemand else None
+            self.demand_model_error = None if self.demand_model else 'native demand library unavailable'
+        except (OSError, AttributeError) as error:
+            self.demand_model = None
+            self.demand_model_error = str(error)
+
+    def assess_demand(self, paths, tcp, application, elapsed, previous, traffic_class=None):
+        if not self.demand_model:
+            return None
+        tx = paths['egress']
+        rows = [row for row in application if traffic_class is None or row['class'] == traffic_class]
+        app = application_totals(rows)
+        value = dict(interval_seconds=elapsed, evidence=[],
+                     terminal_outcomes_observed=app['terminal_outcomes_observed'])
+        evidence = value['evidence']
+        if app['request_counts_complete']:
+            evidence.append('app_counts')
+            value.update({field: app[field] for field in
+                          ('requests_attempted', 'requests_admitted', 'requests_completed',
+                           'requests_failed', 'requests_rejected', 'deadline_misses')})
+        if app['traffic_reports']:
+            evidence.append('app_traffic')
+            value.update({field: app[field] for field in
+                          ('bytes_offered', 'bytes_admitted', 'bytes_transmitted', 'bytes_received')})
+            if not app['traffic_accounting_complete']:
+                evidence.append('app_incomplete')
+        if app['udp_accounting_complete']:
+            evidence.append('udp_accounting')
+            value.update({field: app[field] for field in
+                          ('udp_messages_attempted', 'udp_messages_transmitted', 'udp_send_failures',
+                           'udp_urgent_messages', 'udp_background_messages')})
+
+        capacity_kbit = tx.get('capacity_kbit')
+        if type(capacity_kbit) is int and capacity_kbit > 0 and tx.get('throughput_kbit') is not None:
+            evidence.append('capacity')
+            value['capacity_bps'] = capacity_kbit * 1000
+            value['observed_bps'] = tx['throughput_kbit'] * 1000
+            if tx.get('capacity_source') == 'qdisc_readback':
+                evidence.append('configured_cap')
+                value['configured_shaping_bps'] = capacity_kbit * 1000
+            elif tx.get('capacity_source') == 'reported_link_speed':
+                evidence.append('nominal_cap')
+        before = previous.get('egress', {}).get('backlog_bytes') if previous else None
+        after = tx.get('backlog_bytes')
+        if type(before) is int and type(after) is int:
+            evidence.append('root_queue')
+            value.update(root_backlog_before_bytes=before, root_backlog_after_bytes=after)
+            if tx.get('dropped_packets') is not None:
+                evidence.append('root_drops')
+                value['root_drops'] = tx['dropped_packets']
+        if tx.get('throughput_kbit') is not None:
+            evidence.append('delivered')
+            value['delivered_bytes'] = tx['throughput_kbit'] * 125 * elapsed
+
+        class_rows = tx.get('classes', {})
+        if traffic_class is not None:
+            selected = class_rows.get(traffic_class)
+            selected_rows = [selected] if selected else []
+        else:
+            selected_rows = list(class_rows.values())
+        complete = [row for row in selected_rows if type(row.get('served_bytes')) is int and
+                    type(row.get('backlog_before_bytes')) is int and
+                    type(row.get('backlog_bytes')) is int and row.get('class_rate_bps') is not None]
+        if selected_rows and len(complete) == len(selected_rows):
+            evidence.append('class')
+            value.update(class_served_bytes=sum(row['served_bytes'] for row in complete),
+                         class_backlog_before_bytes=sum(row['backlog_before_bytes'] for row in complete),
+                         class_backlog_after_bytes=sum(row['backlog_bytes'] for row in complete),
+                         class_rate_bps=sum(row['class_rate_bps'] for row in complete),
+                         class_ceil_bps=sum(row['class_ceil_bps'] or row['class_rate_bps'] for row in complete))
+            if all(row.get('dropped_packets') is not None for row in complete):
+                evidence.append('class_drops')
+                value['class_drops'] = sum(row['dropped_packets'] for row in complete)
+
+        if tcp.get('active_sockets'):
+            evidence.append('tcp')
+            for field, source in (('socket_delivery_bps', 'socket_delivery_bps'),
+                                  ('tcp_app_limited_fraction', 'app_limited_fraction')):
+                if tcp.get(source) is not None:
+                    value[field] = tcp[source]
+            if all(tcp.get(field) is not None for field in
+                   ('socket_pacing_bps', 'socket_send_queue_before_bytes',
+                    'socket_send_queue_after_bytes', 'socket_notsent_bytes')):
+                evidence.append('socket_pacing')
+                value.update({field: tcp[field] for field in
+                              ('socket_pacing_bps', 'socket_send_queue_before_bytes',
+                               'socket_send_queue_after_bytes', 'socket_notsent_bytes')})
+                value['socket_sndbuf_bytes'] = tcp.get('socket_sndbuf_bytes') or 0
+            if tcp.get('rwnd_limited_fraction') is not None and tcp.get('sendbuf_limited_fraction') is not None:
+                evidence.append('tcp_limits')
+                value.update(tcp_rwnd_limited_fraction=tcp['rwnd_limited_fraction'],
+                             tcp_sendbuf_limited_fraction=tcp['sendbuf_limited_fraction'])
+            if tcp.get('path_pressure'):
+                evidence.append('remote_pressure')
+        estimate = self.demand_model.assess(value)
+        if estimate['queue_accounted_demand_bps'] is not None:
+            class_valid = ('class' in evidence and 'class_drops' in evidence and
+                           value.get('class_drops') == 0 and
+                           value.get('class_backlog_after_bytes', -1) >=
+                           value.get('class_backlog_before_bytes', 0))
+            root_valid = ('root_queue' in evidence and 'root_drops' in evidence and
+                          value.get('root_drops') == 0 and 'delivered' in evidence and
+                          value.get('root_backlog_after_bytes', -1) >=
+                          value.get('root_backlog_before_bytes', 0))
+            estimate['queue_accounted_scope'] = 'class' if class_valid else 'root' if root_valid else None
+        else:
+            estimate['queue_accounted_scope'] = None
+        return estimate
+
+    def update_demand_forecasts(self, now):
+        demand = self.latest.get('demand')
+        if not demand or not self.demand_model:
+            return
+        direction = self.latest.get('directions', {}).get('egress', {})
+        capacity = direction.get('capacity_kbit')
+        if type(capacity) is not int or capacity <= 0 or direction.get('capacity_source') != 'qdisc_readback':
+            demand['forecast'] = dict(state='INSUFFICIENT_DATA', reason='verified configured capacity unavailable',
+                                      classes={})
+            return
+        capacity_bps = capacity * 1000
+        if self.demand_forecast_capacity != capacity_bps:
+            self.demand_forecast_capacity = capacity_bps
+            self.demand_history.clear()
+            self.demand_forecasts.clear()
+            self.demand_forecast_last_ns = 0
+        stamp = round(now * 1e9)
+        if stamp <= 0 or (self.demand_forecast_last_ns and
+                          stamp - self.demand_forecast_last_ns < 4_500_000_000):
+            demand['forecast'] = dict(state='INSUFFICIENT_DATA',
+                                      reason='waiting for non-overlapping complete app windows',
+                                      classes=self.demand_forecasts.copy())
+            return
+        sources = {'overall': demand.get('overall')}
+        sources.update(demand.get('classes', {}))
+        for name, estimate in sources.items():
+            if not estimate or estimate['offered_bps'] is None or estimate['demand_uncertainty_bps'] is None or \
+                    'APPLICATION_REPORT_INCOMPLETE' in estimate['flags']:
+                continue
+            history = self.demand_history.setdefault(name, deque(maxlen=64))
+            history.append(dict(time_ns=stamp, demand_bps=estimate['offered_bps'], capacity_bps=capacity_bps))
+            if len(history) >= 4:
+                forecast = self.demand_model.forecast(list(history), horizon_seconds=2.0, half_life_seconds=2.0)
+                if forecast:
+                    self.demand_forecasts[name] = dict(state='SHADOW', **forecast,
+                        compared_to='last_value_baseline_bps', controller_use=False)
+        self.demand_forecast_last_ns = stamp
+        demand['forecast'] = dict(state='READY' if self.demand_forecasts else 'INSUFFICIENT_DATA',
+                                  reason=None if self.demand_forecasts else 'four complete app windows required',
+                                  classes=self.demand_forecasts.copy())
 
     def reset(self, reason):
         self.previous = None
@@ -183,6 +424,10 @@ class Bottleneck:
         self.generation += 1
         self.latest = dict(reason=reason)
         self.last_capacity_reduction = None
+        self.demand_history.clear()
+        self.demand_forecast_capacity = None
+        self.demand_forecast_last_ns = 0
+        self.demand_forecasts.clear()
 
     def view(self, now=None, max_age=5):
         now = time.monotonic() if now is None else now
@@ -203,7 +448,8 @@ class Bottleneck:
             for row in sockets[:4096]:
                 key = socket_key(row)
                 if key is not None:
-                    current[key] = row['tcp_info']
+                    current[key] = dict(tcp_info=row['tcp_info'], send_queue_bytes=row.get('send_queue'),
+                                        send_buffer_bytes=row.get('memory', {}).get('send_buffer_bytes'))
         old = self.previous
         counter_reset = old and any(
             nonnegative(directions[name].get(key)) is not None
@@ -261,10 +507,10 @@ class Bottleneck:
                                backlog_bytes=backlog, dropped_packets=drops, pressure=bool(pressure),
                                byte_source=row['byte_source'], classes=class_rates(row['classes'], previous['classes'], elapsed))
         transport = tcp_evidence(current, old[3], elapsed)
-        self.latest = self.classify(paths, transport, application, elapsed)
+        self.latest = self.classify(paths, transport, application, elapsed, old[2])
         return self.view(now, max_gap)
 
-    def classify(self, paths, tcp, application, elapsed):
+    def classify(self, paths, tcp, application, elapsed, previous_directions=None):
         tx, rx = paths['egress'], paths['ingress']
         valid = all(path['throughput_kbit'] is not None for path in paths.values())
         quiet = tx['backlog_bytes'] == 0 and (rx['backlog_bytes'] in (0, None)) and rx['dropped_packets'] == 0
@@ -322,6 +568,35 @@ class Bottleneck:
                 action = 'REVIEW_INGRESS_IFB'
             elif cause != UNKNOWN:
                 action = 'ADVISE'
-        return dict(schema=1, state=self.state, classification=cause, confidence=confidence,
-                    generation=self.generation, reason=reason, action=action, interval_seconds=elapsed,
-                    directions=paths, transport=tcp, application=app, capacity_reductions={})
+        result = dict(schema=1, state=self.state, classification=cause, confidence=confidence,
+                      generation=self.generation, reason=reason, action=action, interval_seconds=elapsed,
+                      directions=paths, transport=tcp, application=app, capacity_reductions={})
+        if self.demand_model:
+            overall = self.assess_demand(paths, tcp, app, elapsed, previous_directions or {})
+            per_class = {name: self.assess_demand(paths, tcp, app, elapsed,
+                                                   previous_directions or {}, name)
+                         for name in tx['classes']}
+            constrained = [row for row in per_class.values() if row and
+                row['classification'] == 'CLASS_RESTRICTED' and row['confidence'] >= .75 and
+                row['offered_bps'] is not None and row['demand_uncertainty_bps'] is not None and
+                row['class_ceil_bps'] is not None and row['offered_bps'] > row['class_ceil_bps'] and
+                'CAPACITY_UNCERTAIN' not in row['flags'] and
+                'APPLICATION_REPORT_INCOMPLETE' not in row['flags']]
+            actionable_overall = bool(overall and overall['classification'] == 'LOCAL_CAPACITY_LIMITED' and
+                overall['confidence'] >= .75 and overall['selected_demand_bps'] is not None and
+                overall['demand_uncertainty_bps'] is not None and 'CAPACITY_UNCERTAIN' not in overall['flags'] and
+                'APPLICATION_REPORT_INCOMPLETE' not in overall['flags'])
+            eligible = actionable_overall or bool(constrained)
+            result['demand'] = dict(version=1, overall=overall, classes=per_class,
+                                   controller_eligible=eligible,
+                                   controller_reason=('measured local saturation with usable demand evidence'
+                                       if actionable_overall else 'measured class limit with complete app demand'
+                                       if constrained else 'hold: demand, capacity, or bottleneck evidence is incomplete'),
+                                   estimator='native_bounded_v1', source_uncertainty=self.demand_model_error)
+            self.latest = result
+            self.update_demand_forecasts(time.monotonic())
+        else:
+            result['demand'] = dict(version=1, overall=None, classes={}, controller_eligible=False,
+                                    controller_reason='hold: native demand estimator unavailable',
+                                    estimator=None, source_uncertainty=self.demand_model_error)
+        return result

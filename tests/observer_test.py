@@ -127,6 +127,35 @@ class ObserverTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             observer.ingest({'op': 'request_start', 'service': 'demo'}, 20)
 
+    def test_cooperative_byte_and_udp_message_accounting(self):
+        observer = self.engine()
+        row = dict(op='request_sample', service='demo', outcome='ok', duration_us=1000,
+                   transport='udp', bytes_offered=1200, bytes_admitted=1200,
+                   bytes_transmitted=1100, bytes_received=2400,
+                   udp_messages_attempted=3, udp_messages_transmitted=2,
+                   udp_send_failures=1, udp_urgent_messages=1, udp_background_messages=2)
+        observer.ingest(row, 20)
+        app = observer.window(self.now, 1)['application']['demo']['application']
+        self.assertEqual(app['traffic_reports'], 1)
+        self.assertEqual(app['traffic']['bytes_received'], 2400)
+        self.assertEqual(app['transports']['udp']['reports'], 1)
+        self.assertEqual(app['transports']['udp']['message_reports'], 1)
+        self.assertEqual(app['transports']['udp']['udp_messages_transmitted'], 2)
+        with self.assertRaises(ValueError):
+            observer.ingest(dict(row, udp_messages_transmitted=4), 20)
+
+    def test_intent_lifecycle_marks_window_incomplete_until_terminal_event(self):
+        observer = self.engine()
+        observer.intent_request_start('demo')
+        self.assertFalse(observer.window(self.now, 1)['application']['demo']['application']
+                         ['request_window_complete'])
+        observer.ingest(dict(op='request_sample', service='demo', duration_us=1000, outcome='ok'), 20)
+        observer.intent_request_complete('demo')
+        window = observer.window(self.now, 1)['application']['demo']['application']
+        self.assertTrue(window['request_window_complete'])
+        self.assertEqual(window['requests_started'], 1)
+        self.assertEqual(window['ok'], 1)
+
     def test_collector_failure_and_fallback(self):
         observer = self.engine()
         lab = Mock(enter=Mock(return_value=nullcontext()))

@@ -149,10 +149,20 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/slo_optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/slo_optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp src/demand.cpp)
 target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(FILES include/flowcore/demand.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+add_executable(demand_native_test tests/demand_native.cpp)
+target_include_directories(demand_native_test PRIVATE include)
+target_link_libraries(demand_native_test PRIVATE flowcore_intelligence)
+target_compile_options(demand_native_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME demand_native COMMAND demand_native_test)
+add_test(NAME demand_engine_unit COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/demand_engine_test.py")
+set_tests_properties(demand_engine_unit PROPERTIES
+    ENVIRONMENT "FLOWCORE_DEMAND_LIBRARY=$<TARGET_FILE:flowcore_intelligence>")
 add_test(NAME intelligence_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intelligence_test.py")
 add_test(NAME performance_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/performance_test.py")
 
@@ -209,8 +219,11 @@ add_test(NAME intent_protocol_compat COMMAND /usr/bin/python3 -B
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_protocol_compat.py" $<TARGET_FILE:intent_protocol_compat>)
 set_tests_properties(intent_protocol_compat PROPERTIES TIMEOUT 15)
 add_test(NAME intent_v2_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py")
+set_tests_properties(intent_v2_unit PROPERTIES
+    ENVIRONMENT "FLOWCORE_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME intent_v2_live COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intent_v2_test.py" --live)
-set_tests_properties(intent_v2_live PROPERTIES TIMEOUT 30 ENVIRONMENT "FLOWCORE_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties(intent_v2_live PROPERTIES TIMEOUT 30
+    ENVIRONMENT "FLOWCORE_INTENT_BUILD=${CMAKE_CURRENT_BINARY_DIR};FLOWCORE_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 
 add_test(NAME flow_engine_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/flow_engine_test.py")
 
@@ -315,6 +328,10 @@ add_test(NAME workload_legacy COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURC
 set_tests_properties(workload_legacy PROPERTIES TIMEOUT 15)
 
 add_test(NAME bottleneck_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/bottleneck_test.py")
+set_tests_properties(bottleneck_unit PROPERTIES
+    ENVIRONMENT "FLOWCORE_DEMAND_LIBRARY=$<TARGET_FILE:flowcore_intelligence>")
+install(FILES DEMAND_INTELLIGENCE.md CAPACITY_ESTIMATION.md DEMAND_ENGINE_RESULTS.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
 install(FILES LICENSE LICENSE.GPL-2.0 DESTINATION "${FLOWCORE_DATA}/docs")
 
 install(FILES BOTTLENECK_ENGINE.md DIRECTIONAL_QOS.md BOTTLENECK_RESULTS.md DESTINATION "${FLOWCORE_DATA}/docs")

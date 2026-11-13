@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 
 from adaptive import Controller
-from bottleneck import Bottleneck, EGRESS, INGRESS, RECEIVER, REMOTE, UNKNOWN, direction
+from bottleneck import Bottleneck, EGRESS, INGRESS, RECEIVER, REMOTE, UNKNOWN, application_totals, direction
 
 
 def observation(step, *, tx=0, rx=0, tx_queue=0, rx_queue=None, cap=4000):
@@ -25,6 +25,17 @@ def socket_row(step, *, segments=100, rwnd=0, rtt=20000, port=9000):
 
 
 class Engine(unittest.TestCase):
+    def test_application_totals_keep_unknown_denominators_unknown(self):
+        row = application_totals([dict(ok=7, failure=1, timeout=2, deadline_miss=3,
+                                       traffic_reports=8, request_window_complete=False,
+                                       traffic=dict(bytes_offered=100), transports={})])
+        self.assertEqual(row['terminal_outcomes_observed'], 10)
+        self.assertFalse(row['request_counts_complete'])
+        self.assertFalse(row['traffic_accounting_complete'])
+        self.assertIsNone(row['requests_attempted'])
+        self.assertIsNone(row['requests_admitted'])
+        self.assertEqual(row['deadline_misses'], 3)
+
     def test_owned_egress_hysteresis_and_stale_gate(self):
         engine = Bottleneck()
         initial = engine.observe(0, observation(0))

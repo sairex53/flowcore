@@ -35,6 +35,12 @@ class Diagnostics:
             port = service.config['policies'][service.active].get('classes', {}).get(traffic_class, {}).get('port')
             reports.append(dict(service=name, samples=app['samples'], p95_us=app['p95_us'], port=port,
                                 target_us=observer.cfg['services'][name]['slo_ms']*1000,
+                                ok=app['ok'], failure=app['failure'], timeout=app['timeout'],
+                                deadline_miss=app['deadline_miss'], requests_started=app['requests_started'],
+                                intent_inflight=app['intent_inflight'],
+                                request_window_complete=app['request_window_complete'],
+                                traffic_reports=app['traffic_reports'], traffic=app['traffic'],
+                                transports=app['transports'],
                                 **{'class': row['traffic_class']}))
         self.lab.observe(sampled_at, capacity, lab_sockets(observer.last_rows, lab.sender_index, lab.sender_addresses),
                          identity=lab.identity, application=reports, max_gap=self.max_age(),
@@ -67,7 +73,9 @@ class Diagnostics:
         self.host = current
 
     def egress_admitted(self):
-        return bool(self.service.lab and self.lab.view(max_age=self.max_age())['action'] == 'REVIEW_EGRESS_ALLOCATION')
+        view = self.lab.view(max_age=self.max_age())
+        return bool(self.service.lab and view['action'] == 'REVIEW_EGRESS_ALLOCATION' and
+                    view.get('demand', {}).get('controller_eligible'))
 
     def query(self, request):
         keys(request, ('op', 'interface') if 'interface' in request else ('op',))

@@ -64,9 +64,12 @@ class IntentAPI:
                 if now-entry[0]>600*10**9:
                     del lease['requests'][request]
                     lease['expired_requests']+=1
+                    self.service.observer.intent_request_complete(lease['name'])
 
     def release(self,token,reason):
         lease=self.leases.pop(token)
+        for _ in lease['requests']:
+            self.service.observer.intent_request_complete(lease['name'])
         registry=self.service.controller.registry
         if lease['name'] in registry.rows:
             row=registry.rows[lease['name']]
@@ -338,6 +341,8 @@ class IntentAPI:
             number(event.get('stream_priority'),0,7,True)
         if 'timings_us' in event and event.get('phase') != 'start':
             fields.add('timings_us')
+        if 'traffic' in event and event.get('phase') != 'start':
+            fields.add('traffic')
         absolute = event.get('deadline_ns')
         if 'deadline_ns' in event:
             fields.add('deadline_ns')
@@ -361,9 +366,28 @@ class IntentAPI:
             if request in lease['requests'] or request in lease['completed'] or len(lease['requests'])>=256 or event['end_ns']!=0:
                 raise ValueError('duplicate request or inflight quota')
             lease['requests'][request]=metadata
+            self.service.observer.intent_request_start(lease['name'])
             return
         if event['phase'] not in ('ok','timeout','failure','cancelled'):
             raise ValueError('invalid terminal outcome')
+        traffic = event.get('traffic')
+        if traffic is not None:
+            traffic_fields = ('bytes_offered','bytes_admitted','bytes_transmitted','bytes_received',
+                              'udp_messages_attempted','udp_messages_transmitted','udp_send_failures',
+                              'udp_urgent_messages','udp_background_messages')
+            keys(traffic, traffic_fields)
+            for field in traffic_fields[:4]:
+                number(traffic[field], 0, 1 << 40, True)
+            for field in traffic_fields[4:]:
+                number(traffic[field], 0, 1_000_000, True)
+            if (traffic['bytes_transmitted'] > traffic['bytes_admitted'] or
+                    traffic['bytes_admitted'] > traffic['bytes_offered'] or
+                    traffic['udp_messages_transmitted'] > traffic['udp_messages_attempted'] or
+                    traffic['udp_send_failures'] > traffic['udp_messages_attempted'] or
+                    traffic['udp_urgent_messages'] > traffic['udp_messages_attempted'] or
+                    traffic['udp_background_messages'] >
+                        traffic['udp_messages_attempted']-traffic['udp_urgent_messages']):
+                raise ValueError('application traffic accounting is inconsistent')
         entry=lease['requests'].get(request)
         if entry != metadata:
             raise ValueError('request identity or metadata mismatch')
@@ -373,19 +397,32 @@ class IntentAPI:
         from causal_diagnostics import timing_fields
         timings = timing_fields(event['timings_us'],duration) if 'timings_us' in event else None
         deadline = event['deadline_us'] or (lease['deadline_ms']*1000 if lease['deadline_ms'] is not None else None)
-        accepted = self.service.observer.ingest(dict(op='request_sample',service=lease['name'],
-            outcome='failure' if event['phase']=='cancelled' else event['phase'],
-            duration_us=duration,completed_ns=event['end_ns'],
-            deadline_ms=deadline/1000 if deadline is not None else None),uid,record=False,
-            deadline_missed=(event['end_ns'] > absolute or event['phase'] != 'ok') if absolute is not None else None)
         cookie = event['cookie']
         capabilities = lease.get('socket_capabilities',{}).get(cookie,{})
         protocol = 'mptcp' if capabilities.get('is_mptcp') else {6:'tcp',17:'udp'}.get(capabilities.get('protocol'))
-        self.service.incident.request(service=lease['name'], traffic_class=accepted['traffic_class'],
-            stamp=event['end_ns'], start=event['start_ns'], outcome=event['phase'], duration=duration, deadline=deadline,
-            identity=f"{lease['pid']}:{lease['process_start']}:{lease['registered_ns']}:{request}", cookie=cookie, timings=timings,
-            socket_identity=lease.get('socket_identities',{}).get(cookie), protocol=protocol)
+        if traffic is not None and any(traffic[field] for field in
+                                       ('udp_messages_attempted','udp_messages_transmitted','udp_send_failures',
+                                        'udp_urgent_messages','udp_background_messages')) and protocol != 'udp':
+            raise ValueError('UDP message accounting requires an associated UDP socket')
+        sample = dict(op='request_sample', service=lease['name'],
+                      outcome='failure' if event['phase']=='cancelled' else event['phase'],
+                      duration_us=duration, completed_ns=event['end_ns'], transport=protocol,
+                      deadline_ms=deadline/1000 if deadline is not None else None)
+        if traffic is not None:
+            sample.update(traffic)
+        accepted = None
+        observer = self.service.observer
+        if observer.cfg['enabled'] and lease['name'] in observer.cfg['services']:
+            accepted = observer.ingest(sample,uid,record=False,
+                deadline_missed=(event['end_ns'] > absolute or event['phase'] != 'ok')
+                    if absolute is not None else None)
+            self.service.incident.request(service=lease['name'], traffic_class=accepted['traffic_class'],
+                stamp=event['end_ns'], start=event['start_ns'], outcome=event['phase'], duration=duration,
+                deadline=deadline, identity=f"{lease['pid']}:{lease['process_start']}:{lease['registered_ns']}:{request}",
+                cookie=cookie, timings=timings, socket_identity=lease.get('socket_identities',{}).get(cookie),
+                protocol=protocol)
         del lease['requests'][request]
+        observer.intent_request_complete(lease['name'])
         lease['completed'].append(request)
         lease['outcomes'][event['phase']]+=1
         if 'stream_id' in event:
