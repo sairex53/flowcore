@@ -79,19 +79,41 @@ class DemandEngine(unittest.TestCase):
         self.assertEqual(MODEL.assess(restricted)['classification'], 'CLASS_RESTRICTED')
 
         paced = observation(('delivered', 'root_queue', 'capacity', 'configured_cap', 'tcp',
-                             'tcp_limits', 'socket_pacing'))
+                             'tcp_limits', 'socket_queue', 'socket_pacing'))
         paced.update(observed_bps=900_000, socket_pacing_bps=1_000_000,
                      socket_send_queue_after_bytes=4096, socket_notsent_bytes=4096,
                      socket_delivery_bps=900_000)
         self.assertEqual(MODEL.assess(paced)['classification'], 'SOCKET_PACING_RESTRICTED')
 
+    def test_class_pressure_uses_class_service_not_root_service(self):
+        value = observation(('app_traffic', 'delivered', 'root_queue', 'capacity',
+                             'configured_cap', 'class', 'class_drops', 'root_drops'))
+        value.update(app_offered_bytes=1_000_000, app_admitted_bytes=1_000_000,
+                     app_transmitted_bytes=100_000, capacity_bps=12_000_000,
+                     configured_shaping_bps=12_000_000, observed_bps=8_000_000,
+                     class_rate_bps=1_000_000, class_ceil_bps=1_000_000,
+                     class_served_bytes=100_000, class_backlog_after_bytes=4096,
+                     delivered_bytes=250_000)
+        row = MODEL.assess(value)
+        self.assertEqual(row['classification'], 'CLASS_RESTRICTED')
+        self.assertEqual(row['delivered_bps'], 2_000_000)
+        self.assertEqual(row['class_headroom_bps'], 200_000)
+
     def test_receiver_remote_sender_and_udp_evidence(self):
-        receiver = observation(('root_queue', 'capacity', 'configured_cap', 'tcp', 'tcp_limits'))
+        receiver = observation(('root_queue', 'capacity', 'configured_cap', 'tcp', 'tcp_limits', 'socket_queue'))
         receiver.update(socket_notsent_bytes=4096, tcp_rwnd_limited_fraction=.82)
         self.assertEqual(MODEL.assess(receiver)['classification'], 'RECEIVER_LIMITED_SUSPECTED')
         remote = observation(('root_queue', 'capacity', 'configured_cap', 'remote_pressure'))
         self.assertEqual(MODEL.assess(remote)['classification'], 'REMOTE_BOTTLENECK_SUSPECTED')
-        sender = observation(('root_queue', 'capacity', 'configured_cap', 'tcp', 'tcp_limits'))
+        complete_idle_app = observation(('app_traffic', 'root_queue', 'capacity',
+                                          'configured_cap', 'remote_pressure'))
+        self.assertEqual(MODEL.assess(complete_idle_app)['classification'], 'DEMAND_LIMITED')
+        incomplete_submission = observation(('app_traffic', 'root_queue', 'capacity',
+                                              'configured_cap', 'remote_pressure'))
+        incomplete_submission.update(app_transmitted_bytes=100_000)
+        self.assertEqual(MODEL.assess(incomplete_submission)['classification'],
+                         'REMOTE_BOTTLENECK_SUSPECTED')
+        sender = observation(('root_queue', 'capacity', 'configured_cap', 'tcp', 'tcp_limits', 'socket_queue'))
         sender.update(socket_notsent_bytes=4096, tcp_sendbuf_limited_fraction=.8)
         row = MODEL.assess(sender)
         self.assertEqual(row['classification'], 'UNKNOWN')

@@ -42,6 +42,12 @@ void check_layout() {
     if constexpr (requires(T value) { value.tcpi_total_retrans; }) {
         static_assert(offsetof(T, tcpi_total_retrans) == 100);
     }
+    if constexpr (requires(T value) { value.tcpi_pacing_rate; }) {
+        static_assert(offsetof(T, tcpi_pacing_rate) == 104);
+    }
+    if constexpr (requires(T value) { value.tcpi_max_pacing_rate; }) {
+        static_assert(offsetof(T, tcpi_max_pacing_rate) == 112);
+    }
     if constexpr (requires(T value) { value.tcpi_bytes_acked; }) {
         static_assert(offsetof(T, tcpi_bytes_acked) == 120);
     }

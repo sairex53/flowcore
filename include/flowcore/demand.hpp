@@ -22,7 +22,8 @@ enum fc_demand_evidence_v1 : std::uint64_t {
     FC_DEMAND_NOMINAL_CAP       = 1ULL << 12,
     FC_DEMAND_APP_INCOMPLETE    = 1ULL << 13,
     FC_DEMAND_CLASS_DROPS       = 1ULL << 14,
-    FC_DEMAND_ROOT_DROPS        = 1ULL << 15
+    FC_DEMAND_ROOT_DROPS        = 1ULL << 15,
+    FC_DEMAND_SOCKET_QUEUE      = 1ULL << 16
 };
 
 enum fc_demand_classification_v1 : std::uint32_t {

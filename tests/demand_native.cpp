@@ -43,6 +43,24 @@ int main() {
     if (!is(in, FC_DEMAND_LOCAL_CAPACITY_LIMITED)) return 2;
 
     in = base();
+    in.app_offered_bytes = in.app_admitted_bytes = in.app_transmitted_bytes = 1'400'000;
+    in.observed_bps = 9'500'000;
+    // A short-window zero queue must not erase independently measured demand
+    // above the verified shaping cap when service is already at that cap.
+    if (!is(in, FC_DEMAND_LOCAL_CAPACITY_LIMITED)) return 14;
+
+    in = base();
+    in.app_offered_bytes = in.app_admitted_bytes = 1'000'000;
+    in.app_transmitted_bytes = 100'000;
+    in.capacity_bps = in.configured_shaping_bps = 12'000'000;
+    in.observed_bps = 8'000'000;
+    in.class_served_bytes = 100'000;
+    in.class_backlog_after_bytes = 4096;
+    if (flowcore_demand_assess_v1(&in, &out) ||
+        out.classification != FC_DEMAND_CLASS_RESTRICTED || out.class_headroom_bps != 200'000)
+        return 15;
+
+    in = base();
     in.evidence |= FC_DEMAND_TCP | FC_DEMAND_TCP_LIMITS | FC_DEMAND_SOCKET_PACING;
     in.socket_pacing_bps = in.socket_delivery_bps = 1'000'000;
     in.socket_send_queue_after_bytes = in.socket_notsent_bytes = 4096;
@@ -52,12 +70,16 @@ int main() {
     if (flowcore_demand_assess_v1(&in, &out) || !(out.flags & FC_DEMAND_F_DOUBLE_THROTTLING)) return 3;
 
     in = base();
-    in.evidence |= FC_DEMAND_TCP | FC_DEMAND_TCP_LIMITS;
+    in.evidence |= FC_DEMAND_TCP | FC_DEMAND_TCP_LIMITS | FC_DEMAND_SOCKET_QUEUE;
     in.tcp_rwnd_limited_fraction = .8;
     in.socket_notsent_bytes = 4096;
     if (!is(in, FC_DEMAND_RECEIVER_LIMITED_SUSPECTED)) return 4;
+    in.evidence |= FC_DEMAND_SOCKET_PACING;
+    in.socket_pacing_bps = 500'000;
+    if (!is(in, FC_DEMAND_RECEIVER_LIMITED_SUSPECTED)) return 13;
     in = base();
     in.evidence |= FC_DEMAND_REMOTE_PRESSURE;
+    in.evidence |= FC_DEMAND_APP_INCOMPLETE;
     if (!is(in, FC_DEMAND_REMOTE_BOTTLENECK_SUSPECTED)) return 5;
 
     in = base();

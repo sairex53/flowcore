@@ -32,9 +32,16 @@ class ObserverTests(unittest.TestCase):
     def test_tcp_info_short_and_real(self):
         data = bytearray(248)
         struct.pack_into('=I', data, 68, 1234)
+        struct.pack_into('=Q', data, 104, 345_000)
+        struct.pack_into('=Q', data, 112, 500_000)
+        data[7] = 1
         struct.pack_into('=H', data, 240, 2)
         self.assertEqual(tcp_info(data)['total_rto'], 2)
+        self.assertEqual(tcp_info(data)['pacing_rate_bytes_per_second'], 345_000)
+        self.assertEqual(tcp_info(data)['max_pacing_rate_bytes_per_second'], 500_000)
+        self.assertTrue(tcp_info(data)['delivery_rate_app_limited'])
         self.assertNotIn('total_rto', tcp_info(data[:104]))
+        self.assertNotIn('max_pacing_rate_bytes_per_second', tcp_info(data[:112]))
         self.assertEqual(tcp_info(data[:104])['rtt_us'], 1234)
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))

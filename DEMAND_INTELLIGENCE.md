@@ -2,10 +2,11 @@
 
 ## Purpose and safety contract
 
-The demand estimator separates application offered demand from bytes accepted by
-the local socket, bytes reported as transmitted or received by the application,
-and throughput observed at the qdisc or interface. These are different
-measurements and are never substituted for one another.
+The demand estimator separates application offered and admitted work, bytes
+reported as transmitted or received, and throughput observed at the qdisc or
+interface. These are different measurements and are never substituted for one
+another. Applications define the semantics of their cooperative counters; a
+local socket write is not proof of wire delivery.
 
 The native implementation is `flowcore_demand_assess_v1` in
 `include/flowcore/demand.hpp` and `src/demand.cpp`. The Python adapter is
@@ -50,10 +51,29 @@ The model reports:
 - Evidence bits, confidence, uncertainty, and flags for incomplete reports,
   nominal-only capacity, queue lower bounds, and suspected double throttling.
 
+The synthetic namespace generator uses a narrower explicit contract, recorded
+in `scenarios/demand-network-v2.json`: it admits every scheduled payload into
+its workload, counts only bytes accepted by `send()`/`sendto()` as transmitted,
+and counts peer reads separately. Its TCP sender does not retry a short-write
+tail, so these experiments expose socket acceptance but do not represent a
+production application's request failure behavior. The integration reports no
+request failure denominator for those runs.
+
+For per-class inference, application reports are grouped by service class and
+TCP demand evidence is restricted to the TCP sockets on the service's reported
+port. Class headroom uses class byte-counter deltas, not root-interface
+throughput. Socket pacing uses the kernel's `TCP_INFO` maximum pacing field.
+
 The output classification is one of `DEMAND_LIMITED`,
 `LOCAL_CAPACITY_LIMITED`, `CLASS_RESTRICTED`,
 `SOCKET_PACING_RESTRICTED`, `RECEIVER_LIMITED_SUSPECTED`,
 `REMOTE_BOTTLENECK_SUSPECTED`, or `UNKNOWN`.
+
+`DEMAND_LIMITED` requires complete reports, quiet local queues, and offered
+demand below verified capacity with no material gap between offered bytes and
+application-reported transmission. A sender that offers work but cannot submit
+it is not treated as low demand. It remains unknown unless socket, class,
+receiver, or remote evidence identifies the constraint.
 
 Queue-accounted demand is a lower bound, not an exact demand measurement. It is
 computed from observed departures plus queue growth only when the interval has
@@ -74,6 +94,12 @@ The existing bottleneck review state and owned-lab authorization remain
 required. Nominal link speed alone, a receiver or remote suspicion, missing
 application reports, partial windows, or a forecast cannot authorize a policy
 write. No forecast is used by the controller.
+
+The live multi-profile trials measured eligible windows only; they did not run
+the controller or apply policy changes. The live remote profile often returned
+`UNKNOWN` because the sampled TCP path-pressure signal was absent. This
+uncertainty is preserved rather than allowing a remote attribution from low
+utilization alone.
 
 ## Forecasting
 

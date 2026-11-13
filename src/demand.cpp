@@ -8,7 +8,7 @@
 namespace {
 constexpr double max_value = 1.0e15;
 constexpr double queue_threshold_bytes = 1500.0;
-constexpr std::uint64_t all_evidence = (1ULL << 16) - 1;
+constexpr std::uint64_t all_evidence = (1ULL << 17) - 1;
 
 bool finite_nonnegative(double value) noexcept {
     return std::isfinite(value) && value >= 0.0 && value <= max_value;
@@ -39,6 +39,7 @@ bool valid(const fc_demand_input_v1& in) noexcept {
     if ((in.evidence & FC_DEMAND_APP_TRAFFIC) &&
         (in.app_admitted_bytes > in.app_offered_bytes || in.app_transmitted_bytes > in.app_admitted_bytes))
         return false;
+    if ((in.evidence & FC_DEMAND_SOCKET_QUEUE) && !(in.evidence & FC_DEMAND_TCP)) return false;
     if (in.evidence & FC_DEMAND_APP_COUNTS) {
         if (in.requests_admitted > in.requests_attempted ||
             in.requests_completed > in.requests_admitted ||
@@ -150,28 +151,35 @@ extern "C" int flowcore_demand_assess_v1(const fc_demand_input_v1* input,
     if (class_known) {
         if (in.class_rate_bps > 0.0) out.class_rate_bps = in.class_rate_bps;
         if (in.class_ceil_bps > 0.0) out.class_ceil_bps = in.class_ceil_bps;
-        if (in.class_ceil_bps > 0.0 && out.delivered_bps >= 0.0)
-            out.class_headroom_bps = std::max(0.0, in.class_ceil_bps - out.delivered_bps);
+        const double class_service_bps = bit_rate(in.class_served_bytes, seconds);
+        if (in.class_ceil_bps > 0.0)
+            out.class_headroom_bps = std::max(0.0, in.class_ceil_bps - class_service_bps);
     }
 
-    if (tcp && (in.evidence & FC_DEMAND_SOCKET_PACING) &&
+    const bool socket_queue = (in.evidence & (FC_DEMAND_SOCKET_QUEUE | FC_DEMAND_SOCKET_PACING)) != 0;
+    if (tcp && socket_queue &&
         in.socket_send_queue_after_bytes >= in.socket_send_queue_before_bytes)
         out.socket_queue_growth_bps = bit_rate(in.socket_send_queue_after_bytes -
                                                in.socket_send_queue_before_bytes, seconds);
     const bool root_busy = root_queue && (in.root_backlog_after_bytes >= queue_threshold_bytes ||
         ((in.evidence & FC_DEMAND_ROOT_DROPS) && in.root_drops > 0.0));
     const bool class_busy = class_known && in.class_backlog_after_bytes >= queue_threshold_bytes;
-    const bool socket_busy = tcp && (in.socket_notsent_bytes >= queue_threshold_bytes ||
+    const bool socket_busy = tcp && socket_queue && (in.socket_notsent_bytes >= queue_threshold_bytes ||
         in.socket_send_queue_after_bytes >= queue_threshold_bytes || out.socket_queue_growth_bps >= 8.0);
-    if (tcp && (in.evidence & FC_DEMAND_SOCKET_PACING) && in.socket_delivery_bps > 0.0 &&
+    if (tcp && socket_queue && in.socket_delivery_bps > 0.0 &&
         (in.tcp_app_limited_fraction < 0.8 || socket_busy)) {
         out.socket_demand_bps = in.socket_delivery_bps + std::max(0.0, out.socket_queue_growth_bps);
         out.socket_demand_uncertainty_bps = out.socket_queue_growth_bps > 0.0 ? -1.0 : in.socket_delivery_bps * .25;
     }
 
     const double class_cap = in.class_ceil_bps > 0.0 ? in.class_ceil_bps : in.class_rate_bps;
+    const double class_service_bps = class_known ? bit_rate(in.class_served_bytes, seconds) : 0.0;
+    const bool app_exceeds_class = app && app_complete && class_cap > 0.0 &&
+                                   out.offered_bps > class_cap * 1.05;
+    const bool class_service_near_cap = class_service_bps >= class_cap * .75 &&
+                                        class_service_bps <= class_cap * 1.25;
     const bool class_binding = class_busy && class_cap > 0.0 && capacity_known && capacity > 0.0 &&
-        class_cap < capacity * .85 && out.delivered_bps >= class_cap * .75;
+        class_cap < capacity * .85 && (app_exceeds_class || class_service_near_cap);
     const bool pacing_binding = tcp && (in.evidence & FC_DEMAND_SOCKET_PACING) && socket_busy &&
         in.socket_pacing_bps > 0.0 && capacity_known && capacity > 0.0 &&
         in.socket_pacing_bps < capacity * .85 && in.observed_bps >= in.socket_pacing_bps * .75;
@@ -180,10 +188,17 @@ extern "C" int flowcore_demand_assess_v1(const fc_demand_input_v1* input,
     const bool sendbuf_limited = (in.evidence & FC_DEMAND_TCP_LIMITS) && socket_busy &&
         in.tcp_sendbuf_limited_fraction >= .65;
     if (sendbuf_limited) out.flags |= FC_DEMAND_F_SENDER_BUFFER_LIMITED;
-    const bool local_busy = root_busy && capacity_known && capacity > 0.0 && in.observed_bps >= capacity * .85;
-    const bool remote = (in.evidence & FC_DEMAND_REMOTE_PRESSURE) != 0;
     const bool app_below_capacity = app && app_complete && capacity_known && capacity > 0.0 &&
-                                    out.offered_bps < capacity * .85;
+        out.offered_bps < capacity * .85 && out.offered_bps <= out.transmitted_bps * 1.05;
+    const bool app_exceeds_capacity = app && app_complete && capacity_known && capacity > 0.0 &&
+                                     out.offered_bps > capacity * 1.05;
+    // A quiet queue in one short window does not disprove a shaped bottleneck
+    // when complete application demand exceeds the verified cap and service is
+    // already near that cap. This also avoids turning incidental TCP signals
+    // into a remote attribution during local saturation.
+    const bool local_busy = capacity_known && capacity > 0.0 && in.observed_bps >= capacity * .85 &&
+                            (root_busy || app_exceeds_capacity);
+    const bool remote = (in.evidence & FC_DEMAND_REMOTE_PRESSURE) != 0;
     const bool tcp_app_limited = tcp && in.tcp_app_limited_fraction >= .8;
     const bool queue_quiet = !root_busy && !class_busy;
 
@@ -207,7 +222,7 @@ extern "C" int flowcore_demand_assess_v1(const fc_demand_input_v1* input,
         out.classification = FC_DEMAND_RECEIVER_LIMITED_SUSPECTED;
         out.confidence_percent = 60;
         out.flags |= FC_DEMAND_F_RECEIVER_SUSPECTED;
-    } else if (remote && queue_quiet) {
+    } else if (remote && queue_quiet && !app_below_capacity && !tcp_app_limited) {
         out.classification = FC_DEMAND_REMOTE_BOTTLENECK_SUSPECTED;
         out.confidence_percent = 55;
         out.flags |= FC_DEMAND_F_REMOTE_SUSPECTED;

@@ -103,8 +103,9 @@ def socket_key(row):
             row.get('local_port'), row.get('remote_port'), row.get('family'))
 
 
-def tcp_evidence(current, previous, elapsed):
-    matched = [(key, row, previous[key]) for key, row in current.items() if key in previous]
+def tcp_evidence(current, previous, elapsed, ports=None):
+    matched = [(key, row, previous[key]) for key, row in current.items()
+               if key in previous and (ports is None or key[5] in ports)]
     active = []
     for key, row, old in matched:
         info, old_info = row['tcp_info'], old['tcp_info']
@@ -377,13 +378,16 @@ class Bottleneck:
                 if tcp.get(source) is not None:
                     value[field] = tcp[source]
             if all(tcp.get(field) is not None for field in
-                   ('socket_pacing_bps', 'socket_send_queue_before_bytes',
-                    'socket_send_queue_after_bytes', 'socket_notsent_bytes')):
-                evidence.append('socket_pacing')
+                   ('socket_send_queue_before_bytes', 'socket_send_queue_after_bytes',
+                    'socket_notsent_bytes')):
+                evidence.append('socket_queue')
                 value.update({field: tcp[field] for field in
-                              ('socket_pacing_bps', 'socket_send_queue_before_bytes',
-                               'socket_send_queue_after_bytes', 'socket_notsent_bytes')})
+                              ('socket_send_queue_before_bytes', 'socket_send_queue_after_bytes',
+                               'socket_notsent_bytes')})
                 value['socket_sndbuf_bytes'] = tcp.get('socket_sndbuf_bytes') or 0
+            if tcp.get('socket_pacing_bps') is not None:
+                evidence.append('socket_pacing')
+                value['socket_pacing_bps'] = tcp['socket_pacing_bps']
             if tcp.get('rwnd_limited_fraction') is not None and tcp.get('sendbuf_limited_fraction') is not None:
                 evidence.append('tcp_limits')
                 value.update(tcp_rwnd_limited_fraction=tcp['rwnd_limited_fraction'],
@@ -541,10 +545,12 @@ class Bottleneck:
                                backlog_bytes=backlog, dropped_packets=drops, pressure=bool(pressure),
                                byte_source=row['byte_source'], classes=class_rates(row['classes'], previous['classes'], elapsed))
         transport = tcp_evidence(current, old[3], elapsed)
-        self.latest = self.classify(paths, transport, application, elapsed, old[2])
+        self.latest = self.classify(paths, transport, application, elapsed, old[2],
+                                    current_sockets=current, previous_sockets=old[3])
         return self.view(now, max_gap)
 
-    def classify(self, paths, tcp, application, elapsed, previous_directions=None):
+    def classify(self, paths, tcp, application, elapsed, previous_directions=None,
+                 current_sockets=None, previous_sockets=None):
         tx, rx = paths['egress'], paths['ingress']
         valid = all(path['throughput_kbit'] is not None for path in paths.values())
         quiet = tx['backlog_bytes'] == 0 and (rx['backlog_bytes'] in (0, None)) and rx['dropped_packets'] == 0
@@ -607,9 +613,16 @@ class Bottleneck:
                       directions=paths, transport=tcp, application=app, capacity_reductions={})
         if self.demand_model:
             overall = self.assess_demand(paths, tcp, app, elapsed, previous_directions or {})
-            per_class = {name: self.assess_demand(paths, tcp, app, elapsed,
-                                                   previous_directions or {}, name)
-                         for name in tx['classes']}
+            per_class = {}
+            for name in tx['classes']:
+                class_ports = {row['port'] for row in app
+                               if row['class'] == name and type(row.get('port')) is int}
+                class_tcp = (tcp_evidence(current_sockets, previous_sockets, elapsed, class_ports)
+                             if current_sockets is not None and previous_sockets is not None and class_ports
+                             else tcp if current_sockets is None or previous_sockets is None else
+                             tcp_evidence({}, {}, elapsed))
+                per_class[name] = self.assess_demand(paths, class_tcp, app, elapsed,
+                                                      previous_directions or {}, name)
             constrained = [row for row in per_class.values() if row and
                 row['classification'] == 'CLASS_RESTRICTED' and row['confidence'] >= .75 and
                 row['offered_bps'] is not None and row['demand_uncertainty_bps'] is not None and

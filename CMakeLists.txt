@@ -163,6 +163,10 @@ add_test(NAME demand_engine_unit COMMAND /usr/bin/python3 -B
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/demand_engine_test.py")
 set_tests_properties(demand_engine_unit PROPERTIES
     ENVIRONMENT "FLOWCORE_DEMAND_LIBRARY=$<TARGET_FILE:flowcore_intelligence>")
+add_test(NAME demand_scenario_manifest COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/demand_scenario_test.py")
+set_tests_properties(demand_scenario_manifest PROPERTIES
+    ENVIRONMENT "FLOWCORE_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME intelligence_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/intelligence_test.py")
 add_test(NAME performance_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/performance_test.py")
 

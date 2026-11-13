@@ -17,6 +17,8 @@ INFO = {
     'lost_segments': (32, 'I'), 'current_retrans_segments': (36, 'I'), 'rtt_us': (68, 'I'), 'rttvar_us': (72, 'I'),
     'cwnd_segments': (80, 'I'), 'rcv_space_bytes': (96, 'I'),
     'total_retrans_segments': (100, 'I'), 'bytes_acked': (120, 'Q'),
+    'pacing_rate_bytes_per_second': (104, 'Q'),
+    'max_pacing_rate_bytes_per_second': (112, 'Q'),
     'bytes_received': (128, 'Q'), 'segments_out': (136, 'I'), 'segments_in': (140, 'I'),
     'notsent_bytes': (144, 'I'), 'min_rtt_us': (148, 'I'), 'data_segments_in': (152, 'I'), 'data_segments_out': (156, 'I'),
     'delivery_rate_bytes_per_second': (160, 'Q'), 'busy_time_us': (168, 'Q'),
@@ -40,6 +42,9 @@ def tcp_info(data):
               for key, (offset, fmt) in INFO.items() if len(data) >= offset + struct.calcsize(fmt)}
     if len(data) >= 6:
         fields.update(ecn_negotiated=bool(data[5] & 8), received_ect=bool(data[5] & 16))
+    if len(data) >= 8:
+        shift = 0 if sys.byteorder == 'little' else 7
+        fields['delivery_rate_app_limited'] = bool(data[7] & (1 << shift))
     if len(data) >= 280:
         flags = struct.unpack_from('=I', data, 276)[0]
         shift = 0 if sys.byteorder == 'little' else 30

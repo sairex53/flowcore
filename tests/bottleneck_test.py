@@ -6,7 +6,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 
 from adaptive import Controller
-from bottleneck import Bottleneck, EGRESS, INGRESS, RECEIVER, REMOTE, UNKNOWN, application_totals, direction
+from bottleneck import (Bottleneck, EGRESS, INGRESS, RECEIVER, REMOTE, UNKNOWN,
+                        application_totals, direction, tcp_evidence)
 
 
 def observation(step, *, tx=0, rx=0, tx_queue=0, rx_queue=None, cap=4000):
@@ -78,6 +79,24 @@ class Engine(unittest.TestCase):
         self.assertEqual(estimate['classification'], 'LOCAL_CAPACITY_LIMITED')
         self.assertNotIn('APPLICATION_REPORT_INCOMPLETE', estimate['flags'])
 
+    def test_receiver_limited_detection_does_not_require_pacing_cap(self):
+        engine = Bottleneck()
+        if engine.demand_model is None:
+            self.skipTest('native demand library unavailable')
+        paths = dict(egress=dict(capacity_kbit=None, throughput_kbit=250.0,
+            capacity_source='unknown', backlog_bytes=0, dropped_packets=0, classes={}),
+            ingress=dict(capacity_kbit=None, throughput_kbit=0, capacity_source='unknown',
+                         backlog_bytes=0, classes={}))
+        tcp = dict(active_sockets=1, socket_delivery_bps=250_000, socket_pacing_bps=None,
+            socket_send_queue_before_bytes=0, socket_send_queue_after_bytes=16_384,
+            socket_notsent_bytes=12_000, socket_sndbuf_bytes=32_768,
+            rwnd_limited_fraction=.9, sendbuf_limited_fraction=.01,
+            app_limited_fraction=0, path_pressure=False)
+        estimate = engine.assess_demand(paths, tcp, [], .25,
+            {'egress': {'backlog_bytes': 0}})
+        self.assertEqual(estimate['classification'], 'RECEIVER_LIMITED_SUSPECTED')
+        self.assertLess(estimate['confidence'], .75)
+
     def test_owned_egress_hysteresis_and_stale_gate(self):
         engine = Bottleneck()
         initial = engine.observe(0, observation(0))
@@ -127,6 +146,29 @@ class Engine(unittest.TestCase):
                                          socket_coverage=coverage)
                 self.assertEqual(row['classification'], expected)
                 self.assertIn(row['action'], ('ADVISE', 'OBSERVE'))
+
+    def test_tcp_demand_evidence_is_scoped_to_service_ports(self):
+        def socket(port, step):
+            return dict(state='established', send_queue_bytes=4096*step,
+                send_buffer_bytes=32768,
+                tcp_info=dict(bytes_acked=80000*step, busy_time_us=250000*step,
+                    receive_window_limited_us=0, send_buffer_limited_us=0,
+                    total_retrans_segments=0, data_segments_out=100*step,
+                    rtt_us=1000, min_rtt_us=800, delivery_rate_bytes_per_second=200000,
+                    max_pacing_rate_bytes_per_second=0, notsent_bytes=2048*step,
+                    unacked_segments=1, delivery_rate_app_limited=False))
+        current = {
+            ('a', 'ns', 'local', 'remote', 50000, 9000, 2): socket(9000, 1),
+            ('b', 'ns', 'local', 'remote', 50001, 9001, 2): socket(9001, 1),
+        }
+        previous = {
+            ('a', 'ns', 'local', 'remote', 50000, 9000, 2): socket(9000, 0),
+            ('b', 'ns', 'local', 'remote', 50001, 9001, 2): socket(9001, 0),
+        }
+        evidence = tcp_evidence(current, previous, .25, {9000})
+        self.assertEqual(evidence['matched_sockets'], 1)
+        self.assertEqual(evidence['active_sockets'], 1)
+        self.assertEqual(evidence['socket_delivery_bps'], 1_600_000)
 
     def test_correlates_latency_with_the_reported_service_class(self):
         engine = Bottleneck()

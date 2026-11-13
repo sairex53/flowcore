@@ -1,232 +1,176 @@
 # Demand Engine Results
 
-## Summary
+## Current outcome
 
-The native estimator, SDK reporting path, observer aggregation, CLI reporting,
-and conservative controller gate are implemented. On synthetic fixtures, all
-13 declared classifications matched their expected labels. An added paced TCP
-namespace workload now supplies complete application byte windows; across ten
-repetitions, the model found local capacity pressure in 84 of 140 windows and
-held 56 windows as unknown or suspected remote pressure. This validates a
-single controlled demand signal, but does not demonstrate demand-aware policy
-benefit.
+The native estimator now separates application demand from accepted socket
+writes, peer reads, qdisc delivery, class service, configured capacity, and TCP
+socket limits. The observer passes TCP evidence to a class only for the sockets
+registered on that service's port. Class headroom is calculated from that
+class's byte-counter delta. The socket pacing ceiling is decoded from
+`TCP_INFO`.
 
-## Build and tests
+The demand gate remains advisory: experiments do not perform policy writes.
+Three-repeat live trials correctly identified receiver, pacing, class
+restriction, idle demand, and recovery. Local-capacity accuracy varied by
+workload; remote bottleneck evidence was usually too weak, so the estimator
+returned `UNKNOWN`. These are exploratory veth namespace results, not a QoS
+performance claim.
 
-Build command:
+## Build and complete test suite
 
-```sh
-cmake -S . -B /path/to/flowcore-demand-build -DFLOWCORE_BPF=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build /path/to/flowcore-demand-build -j8
-FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
-  ctest --test-dir /path/to/flowcore-demand-build --output-on-failure -j1
-```
-
-The x86_64 integration build was rebased onto `origin/main` at `87f83ff`,
-using GCC 16.2 on Omarchy Linux kernel 7.2.15-1-omarchy, with
-`FLOWCORE_BPF=OFF`. The final full serial suite passed 66 tests, skipped
-`udp_intent_live`, and failed `deployment_unit` in its source-configuration
-ownership test. All demand-native, demand-model, observer, bottleneck, and live
-intent SDK tests passed; `flowid_session` also passed in this refreshed-main
-run. This final run was on the feature branch after the live-experiment adapter
-fixes. The suite expects an in-tree `build/`, so that path was symlinked to the
-external build directory during validation and removed afterward. The final
-x86_64 CTest log is retained at
-`results/demand-intelligence/x86_64-ctest-final.log` (ignored local output).
-
-Before the remote main refresh, the demand implementation also built
-successfully on Fedora 45 aarch64 with GCC 16.2.1, kernel
-7.2.11-300.fc45.aarch64, and `FLOWCORE_BPF=OFF`. This guest ran under
-QEMU TCG emulation on an x86_64 host, so its CPU timings are not native ARM64
-performance measurements. Full serial CTest ran as the ordinary `elliot` user:
-64 passed, `udp_intent_live` was skipped, and three failed. The failures were
-`intent_protocol_compat` (legacy-v2 probe exit 7), `intent_v2_live` (concurrent
-SDK clients reconnected and observed a transport error), and `flowid_session`
-(21 of 64 flush acknowledgements). An earlier pre-refresh x86_64 checkout
-also showed a `flowid_session` flush acknowledgement failure (33 of 64), but
-that test passed on the refreshed-main run above. A separate ARM focused run
-passed 10 of 11 demand, ownership, security,
-observer, and SDK tests; only `intent_v2_live` failed. Its short IPC deadline
-and TCG scheduling are a plausible interaction, but the exact cause has not
-been isolated and needs confirmation on native ARM64 hardware.
-
-The ARM64 build and CTest run validated the demand patch on the earlier local
-source snapshot. The patch later applied cleanly to refreshed `origin/main`
-and was rebuilt and tested on x86_64; the refreshed source has not yet been
-rebuilt on ARM64.
-
-The ARM64 run log is retained at
-`results/demand-intelligence/arm64-ctest-2026-11-13.log` (ignored local test
-output, not part of a source commit).
-
-## Deterministic estimator benchmark
-
-Reproduce from the repository root after building:
+Reproduce the host build and test run with:
 
 ```sh
-FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build python3 scripts/demand_experiment.py --iterations 50000
+cmake -S . -B build -DFLOWCORE_BPF=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build -j4
+ctest --test-dir build --output-on-failure -j1
 ```
 
-The refreshed-main run at commit `87f83ff` is
-`results/demand-intelligence/run-1794573670086227876.json`. It used 13
-deterministic fixtures covering idle and heavy demand, bursts,
-capacity collapse/recovery, receiver limitation, socket pacing, HTB class
-restriction, remote pressure, mixed TCP/UDP accounting, missing evidence, and
-sender-buffer pressure.
+The final complete run was on x86_64 Omarchy, GCC 16.2, kernel
+`7.2.15-1-omarchy`, with `FLOWCORE_BPF=OFF`: **68 tests passed, one test was
+skipped, and none failed**. `udp_intent_live` was skipped by its environment
+gate. The in-tree build directory is required by tests that load local shared
+libraries and create temporary files under `build/`.
+
+The earlier Fedora 45 aarch64 build ran under QEMU TCG, not native ARM hardware.
+It used GCC 16.2.1 and kernel `7.2.11-300.fc45.aarch64`, with BPF disabled.
+That earlier source snapshot passed 64 tests, skipped `udp_intent_live`, and
+had three unrelated SDK/session test failures. The current source has not been
+rebuilt on ARM64. There is no physical NIC result.
+
+The final x86_64 CTest log is retained locally at
+`results/demand-intelligence/x86_64-ctest-final.log` (ignored experiment
+output).
+
+## Deterministic native estimator benchmark
+
+Command:
+
+```sh
+FLOWCORE_BUILD_DIR=build python3 scripts/demand_experiment.py --iterations 50000
+```
+
+The latest run is
+`results/demand-intelligence/run-1794578704810518730.json`. It used 13
+deterministic evidence fixtures, including local capacity, HTB class, pacing,
+receiver, external bottleneck, missing evidence, and failure accounting.
 
 | Measurement | Result |
 | --- | ---: |
-| Expected fixture classifications | 13/13 |
-| False-positive actions in demand-aware fixture gate | 0 |
-| Demand-aware fixture actions | 4 |
-| Existing queue-gate fixture actions | 3 |
+| Expected fixture labels | 13/13 |
+| False-positive actions in fixture gate | 0 |
+| Demand-aware fixture decisions | 4 |
+| Existing queue-gate fixture decisions | 3 |
 | Native assessments | 50,000 |
-| Process CPU time | 0.463 s |
-| CPU per assessment | 9.26 µs |
-| Median single assessment | 9.12 µs |
+| Process CPU time | 0.445 s |
+| CPU per assessment | 8.90 µs |
+| Median assessment | 9.07 µs |
 
-These are synthetic fixture results. The gate comparison is not a measured
-network policy comparison and records no latency, goodput, fairness, or real
-policy changes.
+The 23-sample forecasting holdout still favors the no-prediction baseline:
+last-value MAE was 310,870 bit/s, EMA MAE 407,617 bit/s, and trend MAE
+373,991 bit/s. Forecasts remain shadow-only. Fixture decisions do not measure
+network performance or real controller actions.
 
-The forecasting holdout contained 23 one-step predictions:
+## Live multi-profile namespace experiment
 
-| Estimator | MAE |
-| --- | ---: |
-| Last-value baseline | 310,870 bit/s |
-| Exponential smoothing | 407,617 bit/s |
-| Trend forecast | 373,991 bit/s |
+The harness profile definitions and expected evidence are in
+[`scenarios/demand-network-v2.json`](scenarios/demand-network-v2.json). Each
+profile ran three times in disposable network namespaces, using 250 ms
+measurement windows. The final evidence is
+`results/bottleneck-1794578779833099005/summary.json` and each run's
+`observations.json` (ignored local outputs). It contains 33 completed runs and
+462 load windows; `host_identity_unchanged` is true. No controller policy write
+was attempted.
 
-Both estimators lost to the no-prediction baseline. Forecast output remains
-shadow-only and is not used to control networking.
+Accuracy below compares the estimator with the declared controlled condition
+after excluding the first second of warmup. Class-specific cases score the
+`background` class. `UNKNOWN` is counted as a mismatch for accuracy and is also
+reported as an abstention in the raw summary.
 
-The same 50,000-assessment fixture benchmark ran in the Fedora 45 aarch64 TCG
-guest. Its machine-readable output is
-`results/demand-intelligence/run-1794572100012738022.json`.
+| Profile | Target | Correct / scored | Estimator labels across all windows | Gate-eligible windows |
+| --- | --- | ---: | --- | ---: |
+| `demand_idle` | Overall demand-limited | 33/33 | 42 demand-limited | 0 |
+| `demand_background` | Overall local capacity | 27/33 | 33 local, 9 unknown | 33 |
+| `demand_bursty` | Window-dependent | Not scored as one label | 21 local, 18 unknown, 3 demand-limited | 21 |
+| `demand_receiver` | Overall receiver-limited suspected | 33/33 | 42 receiver-limited suspected | 0 |
+| `demand_pacing` | Background class pacing-limited | 33/33 | 39 pacing-limited, 3 unknown | 0 |
+| `demand_class` | Background class restricted | 33/33 | 42 class-restricted | 42 |
+| `demand_remote` | Overall remote-limited suspected | 0/33 | 3 remote-suspected, 39 unknown | 0 |
+| `demand_capacity_drop` | Overall local capacity | 22/30 | 27 local, 12 unknown | 27 |
+| `demand_recovery` | Local before; demand-limited after | 8/9 before; 18/18 after | 14 local, 21 demand-limited, 4 unknown | 14 |
+| `demand_mixed_udp` | Overall local capacity | 29/33 | 35 local, 7 unknown | 35 |
+| `demand_load` | Overall local capacity | 19/33 | 24 local, 18 unknown | 24 |
 
-| ARM64 guest measurement | Result |
-| --- | ---: |
-| Expected fixture classifications | 13/13 |
-| Process CPU time | 20.668 s |
-| CPU per assessment | 413.36 µs |
-| Median single assessment | 381.50 µs |
+The held-out-looking recovery condition is still exploratory rather than a
+pre-registered blind test. After HTB rose from 2 to 12 Mbit/s, every scored
+window was demand-limited; before the change, one scored window remained
+unknown. In the remote case, the current TCP path-pressure evidence was present
+in only a small fraction of windows. The engine abstained in 39/42 windows and
+did not open the gate. This exposes an evidence gap; it does not prove the
+remote profile was locally uncongested.
 
-This timing includes TCG emulation overhead and must not be compared with the
-x86_64 host timing as an architecture comparison. The synthetic classification
-and forecast results match the x86_64 fixture run; they do not establish
-real-traffic accuracy or policy benefit on ARM64.
+The existing directional bottleneck classifier independently missed the
+expected local egress label in 16/30 settled windows for `demand_background`
+and 3 settled windows for `demand_capacity_drop`. It sometimes attributed a
+local shaped case to `REMOTE_PATH_SUSPECTED`. Those misses are retained in the
+per-run summaries; they are not counted as demand-estimator accuracy.
 
-## Live namespace experiment
+### Byte accounting
 
-Command (run as root; every topology is created inside owned network
-namespaces):
+The current synthetic application admits every scheduled payload into its
+workload. `bytes_transmitted` is the number of bytes accepted by `send()` or
+`sendto()`; a short TCP write's unsent tail is not retried by this specific
+generator. Peer-read bytes and qdisc delivery are separate measurements. The
+experiment does not claim request-level attempt, rejection, completion, or
+deadline denominators.
+
+| Profile (sum of three runs) | Offered / admitted | Accepted by socket | Read by peer |
+| --- | ---: | ---: | ---: |
+| `demand_load` | 21,000,000 / 21,000,000 B | 5,347,120 B | 5,021,320 B |
+| `demand_background` | 10,500,000 / 10,500,000 B | 5,151,984 B | 4,956,504 B |
+| `demand_class` | 10,500,000 / 10,500,000 B | 1,459,976 B | 1,264,496 B |
+| `demand_pacing` | 10,500,000 / 10,500,000 B | 1,563,840 B | 1,316,232 B |
+| `demand_receiver` | 10,500,000 / 10,500,000 B | 525,624 B | 394,032 B |
+| `demand_remote` | 10,500,000 / 10,500,000 B | 5,138,952 B | 4,829,080 B |
+| `demand_capacity_drop` | 19,800,000 / 19,800,000 B | 3,979,208 B | 3,399,832 B |
+| `demand_recovery` | 9,900,000 / 9,900,000 B | 4,802,184 B | 4,671,864 B |
+| `demand_mixed_udp` | 21,032,400 / 21,032,400 B | 5,742,432 B | 5,212,152 B |
+| `demand_bursty` | 4,725,000 / 4,725,000 B | 4,725,000 B | 4,545,480 B |
+
+Across the same three `demand_mixed_udp` runs, application telemetry recorded
+8,777 attempted UDP messages, 3,251 fully accepted by `sendto()`, and 5,526
+send failures. Of those, 879 were urgent and 7,898 background messages. These
+are generator-level send results; peer reads and qdisc bytes remain independent
+measurements.
+
+An earlier ten-run `demand_load` artifact used the previous counter contract,
+where `bytes_admitted` meant socket-accepted bytes. Its totals are intentionally
+kept in the older raw summaries and are not combined with the table above.
+
+Reproduce the full profile set with:
 
 ```sh
-FLOWCORE_TC=/usr/bin/tc FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
-  python3 scripts/bottleneck_experiment.py --repetitions 1 \
-    --cases egress remote receiver application capacity_drop idle
+sudo env FLOWCORE_TC=/usr/bin/tc FLOWCORE_BUILD_DIR=build \
+  python3 scripts/bottleneck_experiment.py --repetitions 3 \
+  --cases demand_idle demand_background demand_bursty demand_receiver \
+    demand_pacing demand_class demand_remote demand_capacity_drop \
+    demand_recovery demand_mixed_udp demand_load
 ```
 
-The captured evidence is
-`results/bottleneck-1794570680999958862/summary.json` and its per-case
-`observations.json` files. The experiment ran on x86_64 Omarchy, not Fedora or a
-physical NIC. `host_identity_unchanged` was true.
+The harness changes qdiscs only inside owned lab namespaces. It did not touch
+host qdiscs or interfaces. The host lacked a preloaded IFB driver, so ingress
+was not part of these profiles.
 
-| Scenario | Existing bottleneck result | Detection delay | Demand gate |
-| --- | --- | ---: | --- |
-| Egress saturation | Local egress congestion | 0.509 s | Held |
-| Capacity reduction | Local egress congestion | 0.509 s | Held |
-| Receiver-limited TCP | Receiver-limited suspected | 0.509 s | Held |
-| Application-limited request load | Application-limited suspected | 1.259 s | Held |
-| Emulated remote bottleneck | Remote path suspected | 0.507 s | Held |
-| Idle | No congestion | None | Held |
+## Limits and next validation
 
-There were zero false-positive and zero false-negative bottleneck windows in
-this single repetition. These figures describe the existing bottleneck
-classifier only; they are not a statistically powered demand-estimation result.
-The actual demand estimates remained `UNKNOWN` except the remote suspicion, and
-`controller_eligible` was false in all six cases. In particular, the local
-queue lower bound did not become exact application demand. No policy action was
-taken.
-
-The first attempt also tried ingress and stopped because the host did not have
-an IFB driver preloaded. FLOWCORE refused to create a host IFB device. The
-selected six-case run excludes ingress. The aborted attempt did not modify host
-network identity.
-
-## Paced TCP demand experiment
-
-The new `demand_load` scenario uses two TCP senders in owned network namespaces.
-Each application schedules 100,000-byte payload releases every 100 ms for 3.5
-seconds (8 Mbit/s per flow, 16 Mbit/s total offered demand) into an HTB root
-configured at 4 Mbit/s. It records each interval's offered bytes, successful
-nonblocking `send()` bytes, and bytes read by the peer. Request counts remain
-unknown; byte-window completeness is reported independently. Interface/qdisc
-counters remain a separate delivered-throughput measurement.
-
-Reproduce ten trials in two batches (the harness accepts at most five per
-invocation):
-
-```sh
-sudo env FLOWCORE_TC=/usr/bin/tc \
-  FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
-  python3 scripts/bottleneck_experiment.py --repetitions 5 --cases demand_load
-sudo env FLOWCORE_TC=/usr/bin/tc \
-  FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
-  python3 scripts/bottleneck_experiment.py --repetitions 5 --cases demand_load
-```
-
-The two captured summaries are
-`results/bottleneck-1794575270944394698/summary.json` and
-`results/bottleneck-1794575298658552010/summary.json`. Both completed and
-reported `host_identity_unchanged=true`. They record x86_64 Omarchy, kernel
-7.2.15-1-omarchy, GCC 16.2, BPF disabled, source base commit `8b36659`, and
-`git_dirty=true`; the manifests also retain source and executable hashes.
-
-| Demand experiment measurement | Result |
-| --- | ---: |
-| Completed repetitions / load windows | 10 / 140 |
-| Scheduled application payload | 70,000,000 bytes (16 Mbit/s per run) |
-| Accepted by nonblocking send calls | 18,127,048 bytes |
-| Read by peer during reported windows | 16,954,168 bytes |
-| Native demand classification | 84 local-capacity-limited, 55 unknown, 1 remote-suspected |
-| Controller-eligible evidence windows | 84 / 140 |
-| Existing bottleneck detector delay | median 0.509 s; range 0.508–0.510 s |
-| Existing bottleneck detector errors | 0 false positives, 2 false negatives |
-| Host interface/qdisc identity changes | 0 |
-
-The two false negatives are windows where the existing bottleneck classifier
-did not label the known local egress case correctly; the demand model reported
-one of those windows as remote-suspected. This is a detector limitation exposed
-by the trial, not evidence of a demand estimator false positive. The result
-shows useful demand attribution under a known local bottleneck, while its
-unknown classifications preserve uncertainty. The 84 eligible windows indicate
-evidence that could pass the review gate; the experiment did not execute a
-controller policy update.
-
-This experiment does not produce request-level failure denominators or latency
-percentiles, and it does not compare static QoS against controller variants.
-The qdisc is in disposable namespaces using veth, not a physical NIC. It is one
-workload shape on x86_64, not ARM64 or a multi-workload accuracy study. The app
-send count measures bytes accepted by `send()` and is not treated as wire
-delivery.
-
-## Unresolved validation
-
-- Extend cooperative reporting to complete scheduled/released/admitted/
-  rejected/completed request denominators; the live TCP workload currently
-  validates byte demand only.
-- Run at least ten independent paired comparisons for static QoS, the existing
-  controller, and demand-aware control under identical offered load.
-- Measure P99, failure denominators, deadline attainment, background goodput,
-  fairness, unused capacity, policy churn, detection delay, and estimator CPU.
-- Repeat on native Fedora 45 ARM64 hardware and a native x86_64 Fedora host.
-  The ARM64 build and suite were run under TCG emulation, not on ARM hardware;
-  BPF was disabled on both build environments.
-- Run ingress scenarios only in an environment where IFB is already available
-  or can be safely enabled within the disposable VM.
-- Validate physical NIC behavior separately; namespace veth results are not
-  hardware validation.
-
-Until those measurements exist, application-dependent actions remain gated on
-complete cooperative reports and the forecast remains shadow-only.
+- Request scheduled/admitted/rejected/completed/failure denominators and
+  deadline misses remain unavailable in the live byte workload.
+- The nonblocking TCP generator intentionally does not retry short-write tails;
+  this makes socket acceptance visible but prevents request-level conclusions.
+- Remote bottleneck attribution needs stronger corroborating evidence; unknown
+  must remain the result when TCP path-pressure signals are absent.
+- Run at least ten paired static QoS, existing-controller, and demand-aware
+  comparisons before claiming latency, goodput, fairness, or policy benefit.
+- Repeat on native Fedora 45 ARM64 and x86_64, enable BPF where supported, and
+  separately validate physical NIC behavior.
+- Forecasting is shadow-only, and no estimator-driven policy change was run.

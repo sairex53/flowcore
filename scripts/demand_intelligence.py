@@ -13,6 +13,7 @@ EVIDENCE = {
     'remote_pressure': 1 << 9, 'udp_accounting': 1 << 10,
     'configured_cap': 1 << 11, 'nominal_cap': 1 << 12,
     'app_incomplete': 1 << 13, 'class_drops': 1 << 14, 'root_drops': 1 << 15,
+    'socket_queue': 1 << 16,
 }
 CLASSIFICATIONS = {
     0: 'UNKNOWN', 1: 'DEMAND_LIMITED', 2: 'LOCAL_CAPACITY_LIMITED',
@@ -106,7 +107,17 @@ class NativeDemand:
             setattr(row, name, values.get(name, 0))
         output = Output()
         if self.assess_fn(ctypes.byref(row), ctypes.byref(output)):
-            raise ValueError('invalid native demand observation')
+            # Keep a compact, numeric diagnostic so rejected live samples can
+            # be traced back to their violated interval or accounting bounds.
+            bounds = {name: getattr(row, name) for name in (
+                'interval_seconds', 'app_offered_bytes', 'app_admitted_bytes',
+                'app_transmitted_bytes', 'requests_attempted', 'requests_admitted',
+                'requests_completed', 'requests_failed', 'requests_rejected',
+                'deadline_misses', 'udp_messages_attempted', 'udp_messages_transmitted',
+                'udp_send_failures', 'udp_urgent_messages', 'udp_background_messages',
+                'tcp_sendbuf_limited_fraction', 'tcp_rwnd_limited_fraction',
+                'tcp_app_limited_fraction')}
+            raise ValueError(f'invalid native demand observation (evidence={row.evidence}, bounds={bounds})')
         result = {name: getattr(output, name) for name, _ in Output._fields_}
         result['classification'] = CLASSIFICATIONS[output.classification]
         result['confidence'] = output.confidence_percent / 100.0
