@@ -51,8 +51,19 @@ def assess(work, evidence, now_ns=None):
                        'verified_min_rtt_us', 'scope_verified', 'capacity_bytes_s',
                        'background_floor_bytes_s', 'background_goodput_bytes_s',
                        'response_path_verified', 'operator_fairness_verified')
-    w = (c.c_uint64*9)(*(_encoded(work.get(key)) for key in work_fields))
-    e = (c.c_uint64*19)(*(_encoded(evidence.get(key)) for key in evidence_fields))
+    work_values, evidence_values = [], []
+    for key in work_fields:
+        try:
+            work_values.append(_encoded(work.get(key)))
+        except ValueError as error:
+            raise ValueError(f'invalid request cost field {key}') from error
+    for key in evidence_fields:
+        try:
+            evidence_values.append(_encoded(evidence.get(key)))
+        except ValueError as error:
+            raise ValueError(f'invalid feasibility evidence field {key}') from error
+    w = (c.c_uint64*9)(*work_values)
+    e = (c.c_uint64*19)(*evidence_values)
     out = (c.c_uint64*13)()
     status = native().flowcore_overload_assess_v1(w, e, now_ns, out)
     if status:

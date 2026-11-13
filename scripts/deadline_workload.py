@@ -31,6 +31,8 @@ class AdmissionWorkload:
         self.admission_token_stamp_ns = 0
         self.controller_input_errors = 0
         self.assessment_input_errors = 0
+        self.controller_input_error_reasons = collections.Counter()
+        self.assessment_input_error_reasons = collections.Counter()
 
     def offer(self, request_id, scheduled):
         self.lifecycle[request_id] = dict(scheduled_ns=round(scheduled*1e9), budget_ms=None,
@@ -133,10 +135,11 @@ class AdmissionWorkload:
             sample.update(accounting)
             try:
                 pressure = self.backpressure.observe(sample, now)
-            except ValueError:
+            except ValueError as error:
                 # Telemetry is advisory. A malformed sample must disable control
                 # for this observation rather than abort application work.
                 self.controller_input_errors += 1
+                self.controller_input_error_reasons[str(error)] += 1
                 pressure = dict(state='INSUFFICIENT_DATA', action='HOLD',
                     recommended_concurrency=limit, admission_budget_per_second=self.last_admission_budget,
                     available_admission_slots=0, changed=False)
@@ -155,8 +158,9 @@ class AdmissionWorkload:
                         queue_depth=queue_depth, scope_verified=sample['scope_verified'])
             try:
                 result = assess_v2(request, path, now)
-            except ValueError:
+            except ValueError as error:
                 self.assessment_input_errors += 1
+                self.assessment_input_error_reasons[str(error)] += 1
                 result = dict(feasibility='INSUFFICIENT_EVIDENCE', recommendation='UNKNOWN',
                               decision='UNKNOWN', reason='invalid_assessment_evidence')
             if not self._consume_admission_budget(now, pressure['admission_budget_per_second']):
@@ -223,6 +227,8 @@ class AdmissionWorkload:
                           final_admission_budget_per_second=self.last_admission_budget,
                           controller_input_errors=self.controller_input_errors,
                           assessment_input_errors=self.assessment_input_errors,
+                          controller_input_error_reasons=dict(self.controller_input_error_reasons),
+                          assessment_input_error_reasons=dict(self.assessment_input_error_reasons),
                           deadline_evidence_status=getattr(self, 'evidence_status',
                                                            dict(available=False, reason='not_observed')))
             self.backpressure.close()

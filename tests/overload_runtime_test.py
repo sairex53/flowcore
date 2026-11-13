@@ -126,7 +126,7 @@ class OverloadRuntime(unittest.TestCase):
                     'critical': dict(bytes_per_second=700_000),
                     'interactive': dict(bytes_per_second=100_000),
                     'standard': dict(bytes_per_second=50_000),
-                    'background': dict(bytes_per_second=150_000)})
+                    'background': dict(bytes_per_second=150_000.5)})
 
         class Service:
             lab = object()
@@ -146,6 +146,15 @@ class OverloadRuntime(unittest.TestCase):
         self.assertEqual(service.deadline_evidence_status['reason'], 'class_scoped_readback')
         self.assertTrue(result['critical']['class_scoped'])
         self.assertFalse(result['critical']['response_path_verified'])
+        self.assertEqual(result['critical']['background_goodput_bytes_s'], 150_000)
+
+        service.observer.truncated = True
+        partial = read_deadline_evidence(service, now)
+        self.assertTrue(service.deadline_evidence_status['available'])
+        self.assertTrue(service.deadline_evidence_status['socket_scan_truncated'])
+        self.assertFalse(service.deadline_evidence_status['rtt_available'])
+        self.assertTrue(partial['critical']['class_scoped'])
+        self.assertIsNone(partial['critical']['rtt_p95_us'])
 
         service.telemetry['qdisc'][0]['kind'] = 'fq_codel'
         self.assertEqual(read_deadline_evidence(service, now), {})

@@ -1,6 +1,7 @@
 """Typed admission queries and scoped evidence from existing FLOWCORE sampling."""
 import ctypes as c
 from functools import cache
+import math
 import socket
 import sys
 import time
@@ -88,9 +89,9 @@ def evidence(service, now):
     if not observer.sampled_ns:
         service.deadline_evidence_status = dict(available=False, reason='no_observer_sample')
         return {}
-    if observer.errors or observer.truncated:
+    if observer.errors:
         service.deadline_evidence_status = dict(available=False, reason='observer_quality_error',
-                                                errors=observer.errors, truncated=observer.truncated)
+                                                errors=observer.errors)
         return {}
     tc = service.telemetry
     root = next((q for q in tc.get('qdisc', []) if q.get('root')), {})
@@ -110,34 +111,48 @@ def evidence(service, now):
                                                 age_ns=now-observer.sampled_ns)
         return {}
     window = observer.window(now, 2)
-    rtt = window['rtt']
+    rtt = window.get('rtt') or {}
+    queue_window = window.get('queue') or {}
+    rtt_available = (not observer.truncated and rtt.get('p50_us') is not None and
+                     rtt.get('p95_us') is not None)
     backlog = {row['parent']: row.get('backlog') for row in tc.get('qdisc', []) if row.get('parent')}
     out = {}
+    def byte_rate(value):
+        if type(value) is int:
+            return value if 0 <= value <= 100_000_000_000 else None
+        if type(value) is not float or not math.isfinite(value) or value < 0 or value > 100_000_000_000:
+            return None
+        return int(value)
+
     for cls, minor in CLASSES.items():
         handle = f'1:{minor}'
         class_row = classes.get(handle, {})
         scoped = ('1:1' in classes and handle in classes and
                   tc.get('traffic_classes', {}).get(cls, {}).get('handle') == handle)
-        rate = window['queue'].get(cls, {}).get('bytes_per_second')
+        rate = queue_window.get(cls, {}).get('bytes_per_second')
         guaranteed = class_row.get('rate') if type(class_row.get('rate')) is int else None
         ceiling = class_row.get('ceil') if type(class_row.get('ceil')) is int else None
-        available = min(ceiling, max(guaranteed or 0, int(rate or 0))) if ceiling else None
+        observed_rate = byte_rate(rate)
+        available = min(ceiling, max(guaranteed or 0, observed_rate or 0)) if ceiling else None
         background = classes.get(f"1:{CLASSES['background']}", {})
         background_floor = background.get('rate') if type(background.get('rate')) is int else None
         fairness_verified = ('1:1' in classes and type(background_floor) is int and
                              background.get('class') == 'htb')
         out[cls] = dict(observed_ns=observer.sampled_ns, owned_egress=True, class_scoped=scoped,
-                        capacity_bytes_s=capacity, observed_rate_bytes_s=int(rate) if rate is not None else None,
+                        capacity_bytes_s=capacity, observed_rate_bytes_s=observed_rate,
                         available_bytes_s=available, class_rate_bytes_s=guaranteed,
                         class_ceil_bytes_s=ceiling, backlog_bytes=backlog.get(handle),
-                        rtt_p50_us=rtt.get('p50_us'), rtt_p95_us=rtt.get('p95_us'),
+                        rtt_p50_us=rtt.get('p50_us') if rtt_available else None,
+                        rtt_p95_us=rtt.get('p95_us') if rtt_available else None,
                         response_available_bytes_s=capacity, response_backlog_bytes=0,
                         response_path_verified=False, background_floor_bytes_s=background_floor,
-                        background_goodput_bytes_s=window['queue'].get('background', {}).get('bytes_per_second'),
+                        background_goodput_bytes_s=byte_rate(
+                            queue_window.get('background', {}).get('bytes_per_second')),
                         operator_fairness_verified=fairness_verified)
     service.deadline_evidence_status = dict(available=True, reason='class_scoped_readback',
         class_scoped={name: row['class_scoped'] for name, row in out.items()},
-        observer_sample_ns=observer.sampled_ns)
+        observer_sample_ns=observer.sampled_ns, rtt_available=rtt_available,
+        socket_scan_truncated=bool(observer.truncated))
     return out
 
 

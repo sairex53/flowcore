@@ -2,7 +2,7 @@
 
 ## Status
 
-The C++ estimator, cooperative admission API, controller state machine, workload adapter, accounting, and paired experiment manifest are implemented. Native tests pass. The first privileged paired runs were invalid because the new workload arm did not receive usable evidence and a malformed adapter input interrupted request accounting. The adapter now fails safe to `UNKNOWN`, and the evidence collector reports why evidence is unavailable. A complete privileged rerun is still required; no performance improvement is claimed.
+The C++ estimator, cooperative admission API, controller state machine, workload adapter, accounting, and paired experiment manifest are implemented. A valid 10-pair replay completed in isolated rootless user/network namespaces. It showed more on-time completions than uncontrolled traffic but did not improve on the static QoS baseline: v2 completed 7,909/8,000 requests, with 7,182 on time, while static QoS completed 8,000, with 7,190 on time. The preregistered v2-vs-static comparison is inconclusive and successful-request P99 is censored. No performance improvement over static QoS is claimed; keep v2 opt-in.
 
 ## Audit and design
 
@@ -62,11 +62,12 @@ Build with the repository's standard CMake configuration, then run:
 
 ```sh
 ctest --test-dir build --output-on-failure
-sudo FLOWCORE_TC=/usr/bin/tc ./build/flowcore bench replay scenarios/overload-prevention-v2.json
+unshare --user --map-root-user --net env FLOWCORE_TC=/usr/bin/tc \
+  ./build/flowcore bench replay scenarios/overload-prevention-v2.json
 ```
 
-The benchmark is preregistered for ten paired repetitions and runs only in FLOWCORE-owned disposable namespaces. It compares no deadline admission, existing deadline admission, a static concurrency limit, the new cooperative overload engine, and the static QoS baseline under burst load and a 12-to-8 Mbit/s capacity change. See `ADMISSION_RESULTS_V2.md` for the current validation status.
+The benchmark is preregistered for ten paired repetitions and runs only in FLOWCORE-owned disposable namespaces. It compares no deadline admission, existing deadline admission, a static concurrency limit, the new cooperative overload engine, and the static QoS baseline under burst load and a 12-to-8 Mbit/s capacity change. The completed run used rootless user/network namespaces on x86_64; this does not substitute for Fedora ARM64 or physical-NIC validation. See `ADMISSION_RESULTS_V2.md` for counts and statistical results.
 
 ## Limitations
 
-This implementation cannot guarantee arbitrary application deadlines. The service's processing quantiles must come from the application. Current lab response-direction capacity is marked unverified; it must not be interpreted as measured reverse-path capacity. No controller action is made when required evidence is missing. Physical-interface, multi-architecture, long-duration, and production daemon validation remain separate work.
+This implementation cannot guarantee arbitrary application deadlines. The service's processing quantiles must come from the application. In the completed lab replay, socket scans were truncated, so RTT was withheld and request feasibility remained unknown when evidence required RTT. Class-scoped qdisc counters were retained. Response-direction capacity remains unverified; it must not be interpreted as measured reverse-path capacity. Physical-interface, multi-architecture, long-duration, and production daemon validation remain separate work.

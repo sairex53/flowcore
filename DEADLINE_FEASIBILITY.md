@@ -36,7 +36,7 @@ The hard lower-bound check is separate from the P95 prediction. It uses only a v
 - A measured P95 overrun does not trigger a hard rejection. It returns `AT_RISK`.
 - Missing or malformed evidence must not terminate application work or trigger an automatic privileged action.
 
-The live evidence collector is restricted to verified FLOWCORE lab state. It records why evidence is unavailable (for example, stale sample, unsupported qdisc, or class-rate readback mismatch). The current benchmark attempt reported an empty evidence set; its exact cause remains unverified until a privileged rerun can read the new diagnostic field.
+The live evidence collector is restricted to verified FLOWCORE lab state. It records why evidence is unavailable (for example, stale sample, unsupported qdisc, or class-rate readback mismatch). When the socket scan is truncated, the collector still preserves fresh, owned, class-scoped qdisc rates and backlog, but explicitly withholds RTT because the socket sample is incomplete. This supports capacity and backpressure analysis without presenting partial socket telemetry as a complete RTT measurement. In the completed 10-pair replay, all four classes had scoped qdisc readback, while RTT and the reverse path remained unverified; therefore the v2 request assessment was `UNKNOWN` for the requests that needed those facts.
 
 ## Interpretation
 
