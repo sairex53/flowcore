@@ -15,7 +15,9 @@ DECISIONS = ('ACCEPT', 'ACCEPT_WITH_RISK', 'DEFER', 'REJECT_INFEASIBLE', 'INSUFF
 REASONS = ('fits', 'tight', 'queue_pressure', 'expired', 'capacity_bound', 'missing_evidence',
            'offline', 'invalid', 'unauthorized', 'budget_exhausted', 'throttled')
 QUALITY = ('none', 'limited', 'observed')
-MODES = ('deadline-unaware', 'deadline-static', 'deadline-existing', 'deadline-admission', 'deadline-adaptive', 'deadline-paced-static')
+MODES = ('deadline-unaware', 'deadline-static', 'deadline-existing', 'deadline-admission',
+         'deadline-adaptive', 'deadline-paced-static', 'deadline-concurrency-static',
+         'deadline-overload-v2')
 FIELDS = ('deadline_ns', 'egress_bytes', 'processing_us', 'connect_us', 'remote_us', 'reliability', 'expiration')
 EVIDENCE = ('observed_ns', 'capacity_bytes_s', 'observed_rate_bytes_s', 'backlog_bytes',
             'rtt_p50_us', 'rtt_p95_us', 'transfer_p95_us', 'owned_egress', 'class_scoped', 'hard_burst_bytes')
@@ -32,12 +34,25 @@ def pacing_floor(manifest):
 
 
 def profile(value):
-    keys(value, ('version', 'tight_every', 'tight_deadline_ms', 'connect_reserve_us', 'defer_us'))
-    number(value['version'], 1, 1, True)
+    version = value.get('version')
+    base = ('version', 'tight_every', 'tight_deadline_ms', 'connect_reserve_us', 'defer_us')
+    overload = ('response_bytes', 'processing_p50_us', 'processing_p95_us',
+                'minimum_concurrency', 'maximum_concurrency', 'static_concurrency_limit',
+                'maximum_admissions_per_second')
+    keys(value, base + (overload if version == 2 else ()))
+    number(version, 1, 2, True)
     number(value['tight_every'], 4, 100, True)
     number(value['tight_deadline_ms'], .001, 20)
     number(value['connect_reserve_us'], 0, 200_000, True)
     number(value['defer_us'], 0, 5000, True)
+    if version == 2:
+        number(value['response_bytes'], 0, 64*1024**2, True)
+        number(value['processing_p50_us'], 0, 600_000_000, True)
+        number(value['processing_p95_us'], value['processing_p50_us'], 600_000_000, True)
+        number(value['minimum_concurrency'], 1, 1_000_000, True)
+        number(value['maximum_concurrency'], value['minimum_concurrency'], 1_000_000, True)
+        number(value['static_concurrency_limit'], 1, value['maximum_concurrency'], True)
+        number(value['maximum_admissions_per_second'], 1, 1_000_000, True)
     return dict(value)
 
 
@@ -67,18 +82,32 @@ def estimate(work, observation, now):
 
 def evidence(service, now):
     observer = service.observer
-    if not service.lab or not observer.sampled_ns or observer.errors or observer.truncated:
+    if not service.lab:
+        service.deadline_evidence_status = dict(available=False, reason='no_owned_lab')
+        return {}
+    if not observer.sampled_ns:
+        service.deadline_evidence_status = dict(available=False, reason='no_observer_sample')
+        return {}
+    if observer.errors or observer.truncated:
+        service.deadline_evidence_status = dict(available=False, reason='observer_quality_error',
+                                                errors=observer.errors, truncated=observer.truncated)
         return {}
     tc = service.telemetry
     root = next((q for q in tc.get('qdisc', []) if q.get('root')), {})
     if root.get('kind') != 'htb' or root.get('handle') != '1:':
+        service.deadline_evidence_status = dict(available=False, reason='unsupported_qdisc_root')
         return {}
     capacity = service.profile['bandwidth_kbit']*125
     classes = {row['handle']: row for row in tc.get('class', []) if row.get('class') == 'htb'}
     parent = classes.get('1:1') or classes.get('1:20', {})
     if parent.get('rate') != capacity or parent.get('ceil') != capacity:
+        service.deadline_evidence_status = dict(available=False, reason='capacity_readback_mismatch',
+            expected_bytes_s=capacity, observed_rate_bytes_s=parent.get('rate'),
+            observed_ceil_bytes_s=parent.get('ceil'))
         return {}
     if not 0 <= now-observer.sampled_ns <= 2_500_000_000:
+        service.deadline_evidence_status = dict(available=False, reason='stale_observation',
+                                                age_ns=now-observer.sampled_ns)
         return {}
     window = observer.window(now, 2)
     rtt = window['rtt']
@@ -86,12 +115,29 @@ def evidence(service, now):
     out = {}
     for cls, minor in CLASSES.items():
         handle = f'1:{minor}'
+        class_row = classes.get(handle, {})
         scoped = ('1:1' in classes and handle in classes and
                   tc.get('traffic_classes', {}).get(cls, {}).get('handle') == handle)
         rate = window['queue'].get(cls, {}).get('bytes_per_second')
+        guaranteed = class_row.get('rate') if type(class_row.get('rate')) is int else None
+        ceiling = class_row.get('ceil') if type(class_row.get('ceil')) is int else None
+        available = min(ceiling, max(guaranteed or 0, int(rate or 0))) if ceiling else None
+        background = classes.get(f"1:{CLASSES['background']}", {})
+        background_floor = background.get('rate') if type(background.get('rate')) is int else None
+        fairness_verified = ('1:1' in classes and type(background_floor) is int and
+                             background.get('class') == 'htb')
         out[cls] = dict(observed_ns=observer.sampled_ns, owned_egress=True, class_scoped=scoped,
                         capacity_bytes_s=capacity, observed_rate_bytes_s=int(rate) if rate is not None else None,
-                        backlog_bytes=backlog.get(handle), rtt_p50_us=rtt.get('p50_us'), rtt_p95_us=rtt.get('p95_us'))
+                        available_bytes_s=available, class_rate_bytes_s=guaranteed,
+                        class_ceil_bytes_s=ceiling, backlog_bytes=backlog.get(handle),
+                        rtt_p50_us=rtt.get('p50_us'), rtt_p95_us=rtt.get('p95_us'),
+                        response_available_bytes_s=capacity, response_backlog_bytes=0,
+                        response_path_verified=False, background_floor_bytes_s=background_floor,
+                        background_goodput_bytes_s=window['queue'].get('background', {}).get('bytes_per_second'),
+                        operator_fairness_verified=fairness_verified)
+    service.deadline_evidence_status = dict(available=True, reason='class_scoped_readback',
+        class_scoped={name: row['class_scoped'] for name, row in out.items()},
+        observer_sample_ns=observer.sampled_ns)
     return out
 
 

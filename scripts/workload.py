@@ -250,6 +250,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
         active_requests += 1
         peak_inflight = max(peak_inflight, active_requests)
         try:
+            if admission:
+                admission.offer(index, scheduled)
             reporter = reporters.get(traffic_class)
             dispatch_ns = time.monotonic_ns()
             dispatch_lag_ms = (dispatch_ns/1e9 - scheduled) * 1000
@@ -262,12 +264,20 @@ async def client(output, duration, rate, payload, request_port, background_port,
             budget = admission.budget_ms(index) if admission else deadline_ms
             advice = ''
             if admission:
-                advice = admission.admission(scheduled, index, traffic_class)['decision']
+                assessment = admission.admission(scheduled, index, traffic_class,
+                                                 active_concurrency=max(0, active_requests-1))
+                advice = assessment['decision']
                 if admission.gating:
                     if advice == 'DEFER':
                         await asyncio.sleep(admission.profile['defer_us']/1e6)
-                        advice = admission.admission(scheduled, index, traffic_class, first=False)['decision']
-                    outcome = {'REJECT_INFEASIBLE': 'admission_rejected', 'DEFER': 'admission_deferred'}.get(advice, 'ok')
+                        assessment = admission.admission(
+                            scheduled, index, traffic_class, first=False,
+                            active_concurrency=max(0, active_requests-1))
+                        advice = assessment['decision']
+                    outcome = {'REJECT_INFEASIBLE': 'admission_rejected',
+                               'REJECT_RECOMMENDED': 'admission_rejected',
+                               'DEFER': 'admission_deferred'}.get(advice, 'ok')
+                admission.admission_result(index, outcome == 'ok', advice, budget)
             try:
                 if outcome == 'ok':
                     remaining = 5 - (time.monotonic() - scheduled)
@@ -309,6 +319,8 @@ async def client(output, duration, rate, payload, request_port, background_port,
             latency = (ended - scheduled) * 1000
             row = (index, scheduled, ended, latency, outcome, traffic_class, name, dispatch_lag_ms)
             rows.append(row + ((budget, advice) if admission else ()))
+            if admission:
+                admission.terminal(index, outcome, latency)
             if timing:
                 timing.writerow((index, outcome, scheduled_ns, released_ns, dispatch_ns, connect, connected,
                                  submitted, drained, received, completed_ns))
@@ -502,6 +514,11 @@ async def client(output, duration, rate, payload, request_port, background_port,
                 ended = completed_ns/1e9
                 row = (index, scheduled, ended, (ended-scheduled)*1000, 'inflight_limit', traffic_class, name, (ended-scheduled)*1000)
                 rows.append(row + ((admission.budget_ms(index), '') if admission else ()))
+                if admission:
+                    admission.offer(index, scheduled)
+                    admission.admission_result(index, False, 'CLIENT_INFLIGHT_LIMIT',
+                                               admission.budget_ms(index))
+                    admission.terminal(index, 'inflight_limit', (ended-scheduled)*1000)
                 if timing:
                     timing.writerow((index, 'inflight_limit', scheduled_ns, released, None, None, None,
                                      None, None, None, completed_ns))

@@ -97,7 +97,8 @@ endif()
 add_test(NAME observer_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/observer_test.py")
 
 add_library(flowcore_sdk src/client.cpp src/intent_v2.cpp src/intent_transport.cpp
-    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp src/cooperative_slo.cpp src/udp_intent.cpp)
+    src/socket_pacing.cpp src/pacing_controller.cpp src/deadline.cpp src/overload_prevention.cpp
+    src/cooperative_slo.cpp src/udp_intent.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(flowcore_sdk PUBLIC Threads::Threads)
 target_include_directories(flowcore_sdk PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -110,7 +111,9 @@ add_executable(flowcore-sdk-request examples/sdk_request.cpp)
 target_link_libraries(flowcore-sdk-request PRIVATE flowcore_sdk)
 install(TARGETS flowcore_sdk EXPORT FlowcoreTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(EXPORT FlowcoreTargets FILE flowcore-targets.cmake NAMESPACE flowcore:: DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/flowcore")
-install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp include/flowcore/deadline.hpp include/flowcore/udp_intent.hpp DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+install(FILES include/flowcore/client.hpp include/flowcore/intent_v2.hpp include/flowcore/socket_pacing.hpp
+    include/flowcore/deadline.hpp include/flowcore/overload_prevention.hpp include/flowcore/udp_intent.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
 
 add_test(NAME adaptive_unit COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/adaptive_unit.py")
 
@@ -149,7 +152,9 @@ add_test(NAME tcp_info_layout COMMAND tcp_info_layout)
 add_test(NAME deep_host COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/deep_integration.py")
 set_tests_properties(deep_host PROPERTIES ENVIRONMENT "FLOWCORE_TEST_BINARY=$<TARGET_FILE:flowcore>")
 
-add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp src/slo_optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp src/demand.cpp)
+add_library(flowcore_intelligence SHARED src/intelligence.cpp src/predictive.cpp src/optimizer.cpp
+    src/slo_optimizer.cpp src/deadline.cpp src/deadline_bridge.cpp src/overload_prevention.cpp
+    src/cooperative_slo.cpp src/cooperative_slo_bridge.cpp src/demand.cpp)
 target_include_directories(flowcore_intelligence PRIVATE include)
 target_compile_options(flowcore_intelligence PRIVATE -Wall -Wextra -Wpedantic -Werror)
 install(TARGETS flowcore_intelligence LIBRARY DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -472,6 +477,22 @@ target_compile_options(deadline_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME deadline_native COMMAND deadline_test)
 set_tests_properties(deadline_native PROPERTIES TIMEOUT 15)
 install(FILES DEADLINE_ENGINE.md ADMISSION_CONTROL.md DEADLINE_EXPERIMENTS.md DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES OVERLOAD_PREVENTION_V2.md DEADLINE_FEASIBILITY.md ADMISSION_RESULTS_V2.md
+    DESTINATION "${FLOWCORE_DATA}/docs")
+install(FILES include/flowcore/overload_prevention.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/flowcore")
+add_executable(overload_prevention_test tests/overload_prevention_test.cpp)
+target_link_libraries(overload_prevention_test PRIVATE flowcore_sdk)
+target_compile_options(overload_prevention_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME overload_prevention_native COMMAND overload_prevention_test)
+set_tests_properties(overload_prevention_native PROPERTIES TIMEOUT 15)
+add_test(NAME overload_prevention_adapter COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/overload_runtime_test.py")
+set_tests_properties(overload_prevention_adapter PROPERTIES
+    ENVIRONMENT "FLOWCORE_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}" TIMEOUT 15)
+add_test(NAME overload_prevention_manifest COMMAND /usr/bin/python3 -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/overload_prevention_manifest_test.py")
+set_tests_properties(overload_prevention_manifest PROPERTIES TIMEOUT 15)
 
 add_test(NAME cooperative_slo COMMAND /usr/bin/python3 -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/cooperative_slo_test.py")
 set_tests_properties(cooperative_slo PROPERTIES TIMEOUT 20)

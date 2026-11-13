@@ -384,6 +384,8 @@ class Service:
             if request.get('deadline') is True:
                 from deadline_runtime import evidence
                 extras['deadline_evidence'] = evidence(self, time.monotonic_ns())
+                extras['deadline_evidence_status'] = getattr(self, 'deadline_evidence_status',
+                                                              dict(available=False, reason='unknown'))
             hybrid = self.research_mode == 'hybrid-v3'
             window = self.controller.cfg['window_seconds']
             if hybrid:

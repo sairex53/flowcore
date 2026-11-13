@@ -1,5 +1,6 @@
 #pragma once
 #include "flowcore/deadline.hpp"
+#include "flowcore/overload_prevention.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -141,6 +142,13 @@ public:
                                           unsigned advisory_priority, std::uint64_t cookie = 0) const;
     // Bounded IPC for an optional advisory query. Use deadline::estimate for cached local evidence.
     deadline::Admission admit(const deadline::Work&, std::uint64_t cookie = 0) const;
+    // Local 2.0 estimate over caller-owned request costs and a sampled evidence snapshot.
+    // It is advisory, performs no IPC and cannot change kernel policy.
+    overload::Assessment assess(const overload::RequestCost&, const overload::Evidence&,
+                                std::uint64_t now_ns = deadline::monotonic_ns()) const noexcept;
+    overload::Assessment assess(const overload::RequestCost&, const overload::Evidence&,
+                                const overload::AdmissionDecisionCallback&,
+                                std::uint64_t now_ns = deadline::monotonic_ns()) const noexcept;
     bool wait_ready(std::chrono::milliseconds timeout) const;
     bool flush(std::chrono::milliseconds timeout) const;
     bool ready() const noexcept;

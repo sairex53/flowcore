@@ -527,6 +527,7 @@ def trial(directory, m, rep, mode, seed=None):
                     row['critical_backlog_bytes'] = leaves.get('1:10', 0)
                 if deadline_profile:
                     row['deadline_evidence'] = value.get('deadline_evidence', {})
+                    row['deadline_evidence_status'] = value.get('deadline_evidence_status', {})
                 if ecn_profile:
                     scope = next((q for q in value.get('tc', {}).get('qdisc', [])
                                   if q.get('parent') == '1:20' or mode == 'ecn-cake' and q.get('root')), {})

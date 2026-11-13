@@ -554,6 +554,24 @@ deadline::Admission Service::admit(const deadline::Work& work, std::uint64_t coo
     }
 }
 
+overload::Assessment Service::assess(const overload::RequestCost& cost,
+                                     const overload::Evidence& evidence,
+                                     std::uint64_t now) const noexcept {
+    return overload::assess(cost, evidence, now);
+}
+
+overload::Assessment Service::assess(const overload::RequestCost& cost,
+                                     const overload::Evidence& evidence,
+                                     const overload::AdmissionDecisionCallback& callback,
+                                     std::uint64_t now) const noexcept {
+    auto result = overload::assess(cost, evidence, now);
+    if (callback) {
+        try { callback(result); }
+        catch (...) { result.callback_failed = true; }
+    }
+    return result;
+}
+
 DeadlineRequest Service::begin_deadline_request(const deadline::Work& work, std::uint64_t cookie) const {
     if (!deadline::valid(work)) throw std::invalid_argument("invalid deadline work");
     return DeadlineRequest(Request(channel_, 0, cookie, 0, 0, false, work.deadline_ns), work);
