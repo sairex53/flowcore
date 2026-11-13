@@ -24,7 +24,7 @@ FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
 
 The x86_64 integration build was rebased onto `origin/main` at `87f83ff`,
 using GCC 16.2 on Omarchy Linux kernel 7.2.15-1-omarchy, with
-`FLOWCORE_BPF=OFF`. The final full serial suite passed 67 tests, skipped
+`FLOWCORE_BPF=OFF`. The final full serial suite passed 66 tests, skipped
 `udp_intent_live`, and failed `deployment_unit` in its source-configuration
 ownership test. All demand-native, demand-model, observer, bottleneck, and live
 intent SDK tests passed; `flowid_session` also passed in this refreshed-main
