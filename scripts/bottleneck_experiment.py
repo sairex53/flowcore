@@ -7,7 +7,7 @@ import json
 import random
 import socket
 import statistics
-from threading import Event
+from threading import Event, Lock
 import time
 
 from benchmark import RESULTS, ROOT, TC, owned_directory
@@ -23,8 +23,28 @@ from workload import percentile
 
 
 CASES = dict(egress=EGRESS, ingress=INGRESS, remote=REMOTE, receiver=RECEIVER,
-             application=APPLICATION, capacity_drop=EGRESS, idle=UNKNOWN)
+             application=APPLICATION, demand_load=EGRESS, capacity_drop=EGRESS, idle=UNKNOWN)
 CHUNK = bytes(16384)
+DEMAND_RATE_BPS_PER_FLOW = 8_000_000
+DEMAND_PERIOD_SECONDS = .1
+
+
+class WindowTraffic:
+    """Exact app payload counters for one bounded observation window."""
+    def __init__(self):
+        self.lock = Lock()
+        self.values = dict(bytes_offered=0, bytes_admitted=0,
+                           bytes_transmitted=0, bytes_received=0)
+
+    def add(self, field, count):
+        with self.lock:
+            self.values[field] += count
+
+    def snapshot(self):
+        with self.lock:
+            value = self.values
+            self.values = dict.fromkeys(value, 0)
+        return value
 
 
 def routed_pair(lab):
@@ -72,7 +92,34 @@ def send(stop, sock):
             continue
 
 
-def receive(stop, sock, limited=False):
+def paced_send(stop, sock, meter, rate_bps=DEMAND_RATE_BPS_PER_FLOW):
+    period_bytes = int(rate_bps * DEMAND_PERIOD_SECONDS / 8)
+    payload = bytes(period_bytes)
+    period = DEMAND_PERIOD_SECONDS
+    deadline = time.monotonic()+period
+    sock.setblocking(False)
+    while not stop.is_set():
+        delay = deadline-time.monotonic()
+        if delay > 0 and stop.wait(delay):
+            break
+        if stop.is_set():
+            break
+        meter.add('bytes_offered', period_bytes)
+        try:
+            admitted = sock.send(payload)
+        except BlockingIOError:
+            admitted = 0
+        meter.add('bytes_admitted', admitted)
+        # This counter is the app's completed send syscall payload; qdisc and
+        # receiver counters below independently measure actual network delivery.
+        meter.add('bytes_transmitted', admitted)
+        deadline += period
+        now = time.monotonic()
+        if deadline < now-period:
+            deadline = now+period
+
+
+def receive(stop, sock, limited=False, meter=None):
     delivered = 0
     while not stop.is_set():
         if limited and stop.wait(.025):
@@ -84,6 +131,8 @@ def receive(stop, sock, limited=False):
         if not data:
             break
         delivered += len(data)
+        if meter is not None:
+            meter.add('bytes_received', len(data))
     return delivered
 
 
@@ -147,7 +196,7 @@ def case_run(output, case, config):
     stop = Event()
     reports = deque(maxlen=256)
     monitor = Bottleneck()
-    owned = case in ('egress', 'ingress', 'capacity_drop')
+    owned = case in ('egress', 'ingress', 'demand_load', 'capacity_drop')
     try:
         if case == 'remote':
             routed_pair(lab)
@@ -161,6 +210,7 @@ def case_run(output, case, config):
         router = None
         capacity_changed_at = None
         destination = '10.203.1.2' if case == 'remote' else '10.203.0.2'
+        demand_meters = [WindowTraffic() for _ in range(2)] if case == 'demand_load' else []
 
         def sample(phase, started):
             tc = lab.counters()
@@ -170,8 +220,20 @@ def case_run(output, case, config):
             rows_for_interface = lab_sockets([dict(row, namespace='sender') for row in tcp],
                                               sender['index'], addresses)
             report_copy = list(reports)
-            app = [{'service': 'echo', 'class': 'critical', 'samples': len(report_copy),
-                    'p95_us': percentile(report_copy, .95), 'target_us': 10000, 'port': 9000}] if report_copy else []
+            if case == 'demand_load':
+                app = []
+                for index, meter in enumerate(demand_meters):
+                    traffic = meter.snapshot()
+                    if traffic['bytes_offered']:
+                        app.append(dict(service=f'demand_flow_{index}', **{'class': 'unknown'},
+                            samples=0, p95_us=None, target_us=10000,
+                            port=9000+index, traffic_reports=1, traffic=traffic,
+                            traffic_window_complete=True, request_window_complete=False))
+            else:
+                app = [{'service': 'echo', 'class': 'critical', 'samples': len(report_copy),
+                        'p95_us': percentile(report_copy, .95), 'target_us': 10000, 'port': 9000}]
+                if not report_copy:
+                    app = []
             result = monitor.observe(now, lab_directions(tc, egress_owned=owned), rows_for_interface,
                                      identity=identity, application=app, socket_coverage=not truncated)
             row = dict(phase=phase, seconds=now-started, **result)
@@ -197,8 +259,13 @@ def case_run(output, case, config):
             futures = []
             sinks = []
             try:
-                for client, peer in pairs:
-                    if case == 'application':
+                for index, (client, peer) in enumerate(pairs):
+                    if case == 'demand_load':
+                        futures.append(pool.submit(paced_send, stop, client, demand_meters[index]))
+                        task = pool.submit(receive, stop, peer, False, demand_meters[index])
+                        futures.append(task)
+                        sinks.append(task)
+                    elif case == 'application':
                         futures.append(pool.submit(echo, stop, peer))
                         futures.append(pool.submit(requests, stop, client, reports))
                     else:
@@ -256,6 +323,11 @@ def case_run(output, case, config):
                           for row in steady) if expected != UNKNOWN else 0
     recovered = next((row['seconds']-capacity_changed_at for row in detections
                       if capacity_changed_at is not None and row['seconds'] >= capacity_changed_at), None)
+    demand_windows = [row.get('demand', {}).get('overall') for row in load
+                      if row.get('demand', {}).get('overall')]
+    demand_apps = [app for row in load for app in row.get('application', [])
+                   if app.get('service', '').startswith('demand_flow_')]
+    demand_traffic = [app['traffic'] for app in demand_apps]
     return dict(case=case, capacity_changed_at=capacity_changed_at, post_reduction_detection_seconds=recovered, expected=expected, detection_seconds=detections[0]['seconds'] if detections else None,
                 false_positives=false_positives, false_negatives=false_negatives,
                 steady_windows=len(steady), load_windows=len(load),
@@ -268,6 +340,14 @@ def case_run(output, case, config):
                 median_egress_kbit=statistics.median(rates) if (rates := [
                     row['directions']['egress']['throughput_kbit'] for row in load
                     if 'directions' in row and row['directions']['egress']['throughput_kbit'] is not None]) else None,
+                demand_classifications=dict(Counter(row['classification'] for row in demand_windows)),
+                demand_controller_eligible_windows=sum(row.get('demand', {}).get('controller_eligible', False)
+                                                       for row in load),
+                app_traffic_window_reports=len(demand_apps),
+                app_bytes_offered=sum(row['bytes_offered'] for row in demand_traffic),
+                app_bytes_admitted=sum(row['bytes_admitted'] for row in demand_traffic),
+                app_bytes_transmitted=sum(row['bytes_transmitted'] for row in demand_traffic),
+                app_bytes_received=sum(row['bytes_received'] for row in demand_traffic),
                 application_reports=len(reports), delivered_bytes=received,
                 recovery_states=[row['state'] for row in rows if row['phase'] == 'recovery'], router_qdisc=router, final_tc=tc)
 

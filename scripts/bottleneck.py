@@ -1,6 +1,7 @@
 """Directional bottleneck evidence from bounded, monotonic observations."""
 from collections import deque
 import os
+import math
 import statistics
 import time
 
@@ -211,6 +212,9 @@ def application_totals(rows):
     exact_counts = ('requests_attempted', 'requests_admitted', 'requests_completed',
                     'requests_failed', 'requests_rejected')
     count_sums = {field: 0 for field in exact_counts}
+    traffic_rows = []
+    traffic_bytes_complete = True
+    udp_counters_complete = True
     for row in rows:
         outcomes = row.get('ok', 0) + row.get('failure', 0) + row.get('timeout', 0)
         totals['terminal_outcomes_observed'] += outcomes
@@ -223,23 +227,48 @@ def application_totals(rows):
                 totals['request_counts_complete'] = False
             else:
                 count_sums[field] += value
-        totals['traffic_reports'] += row.get('traffic_reports', 0)
+        reports = row.get('traffic_reports', 0)
+        if type(reports) is not int or reports < 0:
+            traffic_bytes_complete = False
+            reports = 0
+        totals['traffic_reports'] += reports
         traffic = row.get('traffic', {})
-        for field in fields[:4]:
-            totals[field] += traffic.get(field, 0)
+        if reports:
+            traffic_rows.append(row)
+            if not isinstance(traffic, dict):
+                traffic_bytes_complete = False
+                traffic = {}
+            for field in fields[:4]:
+                value = traffic.get(field)
+                if type(value) is not int or value < 0:
+                    traffic_bytes_complete = False
+                else:
+                    totals[field] += value
         udp = row.get('transports', {}).get('udp')
         if udp:
-            totals['udp_reports'] += udp.get('reports', 0)
-            totals['udp_message_reports'] += udp.get('message_reports', 0)
+            reports, message_reports = udp.get('reports'), udp.get('message_reports')
+            if (type(reports) is not int or reports < 0 or
+                    type(message_reports) is not int or message_reports < 0):
+                udp_counters_complete = False
+                reports = message_reports = 0
+            totals['udp_reports'] += reports
+            totals['udp_message_reports'] += message_reports
             for field in fields[4:]:
-                totals[field] += udp.get(field, 0)
+                value = udp.get(field)
+                if type(value) is not int or value < 0:
+                    udp_counters_complete = False
+                else:
+                    totals[field] += value
     if totals['request_counts_complete']:
         totals.update(count_sums)
-    totals['udp_accounting_complete'] = bool(totals['udp_reports'] and
+    totals['udp_accounting_complete'] = bool(udp_counters_complete and totals['udp_reports'] and
                                              totals['udp_message_reports'] == totals['udp_reports'])
+    explicit_windows = bool(traffic_rows) and all(
+        row.get('traffic_window_complete') is True for row in traffic_rows)
+    request_window = bool(totals['request_window_complete'] and
+                           totals['traffic_reports'] == totals['terminal_outcomes_observed'])
     totals['traffic_accounting_complete'] = bool(
-        totals['traffic_reports'] and totals['request_window_complete'] and
-        totals['traffic_reports'] == totals['terminal_outcomes_observed'])
+        totals['traffic_reports'] and traffic_bytes_complete and (explicit_windows or request_window))
     return totals
 
 
@@ -284,8 +313,11 @@ class Bottleneck:
                            'requests_failed', 'requests_rejected', 'deadline_misses')})
         if app['traffic_reports']:
             evidence.append('app_traffic')
-            value.update({field: app[field] for field in
-                          ('bytes_offered', 'bytes_admitted', 'bytes_transmitted', 'bytes_received')})
+            for field, native_field in (('bytes_offered', 'app_offered_bytes'),
+                                        ('bytes_admitted', 'app_admitted_bytes'),
+                                        ('bytes_transmitted', 'app_transmitted_bytes'),
+                                        ('bytes_received', 'app_received_bytes')):
+                value[native_field] = app[field]
             if not app['traffic_accounting_complete']:
                 evidence.append('app_incomplete')
         if app['udp_accounting_complete']:
@@ -295,7 +327,9 @@ class Bottleneck:
                            'udp_urgent_messages', 'udp_background_messages')})
 
         capacity_kbit = tx.get('capacity_kbit')
-        if type(capacity_kbit) is int and capacity_kbit > 0 and tx.get('throughput_kbit') is not None:
+        if (type(capacity_kbit) in (int, float) and math.isfinite(capacity_kbit) and
+                capacity_kbit > 0 and type(tx.get('throughput_kbit')) in (int, float) and
+                math.isfinite(tx['throughput_kbit'])):
             evidence.append('capacity')
             value['capacity_bps'] = capacity_kbit * 1000
             value['observed_bps'] = tx['throughput_kbit'] * 1000

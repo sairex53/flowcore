@@ -4,11 +4,12 @@
 
 The native estimator, SDK reporting path, observer aggregation, CLI reporting,
 and conservative controller gate are implemented. On synthetic fixtures, all
-13 declared classifications matched their expected labels. In live namespace
-experiments, the estimator withheld controller eligibility in all six tested
-scenarios because those existing workloads did not report complete application
-demand. This is the intended safe result, but it means end-to-end demand-aware
-control benefit has not yet been demonstrated.
+13 declared classifications matched their expected labels. An added paced TCP
+namespace workload now supplies complete application byte windows; across ten
+repetitions, the model found local capacity pressure in 84 of 140 windows and
+held 56 windows as unknown or suspected remote pressure. This validates a
+single controlled demand signal, but does not demonstrate demand-aware policy
+benefit.
 
 ## Build and tests
 
@@ -23,13 +24,15 @@ FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
 
 The x86_64 integration build was rebased onto `origin/main` at `87f83ff`,
 using GCC 16.2 on Omarchy Linux kernel 7.2.15-1-omarchy, with
-`FLOWCORE_BPF=OFF`. The full serial suite passed 66 tests, skipped
+`FLOWCORE_BPF=OFF`. The final full serial suite passed 67 tests, skipped
 `udp_intent_live`, and failed `deployment_unit` in its source-configuration
 ownership test. All demand-native, demand-model, observer, bottleneck, and live
 intent SDK tests passed; `flowid_session` also passed in this refreshed-main
-run. The suite expects an in-tree `build/`, so that path was symlinked to the
-external build directory during validation. The full x86_64 log is retained at
-`results/demand-intelligence/x86_64-ctest-87f83ff.log` (ignored local output).
+run. This final run was on the feature branch after the live-experiment adapter
+fixes. The suite expects an in-tree `build/`, so that path was symlinked to the
+external build directory during validation and removed afterward. The final
+x86_64 CTest log is retained at
+`results/demand-intelligence/x86_64-ctest-final.log` (ignored local output).
 
 Before the remote main refresh, the demand implementation also built
 successfully on Fedora 45 aarch64 with GCC 16.2.1, kernel
@@ -151,10 +154,68 @@ an IFB driver preloaded. FLOWCORE refused to create a host IFB device. The
 selected six-case run excludes ingress. The aborted attempt did not modify host
 network identity.
 
+## Paced TCP demand experiment
+
+The new `demand_load` scenario uses two TCP senders in owned network namespaces.
+Each application schedules 100,000-byte payload releases every 100 ms for 3.5
+seconds (8 Mbit/s per flow, 16 Mbit/s total offered demand) into an HTB root
+configured at 4 Mbit/s. It records each interval's offered bytes, successful
+nonblocking `send()` bytes, and bytes read by the peer. Request counts remain
+unknown; byte-window completeness is reported independently. Interface/qdisc
+counters remain a separate delivered-throughput measurement.
+
+Reproduce ten trials in two batches (the harness accepts at most five per
+invocation):
+
+```sh
+sudo env FLOWCORE_TC=/usr/bin/tc \
+  FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
+  python3 scripts/bottleneck_experiment.py --repetitions 5 --cases demand_load
+sudo env FLOWCORE_TC=/usr/bin/tc \
+  FLOWCORE_BUILD_DIR=/path/to/flowcore-demand-build \
+  python3 scripts/bottleneck_experiment.py --repetitions 5 --cases demand_load
+```
+
+The two captured summaries are
+`results/bottleneck-1794575270944394698/summary.json` and
+`results/bottleneck-1794575298658552010/summary.json`. Both completed and
+reported `host_identity_unchanged=true`. They record x86_64 Omarchy, kernel
+7.2.15-1-omarchy, GCC 16.2, BPF disabled, source base commit `8b36659`, and
+`git_dirty=true`; the manifests also retain source and executable hashes.
+
+| Demand experiment measurement | Result |
+| --- | ---: |
+| Completed repetitions / load windows | 10 / 140 |
+| Scheduled application payload | 70,000,000 bytes (16 Mbit/s per run) |
+| Accepted by nonblocking send calls | 18,127,048 bytes |
+| Read by peer during reported windows | 16,954,168 bytes |
+| Native demand classification | 84 local-capacity-limited, 55 unknown, 1 remote-suspected |
+| Controller-eligible evidence windows | 84 / 140 |
+| Existing bottleneck detector delay | median 0.509 s; range 0.508–0.510 s |
+| Existing bottleneck detector errors | 0 false positives, 2 false negatives |
+| Host interface/qdisc identity changes | 0 |
+
+The two false negatives are windows where the existing bottleneck classifier
+did not label the known local egress case correctly; the demand model reported
+one of those windows as remote-suspected. This is a detector limitation exposed
+by the trial, not evidence of a demand estimator false positive. The result
+shows useful demand attribution under a known local bottleneck, while its
+unknown classifications preserve uncertainty. The 84 eligible windows indicate
+evidence that could pass the review gate; the experiment did not execute a
+controller policy update.
+
+This experiment does not produce request-level failure denominators or latency
+percentiles, and it does not compare static QoS against controller variants.
+The qdisc is in disposable namespaces using veth, not a physical NIC. It is one
+workload shape on x86_64, not ARM64 or a multi-workload accuracy study. The app
+send count measures bytes accepted by `send()` and is not treated as wire
+delivery.
+
 ## Unresolved validation
 
-- Add complete scheduled, released, admitted, rejected, transmitted, and
-  completed demand reporting to instrumented network workloads.
+- Extend cooperative reporting to complete scheduled/released/admitted/
+  rejected/completed request denominators; the live TCP workload currently
+  validates byte demand only.
 - Run at least ten independent paired comparisons for static QoS, the existing
   controller, and demand-aware control under identical offered load.
 - Measure P99, failure denominators, deadline attainment, background goodput,

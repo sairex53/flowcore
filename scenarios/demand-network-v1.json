@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "scenario": "paced_tcp_demand",
+  "purpose": "Compare known application offered bytes with socket admission and namespace delivery under a local HTB limit.",
+  "generator": {
+    "transport": "TCP",
+    "flows": 2,
+    "offered_rate_bps_per_flow": 8000000,
+    "release_period_ms": 100,
+    "load_seconds": 3.5,
+    "payload_bytes_per_release": 100000
+  },
+  "topology": {
+    "scope": "owned disposable network namespaces",
+    "qdisc": "HTB",
+    "root_rate_bps": 4000000,
+    "root_ceil_bps": 4000000,
+    "interfaces": "veth pair"
+  },
+  "ground_truth": {
+    "offered_bytes": "scheduled application payload release attempts",
+    "admitted_bytes": "bytes accepted by nonblocking socket send calls",
+    "transmitted_bytes": "successful send syscall payload; not treated as wire throughput",
+    "received_bytes": "bytes read by the peer application",
+    "delivered_rate": "independent qdisc/interface byte-counter deltas"
+  },
+  "safety": {
+    "namespace_policy_writes": true,
+    "host_policy_writes": false,
+    "host_qdisc_changes": false,
+    "host_identity_must_remain_unchanged": true
+  }
+}

@@ -36,6 +36,48 @@ class Engine(unittest.TestCase):
         self.assertIsNone(row['requests_admitted'])
         self.assertEqual(row['deadline_misses'], 3)
 
+    def test_complete_window_byte_accounting_does_not_invent_request_counts(self):
+        row = application_totals([dict(traffic_reports=1, traffic_window_complete=True,
+            request_window_complete=False, traffic=dict(bytes_offered=1000,
+            bytes_admitted=800, bytes_transmitted=800, bytes_received=700), transports={})])
+        self.assertTrue(row['traffic_accounting_complete'])
+        self.assertFalse(row['request_counts_complete'])
+        self.assertIsNone(row['requests_attempted'])
+        self.assertEqual(row['bytes_offered'], 1000)
+        self.assertEqual(row['bytes_received'], 700)
+
+    def test_incomplete_traffic_counters_cannot_pass_complete_window_gate(self):
+        row = application_totals([dict(traffic_reports=1, traffic_window_complete=True,
+            traffic=dict(bytes_offered=1000, bytes_admitted=800), transports={})])
+        self.assertFalse(row['traffic_accounting_complete'])
+        self.assertFalse(row['request_counts_complete'])
+        self.assertIsNone(row['requests_attempted'])
+
+    def test_udp_message_window_requires_all_message_counters(self):
+        row = application_totals([dict(transports={'udp': dict(reports=1, message_reports=1,
+            udp_messages_attempted=4, udp_messages_transmitted=3)})])
+        self.assertFalse(row['udp_accounting_complete'])
+
+    def test_demand_adapter_preserves_complete_application_byte_rates(self):
+        engine = Bottleneck()
+        if engine.demand_model is None:
+            self.skipTest('native demand library unavailable')
+        paths = dict(egress=dict(capacity_kbit=4000.0, throughput_kbit=4000.0,
+            capacity_source='qdisc_readback', backlog_bytes=16000, dropped_packets=0, classes={}),
+            ingress=dict(capacity_kbit=None, throughput_kbit=0, capacity_source='unknown',
+                         backlog_bytes=0, dropped_packets=0, classes={}))
+        application = [dict(service='paced', **{'class': 'unknown'}, traffic_reports=1,
+            traffic_window_complete=True, request_window_complete=False,
+            traffic=dict(bytes_offered=600000, bytes_admitted=300000,
+                         bytes_transmitted=300000, bytes_received=250000))]
+        estimate = engine.assess_demand(paths, {}, application, .25,
+            {'egress': {'backlog_bytes': 12000}})
+        self.assertEqual(estimate['offered_bps'], 19_200_000)
+        self.assertEqual(estimate['admitted_bps'], 9_600_000)
+        self.assertEqual(estimate['received_bps'], 8_000_000)
+        self.assertEqual(estimate['classification'], 'LOCAL_CAPACITY_LIMITED')
+        self.assertNotIn('APPLICATION_REPORT_INCOMPLETE', estimate['flags'])
+
     def test_owned_egress_hysteresis_and_stale_gate(self):
         engine = Bottleneck()
         initial = engine.observe(0, observation(0))
